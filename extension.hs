@@ -2,16 +2,16 @@
 
 import qualified Data.Set as Set
 import qualified Data.Map as Map
+import Control.Applicative ((<|>))
+import Control.Exception (catch, SomeException)
+import Control.Monad (void, when, unless, forM_, foldM, guard)
+import Control.Monad.IO.Class (liftIO)
 import Data.Bifunctor (second)
 import Data.Char (isAlpha, isDigit, isSpace)
 import Data.List (isPrefixOf)
-import Control.Applicative ((<|>))
-import Control.Monad (void, when, unless, forM_, foldM, guard)
-import Control.Monad.IO.Class (liftIO)
-import Text.ParserCombinators.ReadP
-import System.Console.Haskeline
 import System.Environment (getArgs)
-import Control.Exception (catch, SomeException)
+import System.Console.Haskeline
+import Text.ParserCombinators.ReadP
 
 -- 表达式定义 ----------------------------------------------------------------
 data Expr = Var String | Lam String Expr | App Expr Expr
@@ -222,8 +222,8 @@ padRight n s = s ++ replicate (n - length s) ' '
 
 printTable :: [(String, String)] -> IO ()
 printTable rows = unless (null rows) $ do
-  let col1Len = maximum $ length ("变量名" :: String) : map (length . fst) rows
-      col2Len = maximum $ length ("值" :: String)    : map (length . snd) rows
+  let col1Len = maximum $ length ("Var Name" :: String) : map (length . fst) rows
+      col2Len = maximum $ length ("Value" :: String)    : map (length . snd) rows
       mkBorder c1 c2 c3 = c1 : replicate (col1Len + 2) '─' ++ [c2] ++ replicate (col2Len + 2) '─' ++ [c3]
       top     = mkBorder '┌' '┬' '┐'
       mid     = mkBorder '├' '┼' '┤'
