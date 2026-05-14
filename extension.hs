@@ -297,6 +297,37 @@ runCommand env ShowEnv = showEnvPretty env >> return (Just env)
 
 runCommand _ Quit = return Nothing
 
+-- 帮助信息 ------------------------------------------------------------------
+helpMessage :: String
+helpMessage = unlines
+  [ "λ 演算解释器 - Church 编码支持"
+  , ""
+  , "用法:"
+  , "  ./extension [选项] [文件]"
+  , ""
+  , "选项:"
+  , "  -h, --help       显示此帮助信息并退出"
+  , ""
+  , "参数:"
+  , "  文件              启动时自动加载文件中的定义（每行格式: name = expr）"
+  , ""
+  , "REPL 内建命令:"
+  , "  :load <文件>     加载定义文件"
+  , "  :let name = expr 定义变量"
+  , "  :env             显示当前环境中的所有定义"
+  , "  :q               退出解释器"
+  , ""
+  , "表达式语法:"
+  , "  - 变量: 字母或特定运算符开头，后可跟字母/数字/下划线/单引号/特定运算符 (+ - * / % ^ ? ! < > | & ~ # $)"
+  , "  - 定义变量：name = expr"
+  , "  - 抽象: λx.body 或 \\x.body，多个参数可写为 λx y.body"
+  , "  - 应用: f a，左结合"
+  , "  - 括号: (expr)"
+  , "  - 邱奇数: 直接输入数字 (0,1,2,...,9) 自动转为 Church 编码"
+  , ""
+  , "预定义环境包含: TRUE, FALSE, NOT, AND, OR, IF, ZERO, ONE, TWO, THREE, SUCC, PLUS, MULT"
+  ]
+
 -- REPL ---------------------------------------------------------------------
 repl :: Env -> InputT IO ()
 repl env = do
@@ -320,12 +351,15 @@ repl env = do
 main :: IO ()
 main = do
   args <- getArgs
-  startEnv <- case args of
-    [file] -> do
-      envMaybe <- loadDefinitionsFromFile initEnv file
-      return $ fromMaybe initEnv envMaybe
-    _ -> return initEnv
-  runInputT defaultSettings $ repl startEnv
+  if any (`elem` ["-h", "--help"]) args -- 检查帮助选项
+    then putStrLn helpMessage
+    else do
+      startEnv <- case args of
+        [file] -> do
+          envMaybe <- loadDefinitionsFromFile initEnv file
+          return $ fromMaybe initEnv envMaybe
+        _ -> return initEnv
+      runInputT defaultSettings $ repl startEnv
   where
     fromMaybe dflt Nothing  = dflt
     fromMaybe _   (Just x)  = x
