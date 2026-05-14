@@ -1,0 +1,9 @@
+b_ADD_ONE_POW_a = \a b.b (SUCC a)
+ERR  = \a.
+POW = \a b.b a
+ERROR = \a.a b c)
+tow_pow_eight = 3 2 2
+aPOWbPOWc = \a b c.c b a
++ = PLUS
+* = MULT
+id = \?.?
