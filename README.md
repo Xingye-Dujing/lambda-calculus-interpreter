@@ -1,4 +1,4 @@
-# Lambda Calculus Interpreter with Church Encoding
+# Lambda Calculus Interpreter with Church Encoding ([中文版描述](./README-CN.md))
 
 A Haskell-based interpreter for pure lambda calculus, supporting Church numerals, Church booleans, and a macro-like definition environment. Two versions are provided:
 

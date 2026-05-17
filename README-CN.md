@@ -1,4 +1,4 @@
-# 支持邱奇数编码的 Lambda 演算解释器
+# 支持邱奇数编码的 Lambda 演算解释器 ([English version description](./README.md))
 
 基于 Haskell 实现的纯 lambda 演算解释器，支持邱奇数、邱奇布尔值以及宏定义环境。提供两个版本：
 
