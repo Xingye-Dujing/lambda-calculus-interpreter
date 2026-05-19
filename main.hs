@@ -1,4 +1,4 @@
-{-# LANGUAGE OverloadedStrings #-}   -- 仅为更好的字符串字面量，不影响核心逻辑
+{-# LANGUAGE OverloadedStrings #-}
 
 import qualified Data.Set as Set
 import Data.Char (isAlpha, isSpace)
@@ -8,23 +8,31 @@ import Control.Monad.IO.Class (liftIO)
 import Text.ParserCombinators.ReadP
 import System.Console.Haskeline
 
--- 表达式定义 ----------------------------------------------------------------
+-- ---------------------------------------------------------------------------
+-- 表达式定义 Expression Definitions
+-- ---------------------------------------------------------------------------
 data Expr = Var String | Lam String Expr | App Expr Expr
   deriving (Eq, Show)
-
--- 自由变量 ------------------------------------------------------------------
+  
+-- ---------------------------------------------------------------------------
+-- 自由变量 Free Variables
+-- ---------------------------------------------------------------------------
 freeVars :: Expr -> Set.Set String
 freeVars (Var x)   = Set.singleton x
 freeVars (Lam x b) = Set.delete x (freeVars b)
 freeVars (App f a) = freeVars f `Set.union` freeVars a
 
--- 生成新变量（避免捕获）-----------------------------------------------------
+-- ---------------------------------------------------------------------------
+-- 生成新变量（避免捕获）Generate Fresh Variable (Avoid Capture)
+-- ---------------------------------------------------------------------------
 freshVar :: String -> Set.Set String -> String
 freshVar base avoid
   | base `Set.notMember` avoid = base
   | otherwise                  = freshVar (base ++ "'") avoid
 
--- 无捕获替换 ----------------------------------------------------------------
+-- ---------------------------------------------------------------------------
+-- 无捕获替换 Capture-Avoiding Substitution
+-- ---------------------------------------------------------------------------
 subst :: String -> Expr -> Expr -> Expr
 subst x v (Var y)
   | x == y    = v
@@ -38,8 +46,10 @@ subst x v (Lam y body)
     fvV     = freeVars v
     y'      = freshVar y (freeVars body `Set.union` fvV)
     body'   = subst y (Var y') body
-
--- 完全 β-正规形（应用序）---------------------------------------------------
+    
+-- ---------------------------------------------------------------------------
+-- 完全 β-正规形（应用序）Full Beta-Normal Form (Applicative Order)
+-- ---------------------------------------------------------------------------
 nf :: Expr -> Expr
 nf (Var x)   = Var x
 nf (Lam x b) = Lam x (nf b)
@@ -50,7 +60,9 @@ nf (App f a) =
        Lam x b -> nf (subst x a' b)
        _       -> App f' a'
 
--- 美化打印（带括号优先级）---------------------------------------------------
+-- ---------------------------------------------------------------------------
+-- 美观打印 Pretty Printing
+-- ---------------------------------------------------------------------------
 pretty :: Expr -> String
 pretty = go 0
   where
@@ -62,7 +74,9 @@ pretty = go 0
       let s = go 1 f ++ " " ++ go 2 a
       in if p > 1 then "(" ++ s ++ ")" else s
 
--- 解析器 --------------------------------------------------------------------
+-- ---------------------------------------------------------------------------
+-- 解析器 Parser
+-- ---------------------------------------------------------------------------
 spaces :: ReadP ()
 spaces = void $ many (satisfy isSpace)
 
@@ -102,27 +116,33 @@ runParser = fmap fst . listToMaybe . readP_to_S (parseExpr <* eof)
     listToMaybe []    = Nothing
     listToMaybe (x:_) = Just x
 
--- 错误处理 ------------------------------------------------------------------
+-- ---------------------------------------------------------------------------
+-- 错误处理 Error Handling
+-- ---------------------------------------------------------------------------
 parseErrorMsg :: String -> String
 parseErrorMsg input
   | null input || all isSpace input = if null input then "空输入" else "仅包含空白字符"
   | otherwise = "语法错误，请检查表达式"
 
--- REPL 命令处理 -------------------------------------------------------------
+-- ---------------------------------------------------------------------------
+-- REPL 命令处理 REPL Command Handling
+-- ---------------------------------------------------------------------------
 data Command = Eval Expr | Quit
 
 parseCommand :: String -> Maybe Command
 parseCommand ":q" = Just Quit
 parseCommand s    = Eval <$> runParser s
 
-runCommand :: Command -> IO Bool   -- 返回 True 继续, False 退出
+runCommand :: Command -> IO Bool
 runCommand Quit = return False
 runCommand (Eval e) = do
   let result = nf e
   putStrLn $ "⇒ " ++ pretty result
   return True
 
--- REPL 主循环 ---------------------------------------------------------------
+-- ---------------------------------------------------------------------------
+-- REPL 主循环 REPL Main Loop
+-- ---------------------------------------------------------------------------
 repl :: IO ()
 repl = runInputT defaultSettings loop
   where
@@ -138,6 +158,8 @@ repl = runInputT defaultSettings loop
               cont <- liftIO $ runCommand cmd
               when cont loop
 
--- 主程序 --------------------------------------------------------------------
+-- ---------------------------------------------------------------------------
+-- 主程序 Main Program
+-- ---------------------------------------------------------------------------
 main :: IO ()
 main = repl

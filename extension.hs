@@ -13,25 +13,33 @@ import System.Environment (getArgs)
 import System.Console.Haskeline
 import Text.ParserCombinators.ReadP
 
--- 表达式定义 ----------------------------------------------------------------
+-- ---------------------------------------------------------------------------
+-- 表达式定义 Expression Definitions 
+-- ---------------------------------------------------------------------------
 data Expr = Var String | Lam String Expr | App Expr Expr
   deriving (Eq, Show)
 
 type Env = Map.Map String Expr
 
--- 自由变量 ------------------------------------------------------------------
+-- ---------------------------------------------------------------------------
+-- 自由变量 Free Variables
+-- ---------------------------------------------------------------------------
 freeVars :: Expr -> Set.Set String
 freeVars (Var x)      = Set.singleton x
 freeVars (Lam x body) = Set.delete x (freeVars body)
 freeVars (App f a)    = freeVars f `Set.union` freeVars a
 
--- 新变量 --------------------------------------------------------------------
+-- ---------------------------------------------------------------------------
+-- 新变量 Fresh Variable
+-- ---------------------------------------------------------------------------
 freshVar :: String -> Set.Set String -> String
 freshVar base avoid
   | base `Set.notMember` avoid = base
   | otherwise                  = freshVar (base ++ "'") avoid
 
--- 无捕获替换 ----------------------------------------------------------------
+-- ---------------------------------------------------------------------------
+-- 无捕获替换 Capture-Avoiding Substitution
+-- ---------------------------------------------------------------------------
 subst :: String -> Expr -> Expr -> Expr
 subst x v (Var y)
   | x == y    = v
@@ -46,7 +54,9 @@ subst x v (Lam y body)
     y'       = freshVar y (freeVars body `Set.union` fvV)
     body'    = subst y (Var y') body
 
--- 完全 β-正规形（应用序）---------------------------------------------------
+-- ---------------------------------------------------------------------------
+-- 完全 β-正规形（应用序）Full Beta-Normal Form (Applicative Order)
+-- ---------------------------------------------------------------------------
 nf :: Expr -> Expr
 nf (Var x)       = Var x
 nf (Lam x body)  = Lam x (nf body)
@@ -54,7 +64,9 @@ nf (App f a)     = case nf f of
   Lam x body -> nf (subst x (nf a) body)
   f'         -> App f' (nf a)
 
--- 宏展开（带绑定集，避免捕获）-----------------------------------------------
+-- ---------------------------------------------------------------------------
+-- 宏展开（带绑定集，避免捕获）Macro Expansion (with Binding Set, Capture-Avoiding)
+-- ---------------------------------------------------------------------------
 expand :: Env -> Set.Set String -> Expr -> Expr
 expand env bound (Var x)
   | x `Set.member` bound = Var x
@@ -66,7 +78,9 @@ expand env bound (App f a)    = App (expand env bound f) (expand env bound a)
 expandTop :: Env -> Expr -> Expr
 expandTop env = expand env Set.empty
 
--- 邱奇数/邱奇布尔值检测 ----------------------------------------------------
+-- ---------------------------------------------------------------------------
+-- 邱奇数/邱奇布尔值检测 Church Numeral / Church Boolean Detection
+-- ---------------------------------------------------------------------------
 isChurchNumeral :: Expr -> Maybe Integer
 isChurchNumeral (Lam f (Lam x body)) = go 0 body
   where
@@ -88,7 +102,9 @@ valueHint e = case (isChurchNumeral e, isChurchBoolean e) of
   (_, Just False)      -> "  (Church boolean False)"
   _                    -> ""
 
--- 美化打印 ------------------------------------------------------------------
+-- ---------------------------------------------------------------------------
+-- 美观打印 Pretty Printing
+-- ---------------------------------------------------------------------------
 pretty :: Expr -> String
 pretty = go 0
   where
@@ -96,7 +112,9 @@ pretty = go 0
     go p (Lam x body) = let s = "λ" ++ x ++ " → " ++ go 0 body in if p > 0 then "(" ++ s ++ ")" else s
     go p (App f a) = let s = go 1 f ++ " " ++ go 2 a in if p > 1 then "(" ++ s ++ ")" else s
 
--- 解析器 --------------------------------------------------------------------
+-- ---------------------------------------------------------------------------
+-- 解析器 Parser
+-- ---------------------------------------------------------------------------
 spaces :: ReadP ()
 spaces = void $ many $ satisfy isSpace
 
@@ -147,7 +165,9 @@ runParser p s = case readP_to_S (p <* eof) s of
   [(x, "")] -> Just x
   _         -> Nothing
 
--- 错误信息辅助 --------------------------------------------------------------
+-- ---------------------------------------------------------------------------
+-- 错误信息辅助 Error Message Helper
+-- ---------------------------------------------------------------------------
 parseErrorMsg :: String -> String
 parseErrorMsg input
   | null input || all isSpace input = if null input then "空输入" else "仅包含空白字符"
@@ -168,7 +188,9 @@ parseErrorMsg input
     isLamStart = "λ" `isPrefixOf` trimmed || "\\" `isPrefixOf` trimmed
     isLegalInExpr c = isAlpha c || isDigit c || c `elem` ("λ\\ ().=" :: String)
 
--- 预定义环境 ----------------------------------------------------------------
+-- ---------------------------------------------------------------------------
+-- 预定义环境 Predefined Environment
+-- ---------------------------------------------------------------------------
 initEnv :: Env
 initEnv = Map.fromList
   [ ("TRUE",  Lam "t" (Lam "f" (Var "t")))
@@ -186,7 +208,9 @@ initEnv = Map.fromList
   , ("MULT",  Lam "m" $ Lam "n" $ Lam "f" $ App (Var "m") (App (Var "n") (Var "f")))
   ]
 
--- 命令处理 ------------------------------------------------------------------
+-- ---------------------------------------------------------------------------
+-- 命令处理 Command Handling
+-- ---------------------------------------------------------------------------
 data Command = Eval Expr | Define String Expr | LoadFile FilePath | ShowEnv | Quit
 
 trim :: String -> String
@@ -216,7 +240,9 @@ parseCommand _ s
       Just (var, expr) -> Just $ Define var expr
       Nothing          -> Eval <$> runParser parseExpr s
 
--- 表格打印 ------------------------------------------------------------------
+-- ---------------------------------------------------------------------------
+-- 表格打印 Print Table
+-- ---------------------------------------------------------------------------
 padRight :: Int -> String -> String
 padRight n s = s ++ replicate (n - length s) ' '
 
@@ -238,13 +264,17 @@ printTable rows = unless (null rows) $ do
 printDefinitions :: [(String, Expr)] -> IO ()
 printDefinitions = printTable . map (second pretty)
 
--- 环境打印
+-- ---------------------------------------------------------------------------
+-- 环境打印 Print Environment
+-- ---------------------------------------------------------------------------
 showEnvPretty :: Env -> IO ()
 showEnvPretty env
   | Map.null env = putStrLn "当前环境为空。"
   | otherwise    = printDefinitions $ Map.toList env
 
--- 文件加载错误处理 ----------------------------------------------------------
+-- ---------------------------------------------------------------------------
+-- 文件加载错误处理 File Loading Error Handling
+-- ---------------------------------------------------------------------------
 readFileSafe :: FilePath -> IO (Either String String)
 readFileSafe path = catch (Right <$> readFile path) (\(e :: SomeException) -> return $ Left $ show e)
 
@@ -256,7 +286,9 @@ printLoadErrors failures = do
     putStrLn $ "  第 " ++ show n ++ " 行: " ++ take 60 line ++ if length line > 60 then "..." else ""
   putStrLn ""
 
--- 从文件加载定义 ------------------------------------------------------------
+-- ---------------------------------------------------------------------------
+-- 从文件加载定义 Load Definitions from File
+-- ---------------------------------------------------------------------------
 loadDefinitionsFromFile :: Env -> FilePath -> IO (Maybe Env)
 loadDefinitionsFromFile env path = do
   contentOrErr <- readFileSafe path
@@ -279,7 +311,9 @@ loadDefinitionsFromFile env path = do
           in (newEnv, (var, expr') : ok, err)
         _ -> (accEnv, ok, (n, line) : err)
 
--- 命令执行 ----------------------------------------------------------------
+-- ---------------------------------------------------------------------------
+-- 命令执行 Command Execution
+-- ---------------------------------------------------------------------------
 runCommand :: Env -> Command -> IO (Maybe Env)
 runCommand env (Eval expr) = do
   let result = nf $ expandTop env expr
@@ -297,7 +331,9 @@ runCommand env ShowEnv = showEnvPretty env >> return (Just env)
 
 runCommand _ Quit = return Nothing
 
--- 帮助信息 ------------------------------------------------------------------
+-- ---------------------------------------------------------------------------
+-- 帮助信息 Help Message
+-- ---------------------------------------------------------------------------
 helpMessage :: String
 helpMessage = unlines
   [ "λ 演算解释器 - Church 编码支持"
@@ -328,7 +364,9 @@ helpMessage = unlines
   , "预定义环境包含: TRUE, FALSE, NOT, AND, OR, IF, ZERO, ONE, TWO, THREE, SUCC, PLUS, MULT"
   ]
 
--- REPL ---------------------------------------------------------------------
+-- ---------------------------------------------------------------------------
+-- REPL
+-- ---------------------------------------------------------------------------
 repl :: Env -> InputT IO ()
 repl env = do
   minput <- getInputLine "λ> "
@@ -346,12 +384,14 @@ repl env = do
                        else parseErrorMsg input
           outputStrLn $ "解析错误: " ++ errMsg
           repl env
-          
--- 主程序 --------------------------------------------------------------------
+
+-- ---------------------------------------------------------------------------
+-- 主程序 Main Program
+-- ---------------------------------------------------------------------------
 main :: IO ()
 main = do
   args <- getArgs
-  if any (`elem` ["-h", "--help"]) args -- 检查帮助选项
+  if any (`elem` ["-h", "--help"]) args
     then putStrLn helpMessage
     else do
       startEnv <- case args of
