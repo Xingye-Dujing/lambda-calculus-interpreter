@@ -10,10 +10,13 @@
   It drives the compiled `extension --batch --json` binary, so the shipped
   artifact is what gets tested.
 * 覆盖：解析错误位置、β 归约结果、求值策略、步数上限、Church 编码提示、
-  类型推断、环境操作、手动归约、语法树、de Bruijn、双语输出、JSON 协议
+  类型推断、环境操作、手动归约与 redex 选择、正规形/η、α/β 等价、文件功能、
+  语法树、de Bruijn、双语输出、JSON 协议、属性测试与 main/extension 差分
   Covers parse positions, β-reduction results, strategies, step limits,
-  Church hints, type inference, environment commands, manual reduction,
-  syntax trees, de Bruijn view, bilingual output and the JSON protocol.
+  Church hints, type inference, environment commands, manual reduction and
+  redex picking, normal forms/eta, α/β equivalence, file features, syntax trees,
+  de Bruijn view, bilingual output, the JSON protocol, randomized properties
+  and a main/extension differential test.
 
 用法 / Usage
 ------------
@@ -27,6 +30,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import random
+import re
 import subprocess
 import sys
 import tempfile
@@ -458,6 +463,356 @@ def test_web_api(b: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# α 等价、扩展前奏、正规形与 η / alpha, prelude, normal forms and eta
+# ---------------------------------------------------------------------------
+
+def test_alpha_and_equivalence(b: Path) -> None:
+    # α 等价必须忽略绑定名（回归：\a.a 应识别为 I）
+    r = one(["\\a.a"], b)
+    check("alpha I hint", "I combinator" in r.get("hint", ""), r.get("hint", ""))
+    r = one(["\\p.\\q.\\r.p r (q r)"], b)
+    check("alpha S hint", "S combinator" in r.get("hint", ""), r.get("hint", ""))
+    for src in ("\\x->x", "\\x -> x", "λx→x"):
+        r = one([src], b)
+        check(f"arrow syntax {src}", r.get("term") == "λx → x", str(r))
+
+    r = one([":eq \\a.a , \\b.b"], b)
+    check("eq true", r.get("kind") == "eq" and r.get("equal") is True, str(r))
+    r = one([":eq \\a.a , \\a.\\b.a"], b)
+    check("eq false", r.get("equal") is False, str(r))
+    r = one([":conv PLUS ONE TWO , THREE"], b)
+    check("conv beta true", r.get("equal") is True, str(r))
+    r = one([":conv \\x.x , \\y.y"], b)
+    check("conv alpha true", r.get("equal") is True, str(r))
+
+    results = run([":steps 50", ":conv (\\x.x x)(\\x.x x) , \\x.x"], b)
+    r = results[-1][0]
+    check("conv limit inconclusive", r.get("limitHit") is True and r.get("equal") is False, str(r))
+    check("conv limit message", "inconclusive" in r.get("text", ""), r.get("text", ""))
+
+    # 两个表达式都坏时，一次报告左右两侧
+    r = one([":eq \\x. , \\y."], b)
+    check("multi-error both sides", "left:" in r.get("text", "") and "right:" in r.get("text", ""), r.get("text", ""))
+
+
+def test_extended_prelude(b: Path) -> None:
+    cases = [
+        (":int PRED THREE", 2),
+        (":int (SUB THREE ONE)", 2),
+        (":int (EXP TWO THREE)", 8),
+        (":int (PLUS TWO THREE)", 5),
+        (":int (HEAD (CONS ONE NIL))", 1),
+        (":int (FST (PAIR ONE TWO))", 1),
+        (":int (SND (PAIR ONE TWO))", 2),
+    ]
+    for expr, expected in cases:
+        r = one([expr], b)
+        check(f"{expr} value", r.get("value") == expected, str(r))
+
+    r = one(["ISZERO ZERO"], b)
+    check("ISZERO hint", "Church boolean True" in r.get("hint", ""), r.get("hint", ""))
+    r = one(["LEQ ONE TWO"], b)
+    check("LEQ true", "Church boolean True" in r.get("hint", ""), r.get("hint", ""))
+    r = one(["EQ THREE THREE"], b)
+    check("EQ true", "Church boolean True" in r.get("hint", ""), r.get("hint", ""))
+
+    r = one([":church 4"], b)
+    check("church encode", r.get("kind") == "church" and r.get("value") == 4, str(r))
+    r = one([":church 10000"], b)
+    check("church range", r.get("kind") == "error", str(r))
+    r = one([":int \\x.x"], b)
+    check("int non-numeral", r.get("kind") == "fail", str(r))
+
+
+def test_normal_forms_and_eta(b: Path) -> None:
+    r = one([":nf (\\x.\\y.x) a b"], b)
+    check("nf term", r.get("term") == "a" and r.get("steps") == 2, str(r))
+    r = one([":whnf (\\x.\\y.x) (\\x.x)"], b)
+    check("whnf stops early", r.get("term") == "λy → λx → x" and r.get("steps") == 1, str(r))
+
+    r = one([":eta on", ":nf \\x. f x"], b)
+    check("eta reduces", r.get("term") == "f", str(r))
+    r = one([":eta on", ":trace \\x. f x"], b)
+    check("eta trace rule", r.get("trace", [{}])[0].get("rule") == "η", str(r.get("trace")))
+    r = one([":eta off", "\\x. f x"], b)
+    check("eta off keeps", r.get("term") == "λx → f x", str(r))
+
+
+def test_redex_selection(b: Path) -> None:
+    expr = "(\\x.x) ((\\y.y) z)"
+    results = run([f":begin {expr}"], b)
+    start = results[-1][0]
+    check("begin redexes", len(start.get("redexes", [])) == 2, str(start.get("redexes")))
+    check("begin redex count", start.get("redexCount") == 2, str(start.get("redexCount")))
+
+    results = run([f":begin {expr}", ":step 2"], b)
+    step = results[-1][0]
+    check("pick second redex", step.get("term") == "(λx → x) z", str(step))
+    check("step redexes left", len(step.get("redexes", [])) == 1, str(step.get("redexes")))
+
+    results = run([f":begin {expr}", ":step 9"], b)
+    check("bad redex index", results[-1][0].get("kind") == "fail", str(results[-1]))
+    results = run([":begin \\x.x"], b)
+    check("normal form no redex", results[-1][0].get("redexes") == [], str(results[-1]))
+
+
+# ---------------------------------------------------------------------------
+# 文件功能：注释、续行、命令、行号、保存、递归、多文件
+# ---------------------------------------------------------------------------
+
+def test_file_features(b: Path) -> None:
+    with tempfile.TemporaryDirectory() as td:
+        src = Path(td) / "features.lam"
+        src.write_text(
+            "-- a comment\n"
+            "# another comment\n"
+            "id = \\x.x\n"
+            "\n"
+            "bad = \\a.\n"
+            "multi = \\x.\n"
+            "  (x)\n"
+            ":strategy normal\n"
+            ":steps 42\n",
+            encoding="utf-8",
+        )
+        results = run([f":load {src}"], b)
+        objs = results[-1]
+        defines = [o for o in objs if o.get("kind") == "define"]
+        errors = [o for o in objs if o.get("kind") == "error"]
+        infos = [o for o in objs if o.get("kind") == "info"]
+        names = {o.get("name") for o in defines}
+        check("comments/continuation load", names == {"id", "multi"}, str(names))
+        check("load correct line number", any(o.get("line") == 5 for o in errors), str(errors))
+        check("load applies strategy", any("normal" in o.get("text", "") for o in infos), str(infos))
+        check("load applies limit", any("42" in o.get("text", "") for o in infos), str(infos))
+
+        out = Path(td) / "saved.lam"
+        results = run([f":load {src}", "rec idr = \\x.x", f":save {out}"], b)
+        check("save ok", out.is_file(), str(results[-1]))
+        text = out.read_text(encoding="utf-8") if out.is_file() else ""
+        check("save source syntax", "id = \\x.x" in text and "multi = \\x.x" in text, text[:200])
+        check("save rec form", "rec idr = \\x.x" in text, text[:300])
+
+        if out.is_file():
+            results = run([f":load {out}", ":env"], b)
+            rows = {r["name"] for r in results[-1][0].get("rows", [])}
+            check("saved file reloads", {"id", "multi", "idr"} <= rows, str(rows))
+
+        # 启动时加载多个文件，并在文件内设置策略
+        f1 = Path(td) / "one.lam"
+        f2 = Path(td) / "two.lam"
+        f1.write_text("-- start\n:strategy normal\n:steps 100\na1 = \\x.x\n", encoding="utf-8")
+        f2.write_text("b2 = \\x.y\n", encoding="utf-8")
+        omega = "(\\x.y) ((\\x.x x)(\\x.x x))"
+        proc = subprocess.run(
+            [str(b), str(f1), str(f2), "--batch", "--json", "--lang", "en"],
+            input=(omega + "\n:env\n").encode("utf-8"),
+            capture_output=True, timeout=60, cwd=str(ROOT),
+        )
+        text = proc.stdout.decode("utf-8", "replace")
+        objs = []
+        for chunk in text.split(RS)[:-1]:
+            for line in chunk.splitlines():
+                if line.strip():
+                    objs.append(json.loads(line))
+        terms = [o.get("term") for o in objs if o.get("kind") in ("result", "warn")]
+        rows = set()
+        for o in objs:
+            if o.get("kind") == "env":
+                rows = {r["name"] for r in o.get("rows", [])}
+        check("multiple files loaded", {"a1", "b2"} <= rows, str(rows))
+        check("in-file strategy applied", "y" in terms, str(terms))
+
+
+# ---------------------------------------------------------------------------
+# CLI 选项与轨迹上限 / CLI options and the trace cap
+# ---------------------------------------------------------------------------
+
+def test_cli_options(b: Path) -> None:
+    p = subprocess.run([str(b), "--version"], capture_output=True, timeout=30)
+    check("version", "2.0.0" in p.stdout.decode("utf-8", "replace"), p.stdout.decode("utf-8", "replace"))
+    p = subprocess.run([str(b), "--lang=zh", "--help"], capture_output=True, timeout=30)
+    out = p.stdout.decode("utf-8", "replace")
+    check("--lang= form", "用法" in out, out[:80])
+    check("help lists new commands",
+          ":eq" in out and ":whnf" in out and "--version" in out and "--timeout" in out, out[:200])
+    p = subprocess.run([str(b), "--nope"], capture_output=True, timeout=30)
+    check("unknown option fails", p.returncode != 0, str(p.returncode))
+    p = subprocess.run([str(b), "--lang"], capture_output=True, timeout=30)
+    check("missing lang value fails", p.returncode != 0, str(p.returncode))
+    p = subprocess.run([str(b), "--timeout=abc"], capture_output=True, timeout=30)
+    check("bad timeout fails", p.returncode != 0, str(p.returncode))
+
+    omega = "((\\x.x x)(\\x.x x))"
+    p = subprocess.run(
+        [str(b), "--batch", "--json", "--lang", "en", "--timeout", "1"],
+        input=(":steps 1000000000\n" + omega + "\n").encode("utf-8"),
+        capture_output=True, timeout=30, cwd=str(ROOT),
+    )
+    out = p.stdout.decode("utf-8", "replace")
+    check("wall-clock timeout", "timed out after 1 s" in out, out[:200])
+    check("timeout keeps protocol", out.count(RS) == 2, str(out.count(RS)))
+
+
+def test_trace_cap(b: Path) -> None:
+    expr = "a"
+    for _ in range(520):
+        expr = f"(\\x.x) ({expr})"
+    results = run([":steps 2000", expr], b)
+    r = results[-1][0]
+    check("trace total steps", r.get("steps") == 520, str(r.get("steps")))
+    check("trace kept 500", len(r.get("trace", [])) == 500, str(len(r.get("trace", []))))
+    check("trace truncated flag", r.get("traceTruncated") is True, str(r.get("traceTruncated")))
+    check("trace final term", r.get("term") == "a", str(r.get("term")))
+
+
+# ---------------------------------------------------------------------------
+# Web：会话恢复、语言切换、环境类型、健康检查
+# ---------------------------------------------------------------------------
+
+def test_web_extras(b: Path) -> None:
+    try:
+        import flask  # noqa: F401
+    except ImportError:
+        return
+    import sys as _sys
+    web_dir = str(ROOT / "web")
+    if web_dir not in _sys.path:
+        _sys.path.insert(0, web_dir)
+    import app as webapp  # noqa: WPS433
+
+    client = webapp.app.test_client()
+    r = client.get("/api/health")
+    data = r.get_json()
+    check("health", r.status_code == 200 and data.get("ok") is True and data.get("available") is True, str(data))
+    check("prelude extended", "Y" in client.get("/api/prelude").get_json(), "")
+    icon = client.get("/icon.svg")
+    check("icon served", icon.status_code == 200 and "svg" in icon.content_type, icon.content_type)
+
+    # 短链分享：服务端保存状态并可按 id 取回
+    payload = {"v": 2, "code": ["PLUS ONE TWO"], "strategy": "normal",
+               "limit": 42, "theme": "dark", "lang": "en", "eta": False}
+    r = client.post("/api/share", json=payload)
+    share_id = r.get_json().get("id") if r.status_code == 200 else None
+    check("share create", r.status_code == 200 and bool(share_id), str(r.get_json()))
+    if share_id:
+        r = client.get(f"/api/share/{share_id}")
+        check("share get", r.status_code == 200 and r.get_json()["state"]["code"] == ["PLUS ONE TWO"],
+              str(r.get_json()))
+    check("share unknown", client.get("/api/share/does-not-exist").status_code == 404, "")
+    check("share invalid", client.post("/api/share", json={"code": "nope"}).status_code == 400, "")
+
+    sid = client.post("/api/session", json={"lang": "en"}).get_json()["session"]
+    try:
+        out = client.post("/api/eval", json={"session": sid, "line": "PLUS ONE TWO"}).get_json()["outputs"][0]
+        check("web bilingual fields",
+              "Church numeral" in out.get("textEn", "") and "邱奇数" in out.get("textZh", ""),
+              str(out)[:200])
+        check("web bilingual hint", bool(out.get("hintZh")) and bool(out.get("hintEn")), str(out.get("hintZh")))
+
+        client.post("/api/eval", json={"session": sid, "line": "id = \\x.x"})
+        out = client.post("/api/eval", json={"session": sid, "line": ":env"}).get_json()["outputs"]
+        rows = {r["name"]: r for r in out[0].get("rows", [])}
+        check("web env type", bool(rows.get("id", {}).get("type")), str(rows.get("id")))
+        check("web env bilingual type",
+              bool(rows.get("id", {}).get("typeZh")) and bool(rows.get("id", {}).get("typeEn")),
+              str(rows.get("id")))
+
+        r = client.post("/api/eval", json={"session": sid, "line": ":save blocked.lam"})
+        check("web save disabled", r.status_code == 400 and "disabled" in r.get_json().get("error", ""),
+              str(r.get_json()))
+
+        r = client.post(f"/api/session/{sid}/lang", json={"lang": "zh"})
+        check("web lang route", r.status_code == 200 and r.get_json().get("ok") is True, str(r.get_json()))
+        out = client.post("/api/eval", json={"session": sid, "line": "\\x"}).get_json()["outputs"]
+        check("web lang applied", "解析错误" in out[0].get("text", ""), str(out)[:120])
+    finally:
+        # 删除后旧会话必须返回 410，让前端回放而不是悄悄清空环境
+        client.delete(f"/api/session/{sid}")
+        r = client.post("/api/eval", json={"session": sid, "line": "PLUS ONE TWO"})
+        check("web expired 410", r.status_code == 410, str(r.status_code))
+        check("web expired restart", r.get_json().get("restart") is True, str(r.get_json()))
+
+
+# ---------------------------------------------------------------------------
+# 属性测试：随机算术、α 重命名、策略一致性
+# ---------------------------------------------------------------------------
+
+def test_properties(b: Path) -> None:
+    rng = random.Random(20261103)
+    cmds: list[str] = []
+    expected: list[int] = []
+    for _ in range(8):
+        n, m = rng.randint(0, 5), rng.randint(0, 5)
+        cmds.append(f":int (PLUS {n} {m})")
+        expected.append(n + m)
+        cmds.append(f":int (MULT {n} {m})")
+        expected.append(n * m)
+    outs = run(cmds, b)
+    for cmd, want, objs in zip(cmds, expected, outs):
+        got = objs[0].get("value") if objs else None
+        check(f"{cmd} = {want}", got == want, f"{got!r} vs {want}")
+
+    names = ["a", "b", "c", "u", "v", "w"]
+    pairs = []
+    for _ in range(5):
+        x, y = rng.sample(names, 2)
+        pairs.append((f"\\{x}.\\{y}.{x}", f"\\{y}.\\{x}.{y}"))
+        pairs.append((f"\\{x}.\\{y}.{x} {y}", f"\\{y}.\\{x}.{y} {x}"))
+    cmds = [f":eq {a} , {b}" for a, b in pairs]
+    outs = run(cmds, b)
+    for cmd, objs in zip(cmds, outs):
+        check(f"alpha property {cmd}", objs[0].get("equal") is True, str(objs[0]))
+
+    # 强策略在随机算术项上结果一致
+    terms = [f"PLUS {rng.randint(0,5)} {rng.randint(0,5)}" for _ in range(4)]
+    cmds = []
+    for t in terms:
+        cmds.extend([":strategy applicative", t, ":strategy normal", t])
+    outs = run(cmds, b)
+    for i, t in enumerate(terms):
+        a = outs[i * 4 + 1][0].get("term")
+        n = outs[i * 4 + 3][0].get("term")
+        check(f"strategy agreement {t}", a == n, f"{a!r} vs {n!r}")
+
+
+# ---------------------------------------------------------------------------
+# main 与 extension 的差分测试 / differential test
+# ---------------------------------------------------------------------------
+
+def _main_terms(lines: list[str]) -> list[str]:
+    exe = ROOT / ("main.exe" if os.name == "nt" else "main")
+    proc = subprocess.run(
+        [str(exe), "--lang", "en"], input=("\n".join(lines) + "\n:q\n").encode("utf-8"),
+        capture_output=True, timeout=90, cwd=str(ROOT),
+    )
+    out = proc.stdout.decode("utf-8", "replace")
+    terms = []
+    for line in out.splitlines():
+        idx = line.rfind("⇒ ")
+        if idx < 0:
+            continue
+        term = line[idx + 2:]
+        term = re.sub(r"\s+\(\d+\s+(?:steps|步)\).*$", "", term).strip()
+        terms.append(term)
+    return terms
+
+
+def test_differential_main(b: Path) -> None:
+    cases = [
+        ["(\\x.x) a"],
+        ["(\\x.\\y.x) a b"],
+        ["(\\f.\\x.f (f x)) a b"],
+        [":strategy normal", "(\\x.y) ((\\x.x x)(\\x.x x))"],
+    ]
+    for lines in cases:
+        ext = one(lines, b)
+        main_terms = _main_terms(lines)
+        check(f"main differential {lines[-1]}", main_terms == [ext.get("term")],
+              f"{main_terms!r} vs {ext.get('term')!r}")
+
+
+# ---------------------------------------------------------------------------
 # 运行器 / Runner
 # ---------------------------------------------------------------------------
 
@@ -481,6 +836,16 @@ TESTS = [
     test_determinism,
     test_cross_strategy_agreement,
     test_web_api,
+    test_alpha_and_equivalence,
+    test_extended_prelude,
+    test_normal_forms_and_eta,
+    test_redex_selection,
+    test_file_features,
+    test_cli_options,
+    test_trace_cap,
+    test_web_extras,
+    test_properties,
+    test_differential_main,
     test_main_binary,
 ]
 

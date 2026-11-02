@@ -21,11 +21,17 @@ separator `\\x1e`, so:
 路由 / Routes:
   GET  /                    静态前端 index.html / static frontend
   GET  /fonts/<file>        APL385 字体 / font
+  GET  /icon.svg            站点图标 / favicon
   GET  /api/prelude         可用预定义名 / prelude names
+  GET  /api/health          会话数与解释器状态 / health and session count
+  POST /api/share           保存前端状态 -> {id} / store a share payload
+  GET  /api/share/<id>      取回前端状态 / fetch a share payload
   POST /api/session         创建会话 {lang?} -> {session} / create a session
   POST /api/eval            执行一行 {session, line} -> {outputs} / run one line
                             兼容旧接口：{code} 一次性执行 -> {results}
                             legacy: {code} runs one-shot -> {results}
+                            会话过期返回 410 + restart / expired -> 410 restart
+  POST /api/session/<id>/lang  在同一进程内切换语言 / switch language in place
   DELETE /api/session/<id>  主动结束会话 / end a session
 
 解释器路径按以下顺序解析（可用环境变量覆盖）:
@@ -55,12 +61,22 @@ EVAL_TIMEOUT = float(os.environ.get("LAMBDA_EVAL_TIMEOUT", "10"))
 SESSION_IDLE = float(os.environ.get("LAMBDA_SESSION_IDLE", "1800"))
 MAX_SESSIONS = int(os.environ.get("LAMBDA_MAX_SESSIONS", "32"))
 ALLOWED_LANGS = {"zh", "en", "both"}
+SHARE_TTL = float(os.environ.get("LAMBDA_SHARE_TTL", "604800"))   # 7 days
+MAX_SHARES = int(os.environ.get("LAMBDA_MAX_SHARES", "500"))
+MAX_SHARE_BYTES = 64 * 1024
 
 # `:load` 默认只允许解释器目录内的文件，防止 Web 用户读取服务器任意路径；
 # 设为 `*` 可关闭限制（仅建议在本地使用）
 # `:load` is restricted to the interpreter directory by default so web users
 # cannot read arbitrary server files; set LAMBDA_LOAD_ROOT=* to disable.
 LOAD_RE = re.compile(r"^:load\s+(.+)$")
+SAVE_RE = re.compile(r"^:save\s+(.+)$")
+
+# 写文件在 Web 端默认关闭，避免公开部署时任意覆盖服务器文件
+# Writing files over the web is disabled by default; enable only for local use.
+ALLOW_SAVE = os.environ.get("LAMBDA_ALLOW_SAVE", "0").strip().lower() in (
+    "1", "true", "yes", "on",
+)
 
 
 def load_root() -> Path | None:
@@ -72,23 +88,32 @@ def load_root() -> Path | None:
     return Path(raw).expanduser().resolve()
 
 
-def validate_line(line: str) -> str | None:
-    match = LOAD_RE.match(line.strip())
-    if not match:
+def _check_path(line: str) -> str | None:
+    for regex, verb in ((LOAD_RE, "load"), (SAVE_RE, "save")):
+        match = regex.match(line.strip())
+        if not match:
+            continue
+        if verb == "save" and not ALLOW_SAVE:
+            return (":save 在 Web 端默认关闭 / :save is disabled over the web "
+                    "(set LAMBDA_ALLOW_SAVE=1 for local use)")
+        root = load_root()
+        if root is None:
+            return None
+        raw = match.group(1).strip().strip('"').strip("'")
+        try:
+            target = Path(raw)
+            if not target.is_absolute():
+                target = root / target
+            target.resolve().relative_to(root)
+        except (ValueError, OSError):
+            return (f":{verb} 仅允许解释器目录内的路径 / :{verb} is restricted to {root} "
+                    "(set LAMBDA_LOAD_ROOT=* to allow any path)")
         return None
-    root = load_root()
-    if root is None:
-        return None
-    raw = match.group(1).strip().strip('"').strip("'")
-    try:
-        target = Path(raw)
-        if not target.is_absolute():
-            target = root / target
-        target.resolve().relative_to(root)
-    except (ValueError, OSError):
-        return (f":load 仅允许解释器目录内的路径 / :load is restricted to {root} "
-                "(set LAMBDA_LOAD_ROOT=* to allow any path)")
     return None
+
+
+def validate_line(line: str) -> str | None:
+    return _check_path(line)
 
 
 def _resolve_interp() -> Path:
@@ -116,6 +141,8 @@ INTERP_DIR = INTERP_BIN.parent
 PRELUDE = [
     "TRUE", "FALSE", "NOT", "AND", "OR", "IF",
     "ZERO", "ONE", "TWO", "THREE", "SUCC", "PLUS", "MULT",
+    "EXP", "PRED", "SUB", "ISZERO", "LEQ", "EQ",
+    "PAIR", "FST", "SND", "NIL", "CONS", "HEAD", "TAIL", "Y",
 ]
 
 app = Flask(__name__, static_folder=None, static_url_path=None)
@@ -197,6 +224,35 @@ class Interpreter:
 _sessions: dict[str, dict] = {}
 _sessions_lock = threading.Lock()
 
+# 短链分享：保存前端状态 JSON，返回一个短 id
+# Short share links: keep the client state JSON server-side under a short id.
+_shares: dict[str, dict] = {}
+_shares_lock = threading.Lock()
+
+
+def _prune_shares() -> None:
+    now = time.time()
+    with _shares_lock:
+        stale = [k for k, v in _shares.items() if now - v["created"] > SHARE_TTL]
+        for k in stale:
+            _shares.pop(k, None)
+        while len(_shares) > MAX_SHARES:
+            oldest = min(_shares, key=lambda k: _shares[k]["created"])
+            _shares.pop(oldest, None)
+
+
+def _valid_share(payload) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    code = payload.get("code")
+    if not isinstance(code, list) or not all(isinstance(x, str) for x in code):
+        return False
+    try:
+        raw = json.dumps(payload, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return False
+    return len(raw.encode("utf-8")) <= MAX_SHARE_BYTES
+
 
 def _prune_sessions() -> None:
     now = time.time()
@@ -212,17 +268,25 @@ def _prune_sessions() -> None:
             _sessions.pop(oldest)["interp"].kill()
 
 
-def get_session(sid: str | None, lang: str = "both") -> tuple[str, Interpreter]:
+def get_session(sid: str | None, lang: str = "both",
+                *, create: bool = True) -> tuple[str, Interpreter] | tuple[None, None]:
+    """Look up or create a session.
+
+    With ``create=False`` an unknown id returns ``(None, None)`` instead of
+    silently starting a fresh environment, so the client can replay history.
+    """
     _prune_sessions()
     with _sessions_lock:
         if sid and sid in _sessions:
             entry = _sessions[sid]
             entry["used"] = time.time()
             return sid, entry["interp"]
-        sid = uuid.uuid4().hex
+        if not create:
+            return None, None
+        new_sid = uuid.uuid4().hex
         interp = Interpreter(lang)
-        _sessions[sid] = {"interp": interp, "used": time.time()}
-        return sid, interp
+        _sessions[new_sid] = {"interp": interp, "used": time.time()}
+        return new_sid, interp
 
 
 # ---------------------------------------------------------------------------
@@ -269,9 +333,49 @@ def fonts(filename):
     return send_from_directory(str(APP_DIR / "fonts"), filename)
 
 
+@app.route("/icon.svg")
+def icon():
+    return send_from_directory(str(APP_DIR), "icon.svg", mimetype="image/svg+xml")
+
+
 @app.route("/api/prelude")
 def prelude():
     return jsonify(PRELUDE)
+
+
+@app.route("/api/health")
+def health():
+    _prune_sessions()
+    with _sessions_lock:
+        count = len(_sessions)
+    return jsonify({
+        "ok": True,
+        "sessions": count,
+        "interpreter": str(INTERP_BIN),
+        "available": INTERP_BIN.is_file(),
+    })
+
+
+@app.route("/api/share", methods=["POST"])
+def api_share():
+    payload = request.get_json(force=True, silent=True)
+    if not _valid_share(payload):
+        return jsonify({"ok": False, "error": "invalid or oversized share payload"}), 400
+    _prune_shares()
+    sid = uuid.uuid4().hex[:10]
+    with _shares_lock:
+        _shares[sid] = {"payload": payload, "created": time.time()}
+    return jsonify({"ok": True, "id": sid})
+
+
+@app.route("/api/share/<sid>", methods=["GET"])
+def api_share_get(sid):
+    _prune_shares()
+    with _shares_lock:
+        entry = _shares.get(sid)
+    if not entry:
+        return jsonify({"ok": False, "error": "share not found"}), 404
+    return jsonify({"ok": True, "state": entry["payload"]})
 
 
 @app.route("/api/session", methods=["POST"])
@@ -280,6 +384,28 @@ def api_session():
     lang = data.get("lang") if data.get("lang") in ALLOWED_LANGS else "both"
     sid, _ = get_session(None, lang)
     return jsonify({"ok": True, "session": sid})
+
+
+@app.route("/api/session/<sid>/lang", methods=["POST"])
+def api_session_lang(sid):
+    """在同一个解释器进程内切换语言，避免重建会话
+    Switch language inside the same interpreter process (no session rebuild)."""
+    data = request.get_json(force=True, silent=True) or {}
+    lang = data.get("lang") if data.get("lang") in ALLOWED_LANGS else "both"
+    _prune_sessions()
+    with _sessions_lock:
+        entry = _sessions.get(sid)
+        if entry:
+            entry["used"] = time.time()
+    if not entry:
+        return jsonify({"ok": False, "error": "session not found", "restart": True}), 410
+    try:
+        outputs = entry["interp"].send(f":lang {lang}")
+        return jsonify({"ok": True, "session": sid, "lang": lang, "outputs": outputs})
+    except TimeoutError:
+        return jsonify({"ok": False, "error": _timeout_msg(lang), "timeout": True}), 408
+    except RuntimeError as exc:
+        return jsonify({"ok": False, "error": str(exc), "restart": True}), 410
 
 
 @app.route("/api/session/<sid>", methods=["DELETE"])
@@ -325,8 +451,15 @@ def api_eval():
         if problem:
             return jsonify({"ok": False, "error": problem}), 400
 
+    sid_in = data.get("session")
     try:
-        sid, interp = get_session(data.get("session"), lang)
+        sid, interp = get_session(sid_in, lang, create=sid_in is None)
+        if sid is None or interp is None:
+            return jsonify({
+                "ok": False,
+                "error": "会话已过期，正在重建 / session expired; rebuilding",
+                "restart": True,
+            }), 410
         outputs: list[dict] = []
         for ln in lines:
             outputs.extend(interp.send(str(ln)))
@@ -353,11 +486,13 @@ def _missing_bin_msg() -> str:
 
 
 def _timeout_msg(lang: str) -> str:
+    secs = f"{EVAL_TIMEOUT:g}"
     if lang == "en":
-        return "Evaluation timed out (>10s); the term may not terminate."
+        return f"Evaluation timed out (>{secs}s); the term may not terminate."
     if lang == "zh":
-        return "计算超时（>10s），表达式可能陷入无限归约。"
-    return "计算超时 / timed out (>10s)：表达式可能不终止 / the term may not terminate."
+        return f"计算超时（>{secs}s），表达式可能陷入无限归约。"
+    return (f"计算超时 / timed out (>{secs}s)："
+            "表达式可能不终止 / the term may not terminate.")
 
 
 if __name__ == "__main__":

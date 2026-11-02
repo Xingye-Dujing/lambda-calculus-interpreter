@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <base href="./">
-<link rel="icon" href="/icon.ico" type="image/x-icon">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
 <title>Lambda 演算计算器 · Lambda Calculus</title>
 <style>
   @font-face{
@@ -94,8 +94,10 @@
   .term-tools button:hover{background:var(--hover);color:var(--text);}
   .term-body{flex:1;min-height:0;display:flex;flex-direction:column;padding:12px 14px 10px;}
   .term-out{flex:1;min-height:0;max-height:none;overflow-y:auto;font-family:var(--mono);font-size:13.5px;line-height:1.75;white-space:pre-wrap;word-break:break-word;padding-right:6px;}
-  .line{margin:2px 0;display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;}
-  .line .body{flex:1;min-width:0;white-space:pre-wrap;word-break:break-word;}
+  .line{margin:2px 0;display:flex;gap:8px;align-items:flex-start;}
+  .line-main{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px;}
+  .line .body{min-width:0;white-space:pre-wrap;word-break:break-word;}
+  .line-acts{display:flex;flex-wrap:wrap;gap:6px;align-items:center;}
   .line.echo{color:var(--faint);}
   .line.echo .p{color:var(--prompt);font-weight:600;}
   .line.result .body{color:var(--text);}
@@ -134,6 +136,7 @@
   .mini{font-family:var(--mono);font-size:10.5px;color:var(--dim);background:transparent;border:1px solid var(--border);border-radius:var(--radius);padding:2px 8px;cursor:pointer;}
   .mini:hover:not(:disabled){color:var(--text);border-color:var(--border-strong);}
   .mini:disabled{opacity:.35;cursor:default;}
+  .mini[aria-pressed="true"]{color:var(--text);border-color:var(--border-strong);}
   .manual-bar .mterm{color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:46%;}
   .panel-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px;}
   .panel-head h3{margin:0;}
@@ -204,6 +207,32 @@
   kbd{font-family:var(--mono);font-size:11px;border:1px solid var(--border);border-bottom-width:2px;border-radius:4px;padding:0 5px;color:var(--dim);}
   .toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:var(--bg);border:1px solid var(--border-strong);border-radius:var(--radius);padding:8px 14px;font-family:var(--mono);font-size:12px;color:var(--text);opacity:0;pointer-events:none;transition:opacity .2s;}
   .toast.show{opacity:1;}
+  /* 可归约位置 / redex picker */
+  .redex-list{flex:none;display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;}
+  .redex-list:empty{display:none;}
+  .redex-btn{font-family:var(--mono);font-size:10.5px;color:var(--dim);background:transparent;border:1px solid var(--border);border-radius:var(--radius);padding:2px 8px;cursor:pointer;max-width:100%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .redex-btn:hover{color:var(--text);border-color:var(--border-strong);}
+  .redex-btn b{font-weight:500;color:var(--faint);margin-right:4px;}
+  .redex-hint{flex:none;width:100%;font-family:var(--mono);font-size:10px;color:var(--faint);}
+  .trace-note{margin:-4px 0 10px;font-family:var(--mono);font-size:10.5px;color:var(--warn);}
+  /* 可折叠语法树 / collapsible AST */
+  .ast-tree{font-family:var(--mono);font-size:12.5px;line-height:1.8;}
+  .ast-tree details{margin-left:14px;}
+  .ast-tree summary{cursor:pointer;color:var(--text);list-style:none;}
+  .ast-tree summary::-webkit-details-marker{display:none;}
+  .ast-tree summary::before{content:"▸";display:inline-block;width:12px;color:var(--faint);}
+  .ast-tree details[open] > summary::before{content:"▾";}
+  .ast-tree .leaf{margin-left:14px;color:var(--dim);}
+  .ast-tree .leaf .k{color:var(--faint);}
+  .ast-view{display:flex;gap:6px;margin:0 0 10px;}
+  .ast-svg{overflow:auto;border:1px solid var(--border);border-radius:var(--radius);padding:4px;}
+  .ast-svg svg{display:block;}
+  .ast-svg .ast-edge{stroke:var(--border-strong);stroke-width:1;}
+  .ast-svg .ast-node-rect{fill:var(--card);stroke:var(--border);}
+  .ast-svg .ast-node-text{fill:var(--text);font-family:var(--mono);font-size:11px;}
+  .player .play{width:30px;}
+  .tools{display:flex;flex-wrap:wrap;gap:7px;}
+  .tools .mini{padding:4px 9px;}
 </style>
 </head>
 <body>
@@ -278,6 +307,7 @@
           <button class="mini" id="m-end" type="button" disabled>结束 / end</button>
           <span class="mterm" id="m-term"></span>
         </div>
+        <div class="redex-list" id="redex-list"></div>
       </div>
     </section>
 
@@ -287,6 +317,7 @@
         <button class="tab" role="tab" data-tab="ast"><span class="zh">结构</span><span class="en">AST</span></button>
         <button class="tab" role="tab" data-tab="type"><span class="zh">类型</span><span class="en">Type</span></button>
         <button class="tab" role="tab" data-tab="env"><span class="zh">环境</span><span class="en">Env</span></button>
+        <button class="tab" role="tab" data-tab="tools"><span class="zh">工具</span><span class="en">Tools</span></button>
         <button class="tab" role="tab" data-tab="help"><span class="zh">帮助</span><span class="en">Help</span></button>
         <button class="tab" role="tab" data-tab="guide"><span class="zh">指引</span><span class="en">Guide</span></button>
       </div>
@@ -368,7 +399,18 @@
     guideTitle:{zh:"使用指引", en:"Quick guide"},
     helpBody:{zh:"表达式语法：λx.body 或 \\\\x.body；应用 f a 左结合；括号 (expr)；数字自动转 Church 编码。", en:"Syntax: λx.body or \\\\x.body; application f a is left-assoc; grouping (expr); numbers become Church numerals."},
     typeHint:{zh:"简单类型（Hindley–Milner），自由变量用 t0, t1… 表示。", en:"Simple types (Hindley–Milner); free type variables appear as t0, t1…"},
-    envHint:{zh:"点击变量名插入到输入框；悬停可删除。", en:"Click a name to insert it; hover to delete."}
+    envHint:{zh:"点击变量名插入到输入框；悬停可删除。", en:"Click a name to insert it; hover to delete."},
+    copy:    {zh:"复制", en:"copy"},
+    insertB: {zh:"插入", en:"insert"},
+    defineB: {zh:"定义为", en:"define"},
+    exportT: {zh:"导出轨迹", en:"export trace"},
+    copied:  {zh:"已复制", en:"Copied"},
+    saveName:{zh:"给结果起个名字", en:"name this result"},
+    redexHint:{zh:"可归约位置：点击任一项直接归约", en:"Redexes: click one to contract it"},
+    redexNone:{zh:"已没有可归约位置。", en:"No redexes left."},
+    traceCut:{zh:"轨迹较长，只显示前 500 步（长项已截断）。", en:"Long trace: only the first 500 steps are shown (long terms clipped)."},
+    play:{zh:"播放", en:"play"}, pause:{zh:"暂停", en:"pause"},
+    shareState:{zh:"分享链接（含代码、策略、步数与主题）", en:"Share link includes code, strategy, limit and theme"}
   };
 
   var state = {
@@ -384,9 +426,14 @@
     envRows: [],
     manual: false,       // 手动归约模式 / manual reduction mode
     manualTerm: "",
+    redexes: [],
+    astView: "tree",
+    eta: false,
     limit: 10000,
     replaying: false,
     typing: false,
+    playing: false,
+    playTimer: null,
     acIndex: -1,
     acItems: []
   };
@@ -406,6 +453,27 @@
     if (state.lang === "zh") return zh;
     if (state.lang === "en") return en;
     return zh + " / " + en;
+  }
+
+  // 选择服务端同时返回的中/英文本，无需重放命令
+  // Pick the server-provided Chinese/English text without replaying commands.
+  function pickPair(zh, en, fallback){
+    if (state.lang === "zh") return zh || fallback || "";
+    if (state.lang === "en") return en || fallback || "";
+    if (zh && en && zh !== en) return zh + " / " + en;
+    return zh || en || fallback || "";
+  }
+
+  function objText(obj){
+    return pickPair(obj.textZh, obj.textEn, obj.text);
+  }
+
+  function resultMeta(obj){
+    var parts = [];
+    if (obj.steps) parts.push(obj.steps + " " + t("steps"));
+    var hint = pickPair(obj.hintZh, obj.hintEn, obj.hint || "");
+    if (hint.trim()) parts.push(hint.trim());
+    return parts.join(" · ");
   }
 
   function bilingual(zh, en){
@@ -532,7 +600,7 @@
     try {
       localStorage.setItem(LS, JSON.stringify({
         lang: state.lang, theme: state.theme, strategy: $("strategy").value,
-        limit: state.limit, code: state.codeLines
+        limit: state.limit, eta: state.eta, code: state.codeLines
       }));
     } catch(e){}
   }
@@ -581,7 +649,7 @@
     out.appendChild(d);
   }
 
-  function addLine(kind, text, meta, source){
+  function addLine(kind, text, meta, source, zh, en){
     var d = elem("div", "line " + kind);
     var mark = "·";
     if (kind === "result") mark = "⇒";
@@ -589,15 +657,40 @@
     else if (kind === "error" || kind === "fail") mark = "⚠";
     else if (kind === "warn") mark = "⚠";
     else if (kind === "step") mark = "→";
-    d.innerHTML = '<span class="mark">' + mark + '</span><span class="body"></span>';
-    d.querySelector(".body").textContent = text;
+    var main = elem("div", "line-main");
+    var body = elem("span", "body");
+    body.textContent = text;
+    main.appendChild(body);
     if (meta){
       var m = elem("span", "meta");
       m.textContent = meta;
-      d.appendChild(m);
+      main.appendChild(m);
     }
+    d.innerHTML = '<span class="mark">' + mark + '</span>';
+    d.appendChild(main);
+    d._zh = (zh == null ? text : zh);
+    d._en = (en == null ? text : en);
     out.appendChild(d);
     return d;
+  }
+
+  function copyText(text){
+    if (navigator.clipboard && navigator.clipboard.writeText){
+      navigator.clipboard.writeText(text).then(function(){ toast(t("copied")); },
+                                               function(){ toast(t("copied")); });
+    } else {
+      toast(t("copied"));
+    }
+  }
+
+  function traceMarkdown(obj){
+    var lines = ["# λ reduction trace", "", "```text", obj.term || "", "```", ""];
+    (obj.trace || []).forEach(function(s){
+      lines.push("## " + s.n + ". " + (s.rule || "β"));
+      if (s.note) lines.push(s.note);
+      lines.push("", "before:", "```text", s.before, "```", "", "after:", "```text", s.after, "```", "");
+    });
+    return lines.join("\n");
   }
 
   function addActions(lineEl, obj, source){
@@ -609,13 +702,46 @@
         steps: 1
       });
     }
-    var btn = elem("button", "act", "⚙ " + t("trace"));
-    btn.type = "button";
-    btn.addEventListener("click", function(ev){
-      ev.stopPropagation();
-      selectResult(obj, lineEl, "trace");
-    });
-    lineEl.appendChild(btn);
+    var acts = elem("div", "line-acts");
+    var main = lineEl.querySelector(".line-main");
+    if (main) main.appendChild(acts);
+    function add(labelFn, titleFn, fn){
+      var b = elem("button", "act", "");
+      b.type = "button";
+      b._relabel = function(){ b.textContent = labelFn(); b.title = titleFn(); };
+      b._relabel();
+      b.addEventListener("click", function(ev){ ev.stopPropagation(); fn(); });
+      acts.appendChild(b);
+      return b;
+    }
+    if (obj.trace || obj.ast){
+      add(function(){ return "⚙ " + t("trace"); }, function(){ return t("trace"); },
+          function(){ selectResult(obj, lineEl, "trace"); });
+    }
+    if (obj.term){
+      add(function(){ return "⧉ " + t("copy"); }, function(){ return t("copy"); },
+          function(){ copyText(obj.term); });
+      add(function(){ return "↳ " + t("insertB"); }, function(){ return t("insertB"); },
+          function(){ insertText(obj.term); });
+      add(function(){ return "⊕ " + t("defineB"); }, function(){ return t("defineB"); },
+          async function(){
+            var name = await dialog({title: t("defineB"), message: t("saveName"),
+                                     input: true, ok: t("defineB")});
+            if (!name) return;
+            exec(":let " + name + " = " + obj.term);
+          });
+    }
+    if (obj.trace && obj.trace.length){
+      add(function(){ return "⤓ " + t("exportT"); }, function(){ return t("exportT"); },
+          function(){
+            var blob = new Blob([traceMarkdown(obj)], {type:"text/markdown;charset=utf-8"});
+            var a = document.createElement("a");
+            a.href = URL.createObjectURL(blob);
+            a.download = "lambda-trace.md";
+            a.click();
+            setTimeout(function(){ URL.revokeObjectURL(a.href); }, 1000);
+          });
+    }
     lineEl.addEventListener("click", function(){
       if (obj.trace || obj.ast || obj.type) selectResult(obj, lineEl, state.tab === "trace" && !obj.trace ? "ast" : "trace");
     });
@@ -624,6 +750,7 @@
   }
 
   function selectResult(obj, lineEl, tab){
+    stopPlay();
     state.selected = obj;
     state.tracePos = (obj.trace && obj.trace.length) ? obj.trace.length - 1 : 0;
     Array.prototype.forEach.call(out.querySelectorAll(".line.sel"), function(n){ n.classList.remove("sel"); });
@@ -640,17 +767,36 @@
     if (silent) return;
 
     if (obj.kind === "result" || obj.kind === "warn"){
-      var meta = [];
-      if (obj.steps) meta.push(obj.steps + " " + t("steps"));
-      if (obj.hint) meta.push(obj.hint.trim());
-      var el = addLine(obj.kind, obj.term || obj.text, meta.join(" · "));
+      var bodyText = obj.term || objText(obj);
+      var el = addLine(obj.kind, bodyText, resultMeta(obj), source,
+                       obj.term || obj.textZh, obj.term || obj.textEn);
+      el._metaObj = obj;
       addActions(el, obj, source);
+      if (obj.redexes) { state.redexes = obj.redexes; renderRedexes(); }
       if (!state.selected) selectResult(obj, el, "trace");
       if (state.tab !== "env" && el.classList.contains("sel")) renderPanel();
       return;
     }
+    if (obj.kind === "eq" || obj.kind === "conv"){
+      var ecol = obj.equal ? "var(--ok)" : (obj.limitHit ? "var(--warn)" : "var(--err)");
+      var prefix = obj.equal ? "✓ " : "✗ ";
+      var ed = addLine("info", prefix + objText(obj), null, source,
+                       prefix + (obj.textZh || obj.text || ""),
+                       prefix + (obj.textEn || obj.text || ""));
+      ed.querySelector(".mark").style.color = ecol;
+      return;
+    }
+    if (obj.kind === "int" || obj.kind === "church"){
+      var id = addLine("result", obj.text || String(obj.value));
+      var im = elem("span", "meta");
+      im.textContent = (obj.kind === "int"
+        ? dual("邱奇数 → 整数", "Church → int")
+        : dual("整数 → 邱奇数", "int → Church"));
+      id.querySelector(".line-main").appendChild(im);
+      return;
+    }
     if (obj.kind === "error"){
-      var d = addLine("error", obj.text);
+      var d = addLine("error", objText(obj), null, source, obj.textZh, obj.textEn);
       if (obj.pos && source){
         var caret = elem("div", "line");
         caret.innerHTML = '<span class="mark"></span><span class="caret"></span>';
@@ -660,55 +806,109 @@
       return;
     }
     if (obj.kind === "fail" || obj.kind === "info" || obj.kind === "define" || obj.kind === "step" || obj.kind === "term"){
-      var line = addLine(obj.kind, obj.text || obj.term);
-      if (obj.kind === "step" && obj.term) line.querySelector(".body").textContent = obj.term;
+      var body = (obj.kind === "step" || obj.kind === "term")
+        ? (obj.term || objText(obj)) : objText(obj);
+      var line = addLine(obj.kind, body, null, source,
+                         obj.textZh || body, obj.textEn || body);
       if (obj.kind === "define") { if (!state.replaying) refreshEnv(); }
       if (obj.kind === "term"){ setManual(true, obj.term); }
       if (obj.kind === "term" || obj.kind === "step"){
+        if (obj.term) state.manualTerm = obj.term;
+        state.redexes = obj.redexes || [];
+        renderRedexes();
         var enriched = addActions(line, obj, source);
         if (obj.kind === "step") selectResult(enriched, line, "trace");
       }
       return;
     }
     if (obj.kind === "trace"){
-      var o = {term: obj.final, trace: obj.trace || [], steps: obj.steps || 0, type: ""};
+      var o = {term: obj.final, trace: obj.trace || [], steps: obj.steps || 0,
+               type: "", traceTruncated: obj.traceTruncated};
       var el2 = addLine("result", o.term, (o.steps || 0) + " " + t("steps"));
+      el2._metaObj = o;
       addActions(el2, o, source);
       selectResult(o, el2, "trace");
       return;
     }
     if (obj.kind === "ast"){
-      state.selected = {ast: obj.tree, term: ""};
+      state.selected = {ast: obj.tree, astTree: obj.astTree, term: ""};
       switchTab("ast");
       return;
     }
     if (obj.kind === "db"){
       addLine("info", "db: " + (obj.text || ""));
-      state.selected = {term: obj.term || "", ast: obj.ast || [], db: obj.text || ""};
+      state.selected = {term: obj.term || "", ast: obj.ast || [],
+                        astTree: obj.astTree, db: obj.text || ""};
       switchTab("ast");
       return;
     }
     if (obj.kind === "type"){
-      addLine("info", "⊢ " + (obj.type || obj.text));
+      addLine("info", "⊢ " + pickPair(obj.typeZh, obj.typeEn, obj.type || obj.text), null, source,
+              "⊢ " + (obj.typeZh || obj.type || obj.text || ""),
+              "⊢ " + (obj.typeEn || obj.type || obj.text || ""));
       state.selected = obj;
       switchTab("type");
       return;
     }
     if (obj.kind === "help"){
-      addLine("info", obj.text || "");
+      addLine("info", objText(obj), null, source, obj.textZh, obj.textEn);
       switchTab("help");
       return;
     }
-    addLine("info", obj.text || "");
+    addLine("info", objText(obj), null, source, obj.textZh, obj.textEn);
   }
 
   /* ------------------------------------------------------------- inspector / 检查器 */
   function switchTab(tab){
+    if (tab !== "trace") stopPlay();
     state.tab = tab;
     Array.prototype.forEach.call(document.querySelectorAll(".tab"), function(b){
       b.setAttribute("aria-selected", b.dataset.tab === tab ? "true" : "false");
     });
     renderPanel();
+  }
+
+  function stopPlay(){
+    state.playing = false;
+    if (state.playTimer){ clearInterval(state.playTimer); state.playTimer = null; }
+  }
+
+  function startPlay(){
+    var total = (state.selected && state.selected.trace) ? state.selected.trace.length : 0;
+    if (total < 1) return;
+    if (state.tracePos >= total - 1) state.tracePos = 0;
+    state.playing = true;
+    state.playTimer = setInterval(function(){
+      var n = (state.selected && state.selected.trace) ? state.selected.trace.length : 0;
+      if (!n || state.tracePos >= n - 1){
+        stopPlay();
+        renderPanel();
+        return;
+      }
+      state.tracePos += 1;
+      renderPanel();
+    }, 700);
+    renderPanel();
+  }
+
+  function renderRedexes(){
+    var box = $("redex-list");
+    if (!box) return;
+    if (!state.manual){ box.innerHTML = ""; return; }
+    var list = state.redexes || [];
+    var html = '<span class="redex-hint">' + esc(t("redexHint")) + '</span>';
+    if (!list.length){
+      html += '<span class="redex-hint">' + esc(t("redexNone")) + '</span>';
+    }
+    list.forEach(function(r){
+      html += '<button class="redex-btn" type="button" data-redex="' + r.i +
+              '" title="' + esc(r.term) + '"><b>' + r.i + '</b>' +
+              esc(shorten(r.term, 48)) + '</button>';
+    });
+    box.innerHTML = html;
+    Array.prototype.forEach.call(box.querySelectorAll("[data-redex]"), function(b){
+      b.addEventListener("click", function(){ exec(":step " + b.dataset.redex); });
+    });
   }
 
   function diffParts(a, b){
@@ -731,12 +931,17 @@
     var d = diffParts(st.before, st.after);
     var html = '';
     html += '<div class="player">';
+    html += '<button type="button" data-play="1" class="play" aria-label="play">' +
+            (state.playing ? "⏸" : "▶") + '</button>';
     html += '<button type="button" data-nav="prev" aria-label="prev">◀</button>';
     var pct = steps.length > 1 ? (i / (steps.length - 1) * 100) : 0;
     html += '<input type="range" id="tr-range" min="0" max="' + (steps.length - 1) + '" value="' + i + '" style="--p:' + pct + '%">';
     html += '<button type="button" data-nav="next" aria-label="next">▶</button>';
     html += '<span class="count">' + (i + 1) + " / " + steps.length + '</span>';
     html += '</div>';
+    if (obj.traceTruncated) {
+      html += '<p class="trace-note">' + esc(t("traceCut")) + '</p>';
+    }
     html += '<div class="note">' + esc(st.note || ("β " + (i + 1))) + '</div>';
     html += '<div class="cmp">';
     html += '<div class="row"><span class="lab">' + esc(t("before")) + '</span>' + esc(st.before) + '</div>';
@@ -752,18 +957,96 @@
     return html;
   }
 
+  function astNodeHtml(n){
+    if (!n) return "";
+    var label = n.k === "var" ? n.label
+              : n.k === "lam" ? "λ " + n.label
+              : "App";
+    var kids = n.c || [];
+    if (!kids.length) {
+      return '<div class="leaf"><span class="k">' + (n.k === "var" ? "• " : "") +
+             '</span>' + esc(label) + '</div>';
+    }
+    return '<details open><summary>' + esc(label) + '</summary>' +
+           kids.map(astNodeHtml).join("") + '</details>';
+  }
+
+  function astLayout(root){
+    var leaves = 0, maxDepth = 0;
+    function walk(n, depth){
+      if (!n) return {x: 0, depth: depth, label: "", kids: []};
+      if (depth > maxDepth) maxDepth = depth;
+      var kids = (n.c || []).map(function(c){ return walk(c, depth + 1); });
+      var x;
+      if (!kids.length) x = leaves++;
+      else x = (kids[0].x + kids[kids.length - 1].x) / 2;
+      var label = n.k === "var" ? n.label
+                : n.k === "lam" ? "λ " + n.label
+                : "App";
+      return {x: x, depth: depth, label: label, kids: kids};
+    }
+    var r = walk(root, 0);
+    return {root: r, leaves: Math.max(1, leaves), depth: maxDepth};
+  }
+
+  function astSvg(root){
+    var layout = astLayout(root);
+    var dx = 92, dy = 64, pad = 26;
+    var width = Math.max(360, layout.leaves * dx + pad * 2);
+    var height = (layout.depth + 1) * dy + pad * 2;
+    var parts = ['<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' +
+                 width + ' ' + height + '" width="' + width + '" height="' + height + '">'];
+    function draw(n){
+      var cx = pad + n.x * dx, cy = pad + n.depth * dy;
+      n.kids.forEach(function(k){
+        var kx = pad + k.x * dx, ky = pad + k.depth * dy;
+        parts.push('<line x1="' + cx + '" y1="' + (cy + 11) + '" x2="' + kx +
+                   '" y2="' + (ky - 12) + '" class="ast-edge"/>');
+      });
+      var w = Math.max(34, Math.min(180, n.label.length * 9 + 18));
+      parts.push('<rect x="' + (cx - w / 2) + '" y="' + (cy - 12) +
+                 '" width="' + w + '" height="24" rx="3" class="ast-node-rect"/>');
+      parts.push('<text x="' + cx + '" y="' + (cy + 5) +
+                 '" text-anchor="middle" class="ast-node-text">' + esc(n.label) + '</text>');
+      n.kids.forEach(draw);
+    }
+    draw(layout.root);
+    parts.push('</svg>');
+    return '<div class="ast-svg">' + parts.join("") + '</div>';
+  }
+
   function renderAst(){
     var obj = state.selected;
-    if (!obj || !obj.ast || !obj.ast.length) return '<p class="empty">' + esc(t("noAst")) + '</p>';
-    var html = '<h3>' + esc(t("ast")) + '</h3><pre class="ast-pre">' + obj.ast.map(esc).join("\n") + '</pre>';
+    if (!obj || (!obj.astTree && (!obj.ast || !obj.ast.length))) {
+      return '<p class="empty">' + esc(t("noAst")) + '</p>';
+    }
+    var html = '<h3>' + esc(t("ast")) + '</h3>';
+    if (obj.astTree){
+      html += '<div class="ast-view">' +
+        '<button class="mini" type="button" data-astview="tree"' +
+        (state.astView !== "svg" ? ' aria-pressed="true"' : '') + '>' +
+        esc(dual("折叠树", "tree")) + '</button>' +
+        '<button class="mini" type="button" data-astview="svg"' +
+        (state.astView === "svg" ? ' aria-pressed="true"' : '') + '>' +
+        esc(dual("图", "graph")) + '</button></div>';
+      if (state.astView === "svg") html += astSvg(obj.astTree);
+      else html += '<div class="ast-tree">' + astNodeHtml(obj.astTree) + '</div>';
+    } else if (obj.ast){
+      html += '<pre class="ast-pre">' + obj.ast.map(esc).join("\n") + '</pre>';
+    }
+    if (obj.astTree && obj.ast){
+      html += '<h3 style="margin-top:14px">' + esc(dual("文本树", "text tree")) +
+              '</h3><pre class="ast-pre">' + obj.ast.map(esc).join("\n") + '</pre>';
+    }
     if (obj.db) html += '<h3 style="margin-top:12px">de Bruijn</h3><pre class="ast-pre">' + esc(obj.db) + '</pre>';
     return html;
   }
 
   function renderType(){
     var obj = state.selected;
-    if (!obj || !obj.type) return '<p class="empty">' + esc(t("noType")) + '</p>';
-    return '<h3>' + esc(t("type")) + '</h3><pre style="color:var(--accent);font-size:14px">' + esc(obj.type) + '</pre>' +
+    var ty = obj ? pickPair(obj.typeZh, obj.typeEn, obj.type) : "";
+    if (!ty) return '<p class="empty">' + esc(t("noType")) + '</p>';
+    return '<h3>' + esc(t("type")) + '</h3><pre style="color:var(--accent);font-size:14px">' + esc(ty) + '</pre>' +
            '<p class="empty" style="margin-top:10px;font-style:normal">' + esc(t("typeHint")) + '</p>';
   }
 
@@ -778,8 +1061,9 @@
     html += '<p class="empty" style="margin-bottom:8px;font-style:normal">' + esc(t("envHint")) + '</p>';
     state.envRows.forEach(function(r){
       html += '<div class="env-row">';
+      var ty = pickPair(r.typeZh, r.typeEn, r.type);
       html += '<div class="env-head"><span class="env-name" data-insert="' + esc(r.name) + '">' + esc(r.name) + '</span>';
-      if (r.type) html += '<span class="env-ty">' + esc(r.type) + '</span>';
+      if (ty) html += '<span class="env-ty">' + esc(ty) + '</span>';
       html += '<button class="env-del" type="button" data-del="' + esc(r.name) + '">' + esc(t("del")) + '</button></div>';
       html += '<div class="env-val">' + esc(r.value) + '</div>';
       html += '</div>';
@@ -796,14 +1080,17 @@
        b: ["⇒ 是结果；「轨迹」看每一步前后差异，「结构」看语法树，「类型」看推断。",
            "⇒ marks a result. Trace shows each step, AST the tree, Type the inference."]},
       {h: ["3 · 手动归约", "3 · Step through"],
-       b: ["写好表达式后点「开始」，用「单步」观察，或「到底」一次算完。",
-           "Press Start, then Step through it or Run to finish."]},
+       b: ["写好表达式后点「开始」，下方会列出全部可归约位置：点任意一项按该 redex 归约，或用「单步」按策略走。",
+           "Press Start; every redex is listed. Click one to contract it, or use Step to follow the strategy."]},
       {h: ["4 · 定义与环境", "4 · Definitions"],
        b: ["用 id = \\x.x 定义；「环境」可插入、删除、加载 .lam、重置。",
            "Define with id = \\x.x; Env inserts, deletes, loads .lam and resets."]},
-      {h: ["5 · 小贴士", "5 · Tips"],
-       b: ["数字自动转 Church 编码；下方示例点击即可填入。",
-           "Numbers become Church numerals; click an example to fill it in."]}
+      {h: ["5 · 检查与导出", "5 · Check and export"],
+       b: ["用 :eq / :conv 判断等价，:int 解码邱奇数；结果行可复制、插入或直接定义为新名字。",
+           "Use :eq / :conv for equivalence and :int to decode; output rows can be copied, inserted or saved as a definition."]},
+      {h: ["6 · 小贴士", "6 · Tips"],
+       b: ["数字自动转 Church 编码；预定义含 PRED/SUB/PAIR/列表/Y；分享链接会带上策略、步数与主题。",
+           "Numbers become Church numerals; the prelude includes PRED/SUB/PAIR/lists/Y; share links keep strategy, limit and theme."]}
     ];
     var html = '<h3>' + esc(t("guideTitle")) + '</h3>';
     rows.forEach(function(r){
@@ -818,6 +1105,65 @@
     return html;
   }
 
+  function renderTools(){
+    var html = '<h3>' + esc(dual("工具", "Tools")) + '</h3>';
+    html += '<p class="empty" style="font-style:normal;margin-bottom:10px">' +
+            esc(dual("这些命令也可以直接在终端输入。", "These commands also work in the terminal.")) +
+            '</p><div class="tools">';
+    function btn(tool, zh, en){
+      html += '<button class="mini" type="button" data-tool="' + tool + '">' +
+              esc(dual(zh, en)) + '</button>';
+    }
+    btn("eq",    "α 等价 · :eq",      "alpha · :eq");
+    btn("conv",  "β 等价 · :conv",    "beta · :conv");
+    btn("nf",    "正规形 · :nf",      "normal form · :nf");
+    btn("whnf",  "弱首正规形 · :whnf", "WHNF · :whnf");
+    btn("int",   "解码邱奇数 · :int",  "decode · :int");
+    btn("church","编码邱奇数 · :church","encode · :church");
+    btn("rec",   "递归定义 · rec",     "recursive definition · rec");
+    btn("eta",   (state.eta ? "η 归约：开" : "η 归约：关") + " · :eta",
+                 (state.eta ? "eta: on" : "eta: off") + " · :eta");
+    btn("save",  "保存定义 · :save",   "save definitions · :save");
+    html += '</div>';
+    html += '<p class="empty" style="font-style:normal;margin-top:12px">' +
+            esc(dual(":eq / :conv 会依次询问两个表达式；:nf / :whnf / :int 询问一个表达式。",
+                     ":eq / :conv ask for two expressions; :nf / :whnf / :int ask for one.")) +
+            '</p>';
+    return html;
+  }
+
+  async function runTool(tool){
+    var ask = function(title, message){
+      return dialog({title: title, message: message, input: true, ok: t("ok")});
+    };
+    if (tool === "eq" || tool === "conv"){
+      var a = await ask(":" + tool, dual("表达式 1", "expression 1"));
+      if (!a) return;
+      var b = await ask(":" + tool, dual("表达式 2", "expression 2"));
+      if (!b) return;
+      exec(":" + tool + " " + a + " , " + b);
+    } else if (tool === "nf" || tool === "whnf" || tool === "int"){
+      var e = await ask(":" + tool, dual("表达式", "expression"));
+      if (e) exec(":" + tool + " " + e);
+    } else if (tool === "church"){
+      var n = await ask(":church", dual("0-9999 的整数", "an integer 0-9999"));
+      if (n) exec(":church " + n);
+    } else if (tool === "eta"){
+      state.eta = !state.eta;
+      exec(":eta " + (state.eta ? "on" : "off"));
+      renderPanel();
+    } else if (tool === "rec"){
+      var name = await ask("rec", dual("名字", "name"));
+      if (!name) return;
+      var body = await ask("rec", dual("表达式（可引用名字本身）", "expression (may refer to itself)"));
+      if (!body) return;
+      exec("rec " + name + " = " + body);
+    } else if (tool === "save"){
+      var path = await ask(":save", dual(".lam 路径", "path to a .lam file"));
+      if (path) exec(":save " + path);
+    }
+  }
+
   function renderHelp(){
     var cmds = [
       [":help", "显示帮助 / show help"],
@@ -825,11 +1171,17 @@
       [":ast <expr>", "语法树 / syntax tree"],
       [":db <expr>", "de Bruijn 索引 / de Bruijn indices"],
       [":type <expr>", "推断类型 / infer type"],
+      [":eq <a> , <b>", "α 等价 / alpha-equivalence"],
+      [":conv <a> , <b>", "β 等价 / beta-convertibility"],
+      [":nf / :whnf <expr>", "正规形 / 弱首正规形 / normal form, WHNF"],
+      [":int <expr> / :church <n>", "邱奇数 ↔ 整数 / Church numeral ↔ integer"],
       [":strategy <s>", "applicative / normal / cbn / cbv"],
       [":steps <n>", "步数上限 / step limit"],
+      [":eta on|off", "η 归约 / eta reduction"],
       [":begin <expr>", "开始手动归约 / start manual reduction"],
-      [":step / :run / :end", "单步 / 到底 / 结束 / step / finish / end"],
-      [":let name = expr", "定义 / define"],
+      [":step [n] / :run / :end", "单步或任选 redex / step or pick a redex"],
+      [":let name = expr / rec name = expr", "定义 / 递归定义 / define, recursive definition"],
+      [":load <f> / :save <f>", "加载 / 保存定义 / load, save definitions"],
       [":env / :del <n> / :reset", "环境 / environment"],
       [":lang zh|en|both", "语言 / language"],
       [":q", "退出 / quit"]
@@ -848,6 +1200,7 @@
     else if (state.tab === "ast") html = renderAst();
     else if (state.tab === "type") html = renderType();
     else if (state.tab === "env") html = renderEnv();
+    else if (state.tab === "tools") html = renderTools();
     else if (state.tab === "guide") html = renderGuide();
     else html = renderHelp();
     panel.innerHTML = html;
@@ -855,14 +1208,23 @@
     var range = panel.querySelector("#tr-range");
     if (range){
       range.addEventListener("input", function(){
+        stopPlay();
         state.tracePos = parseInt(range.value, 10) || 0;
         var n = (state.selected && state.selected.trace) ? state.selected.trace.length : 1;
         range.style.setProperty("--p", (n > 1 ? state.tracePos / (n - 1) * 100 : 0) + "%");
         renderPanel();
       });
     }
+    var playBtn = panel.querySelector("[data-play]");
+    if (playBtn){
+      playBtn.addEventListener("click", function(){
+        if (state.playing){ stopPlay(); renderPanel(); }
+        else startPlay();
+      });
+    }
     Array.prototype.forEach.call(panel.querySelectorAll("[data-nav]"), function(b){
       b.addEventListener("click", function(){
+        stopPlay();
         var n = (state.selected && state.selected.trace) ? state.selected.trace.length : 0;
         if (!n) return;
         state.tracePos = Math.max(0, Math.min(n - 1, state.tracePos + (b.dataset.nav === "next" ? 1 : -1)));
@@ -871,6 +1233,7 @@
     });
     Array.prototype.forEach.call(panel.querySelectorAll("[data-step]"), function(el){
       el.addEventListener("click", function(){
+        stopPlay();
         state.tracePos = parseInt(el.dataset.step, 10) || 0;
         renderPanel();
       });
@@ -888,6 +1251,15 @@
         if (!path) return;
         exec(":load " + path).then(refreshEnv);
       });
+    });
+    Array.prototype.forEach.call(panel.querySelectorAll("[data-astview]"), function(el){
+      el.addEventListener("click", function(){
+        state.astView = el.dataset.astview;
+        renderPanel();
+      });
+    });
+    Array.prototype.forEach.call(panel.querySelectorAll("[data-tool]"), function(el){
+      el.addEventListener("click", function(){ runTool(el.dataset.tool); });
     });
     Array.prototype.forEach.call(panel.querySelectorAll("[data-guide]"), function(el){
       el.addEventListener("click", function(){
@@ -994,6 +1366,8 @@
     $("m-end").disabled = !state.manual;
     $("m-term").textContent = state.manual ? state.manualTerm : "";
     $("m-term").title = state.manual ? state.manualTerm : "";
+    if (!state.manual) state.redexes = [];
+    renderRedexes();
   }
 
   async function exec(line, opts){
@@ -1005,6 +1379,11 @@
     if (trimmed === ":clear" || trimmed === "clear" || trimmed === ":cls"){
       clearAll(); return [];
     }
+    if (trimmed === ":q" || trimmed === ":quit"){
+      addLine("info", dual("Web 会话不会退出；用「清空」重建会话。",
+                           "The web session does not quit; use clear to reset it."));
+      return [];
+    }
 
     if (opts.record !== false) state.codeLines.push(line);
 
@@ -1012,6 +1391,7 @@
     outputs.forEach(function(o){ renderOutput(o, line, opts.silent); });
 
     if (/^:end\b/.test(trimmed)) setManual(false);
+    if (/^:run\b/.test(trimmed)) setManual(false);
     if (/^:reset\b/.test(trimmed)){ setManual(false); if (!state.replaying) await refreshEnv(); }
     if (/^:del\b/.test(trimmed) || /^:load\b/.test(trimmed)){ if (!state.replaying) await refreshEnv(); }
 
@@ -1024,6 +1404,11 @@
     if (stepsMatch){
       state.limit = parseInt(stepsMatch[1], 10);
       $("st-limit").value = state.limit;
+    }
+    var etaMatch = trimmed.match(/^:eta\s+(on|off|true|false|1|0)\b/i);
+    if (etaMatch){
+      state.eta = /^(on|true|1)$/i.test(etaMatch[1]);
+      if (state.tab === "tools") renderPanel();
     }
 
     var last = outputs.filter(function(o){ return o.kind === "result" || o.kind === "warn"; }).pop();
@@ -1147,21 +1532,24 @@
     });
   }
 
-  async function startSession(){
+  async function startSession(opts){
+    opts = opts || {};
     out.innerHTML = "";
     state.selected = null;
     state.envRows = [];
     state.replaying = true;
     setManual(false);
+    stopPlay();
     try {
-      await newSession();
-      addLine("info", t("welcome"));
+      if (!opts.reuse || !state.session) await newSession();
+      addLine("info", t("welcome"), null, null, I18N.welcome.zh, I18N.welcome.en);
       for (var i = 0; i < state.codeLines.length; i++){
         await exec(state.codeLines[i], {record: false});
       }
       await evalLine(":lang " + state.lang, true);
       await evalLine(":strategy " + $("strategy").value, true);
       await evalLine(":steps " + state.limit, true);
+      await evalLine(":eta " + (state.eta ? "on" : "off"), true);
       await refreshEnv();
     } finally {
       state.replaying = false;
@@ -1175,17 +1563,34 @@
     state.envRows = [];
     state.session = null;
     setManual(false);
-    newSession().then(function(){
-      addLine("info", t("welcome"));
+    newSession().then(async function(){
+      await evalLine(":strategy " + $("strategy").value, true);
+      await evalLine(":steps " + state.limit, true);
+      await evalLine(":eta " + (state.eta ? "on" : "off"), true);
+      addLine("info", t("welcome"), null, null, I18N.welcome.zh, I18N.welcome.en);
+      await refreshEnv();
       renderPanel();
       saveLocal();
     });
+    try { history.replaceState(null, "", location.pathname + location.search); } catch(e){}
     cmd.value = "";
     cmd.focus();
   }
 
   document.addEventListener("click", function(e){
     if (!ac.contains(e.target) && e.target !== cmd) closeAc();
+  });
+
+  // 轨迹快捷键：←/→ 单步，空格播放/暂停（输入框内不拦截）
+  // Trace shortcuts: ←/→ step, Space plays/pauses (ignored while typing).
+  document.addEventListener("keydown", function(e){
+    if (state.tab !== "trace" || !state.selected || !state.selected.trace) return;
+    var ae = document.activeElement;
+    if (ae && /^(INPUT|TEXTAREA|SELECT|BUTTON)$/.test(ae.tagName)) return;
+    var n = state.selected.trace.length;
+    if (e.key === "ArrowLeft"){ e.preventDefault(); stopPlay(); state.tracePos = Math.max(0, state.tracePos - 1); renderPanel(); }
+    else if (e.key === "ArrowRight"){ e.preventDefault(); stopPlay(); state.tracePos = Math.min(n - 1, state.tracePos + 1); renderPanel(); }
+    else if (e.key === " "){ e.preventDefault(); if (state.playing){ stopPlay(); renderPanel(); } else startPlay(); }
   });
 
   selects = [initSelect("sel-lang"), initSelect("sel-strategy")];
@@ -1202,10 +1607,20 @@
   });
 
   $("lang").addEventListener("change", async function(){
-    state.lang = $("lang").value;
+    var lang = $("lang").value;
+    state.lang = lang;
     applyStaticTexts();
-    await startSession();
-    renderPanel();
+    // 只切换解释器语言并本地重渲染，不重放历史
+    // Switch the interpreter language and re-render locally; no replay.
+    if (state.session){
+      var r = await api("api/session/" + state.session + "/lang", {lang: lang});
+      if (!r.data || !r.data.ok){
+        state.session = null;
+        setConn(false);
+        await rebuild();
+      }
+    }
+    applyTranscriptLang();
     saveLocal();
   });
 
@@ -1258,13 +1673,54 @@
     setManual(false);
   });
 
-  $("share").addEventListener("click", function(){
-    var code = state.codeLines.join("\n");
-    var enc = btoa(unescape(encodeURIComponent(code))).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"");
-    var url = location.origin + location.pathname + "#code=" + enc;
-    try { history.replaceState(null, "", "#code=" + enc); } catch(e){}
-    if (navigator.clipboard) navigator.clipboard.writeText(url).then(function(){ toast(t("copied")); }, function(){ toast(t("shareOk")); });
-    else toast(t("shareOk"));
+  function sharePayload(){
+    return {
+      v: 2,
+      code: state.codeLines,
+      strategy: $("strategy").value,
+      limit: state.limit,
+      theme: state.theme,
+      lang: state.lang,
+      eta: state.eta
+    };
+  }
+
+  function encodeShareState(){
+    return btoa(unescape(encodeURIComponent(JSON.stringify(sharePayload()))))
+      .replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"");
+  }
+
+  function applySharePayload(payload){
+    if (!payload) return;
+    if (Array.isArray(payload.code)) state.codeLines = payload.code;
+    if (payload.strategy) $("strategy").value = payload.strategy;
+    if (payload.limit) state.limit = payload.limit;
+    if (payload.theme) state.theme = payload.theme;
+    if (payload.lang) state.lang = payload.lang;
+    if (payload.eta != null) state.eta = !!payload.eta;
+  }
+
+  async function copyShareUrl(url){
+    try { history.replaceState(null, "", url.slice(url.indexOf("#"))); } catch(e){}
+    if (navigator.clipboard){
+      try { await navigator.clipboard.writeText(url); toast(t("copied")); }
+      catch(e){ toast(t("shareOk")); }
+    } else toast(t("shareOk"));
+  }
+
+  $("share").addEventListener("click", async function(){
+    // 优先存服务端短链；失败时退回完整 #state= 链接
+    // Prefer a server-side short id; fall back to the full #state= link.
+    try {
+      var r = await api("api/share", sharePayload());
+      if (r.data && r.data.ok && r.data.id){
+        var shortUrl = location.origin + location.pathname + "#s=" + r.data.id;
+        await copyShareUrl(shortUrl);
+        return;
+      }
+    } catch(e){}
+    var enc = encodeShareState();
+    await copyShareUrl(location.origin + location.pathname + "#state=" + enc);
   });
 
   $("export").addEventListener("click", function(){
@@ -1295,14 +1751,16 @@
   var EXAMPLES = [
     ["PLUS ONE TWO", "3"],
     ["MULT TWO THREE", "6"],
+    ["PRED THREE", "2"],
+    ["SUB THREE ONE", "2"],
     ["IF TRUE ONE TWO", "1"],
     ["NOT FALSE", "TRUE"],
-    ["AND TRUE FALSE", "FALSE"],
-    ["SUCC THREE", "4"],
+    ["PAIR ONE TWO", "pair"],
+    ["FST (PAIR ONE TWO)", "1"],
     ["(\\x.\\y.x) a b", "K"],
-    ["(\\x.x x)(\\x.x)", "self-apply"],
-    ["\\x.\\y.x y", "λ"],
+    ["rec fact = \\n. IF (ISZERO n) ONE (MULT n (fact (PRED n)))", "rec"],
     ["id = \\x.x", "define"],
+    [":eq \\a.a , \\b.b", "alpha"],
     [":type \\f.\\x.f (f x)", "type"],
     [":trace (\\x.x) a", "trace"]
   ];
@@ -1328,6 +1786,26 @@
         box.appendChild(c);
       });
     }).catch(function(){});
+  }
+
+  // 不重放命令，直接用服务端同时返回的中/英文本刷新已有输出
+  // Refresh existing output from the bilingual fields without replaying.
+  function applyTranscriptLang(){
+    Array.prototype.forEach.call(out.querySelectorAll(".line"), function(el){
+      if (el._zh != null){
+        var body = el.querySelector(".body");
+        if (body) body.textContent = pickPair(el._zh, el._en, el._zh);
+      }
+      if (el._metaObj){
+        var m = el.querySelector(".meta");
+        if (m) m.textContent = resultMeta(el._metaObj);
+      }
+    });
+    Array.prototype.forEach.call(out.querySelectorAll(".act"), function(b){
+      if (b._relabel) b._relabel();
+    });
+    renderRedexes();
+    renderPanel();
   }
 
   function applyStaticTexts(){
@@ -1363,6 +1841,7 @@
       state.lang = saved.lang || "both";
       state.theme = saved.theme || "light";
       state.limit = saved.limit || 10000;
+      state.eta = !!saved.eta;
       $("strategy").value = saved.strategy || "applicative";
       if (Array.isArray(saved.code)) state.codeLines = saved.code;
     }
@@ -1375,9 +1854,21 @@
     applyStaticTexts();
     loadPrelude();
 
-    // URL 分享链接优先
+    // URL 分享链接优先：新格式含代码 + 策略 + 步数 + 主题 + 语言
+    // URL share state first: new format carries code, strategy, limit, theme and language.
     var hash = location.hash.slice(1);
-    if (hash.indexOf("code=") === 0){
+    if (hash.indexOf("s=") === 0){
+      try {
+        var sr = await api("api/share/" + hash.slice(2), null, "GET");
+        if (sr.data && sr.data.ok) applySharePayload(sr.data.state);
+      } catch(e){}
+    } else if (hash.indexOf("state=") === 0){
+      try {
+        var sb64 = hash.slice(6).replace(/-/g,"+").replace(/_/g,"/");
+        while (sb64.length % 4) sb64 += "=";
+        applySharePayload(JSON.parse(decodeURIComponent(escape(atob(sb64)))));
+      } catch(e){}
+    } else if (hash.indexOf("code=") === 0){
       try {
         var b64 = hash.slice(5).replace(/-/g,"+").replace(/_/g,"/");
         while (b64.length % 4) b64 += "=";
@@ -1388,10 +1879,16 @@
 
     var stepsLine = state.codeLines.filter(function(l){ return /^:steps\s+\d+/.test(l.trim()); }).pop();
     if (stepsLine) state.limit = parseInt(stepsLine.trim().split(/\s+/)[1], 10) || state.limit;
+    // 分享链接可能覆盖语言/主题/策略，重新应用一次
+    // A share link may override language/theme/strategy; re-apply them.
+    applyTheme(state.theme);
+    $("lang").value = state.lang;
+    $("st-strategy").textContent = strategyText($("strategy").value);
     $("st-limit").value = state.limit;
+    applyStaticTexts();
     await startSession();
     renderPanel();
-    if (!saved && !state.codeLines.length) switchTab("guide");
+    if (!saved && !state.codeLines.length && !hash) switchTab("guide");
     cmd.focus();
   }
 

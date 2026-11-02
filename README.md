@@ -1,13 +1,14 @@
 # Lambda Calculus Interpreter with Church Encoding ([中文版](./README-CN.md))
 
-A Haskell implementation of pure lambda calculus: Church numerals and booleans,
-capture-avoiding substitution, reduction traces, four evaluation strategies,
-simple type inference, and a small definition environment. Two standalone
-interpreters are provided:
+A Haskell implementation of pure lambda calculus: Church numerals, booleans,
+pairs and lists, capture-avoiding substitution, reduction traces, four
+evaluation strategies, eta reduction, simple type inference, and a small
+definition environment. Two standalone interpreters are provided:
 
 - `main` — the minimal core REPL.
 - `extension` — definitions, file loading, traces, AST/de Bruijn views, types,
-  a batch/JSON mode for the web UI, and Chinese/English output.
+  redex picking, α/β equivalence checks, a batch/JSON mode for the web UI, and
+  Chinese/English output.
 
 ## Online Demo
 
@@ -18,15 +19,32 @@ around the same compiled `extension` binary.
 ## Features
 
 - **Pure lambda calculus** with α-equivalence and capture-avoiding substitution.
-- **Reduction traces** — every β-step is recorded with its before/after term.
+- **Reduction traces** — every β/η step is recorded with its before/after term.
 - **Four strategies** — applicative, normal, call-by-name, call-by-value
   (weak strategies stop at weak head normal form).
-- **Step limit** (default 10,000) so non-terminating terms report instead of hang.
+- **Eta reduction** — `:eta on|off` adds `λx. f x → f` when `x` is not free in `f`.
+- **Normal forms** — `:nf` reduces to a full normal form, `:whnf` stops at the
+  weak head normal form.
+- **Redex picking** — `:begin` lists every β-redex; `:step <n>` contracts a
+  chosen one. The web UI turns the list into clickable buttons.
+- **Equivalence checks** — `:eq a , b` for α-equivalence, `:conv a , b` for
+  β-convertibility (both sides reduced to normal form).
+- **Step limit** (default 10,000) so non-terminating terms report instead of hang;
+  `--timeout <s>` adds a wall-clock limit per command and `Ctrl+C` interrupts the
+  current evaluation in the interactive REPL.
 - **Semantic hints** — Church numerals/booleans/pairs and the `I K S B C W`
   combinators are recognised by α-equivalence.
+- **Prelude** — `TRUE FALSE NOT AND OR IF ZERO ONE TWO THREE SUCC PLUS MULT EXP
+  PRED SUB ISZERO LEQ EQ PAIR FST SND NIL CONS HEAD TAIL Y`.
 - **Simple types** — Hindley–Milner inference with let-generalisation (`:type`).
-- **Definitions** — `name = expr`, `:load`, `:env`, `:del`, `:reset`.
-- **Views** — pretty syntax tree (`:ast`) and de Bruijn indices (`:db`).
+- **Definitions** — `name = expr`, recursive `rec name = expr`, `:let`, `:load`,
+  `:save`, `:env`, `:del`, `:reset`.
+- **Definition files** — comments (`--` or `#`), indented/parenthesised
+  continuation lines, and `:strategy` / `:steps` / `:lang` commands in `.lam`.
+- **Integer bridge** — `:int <expr>` decodes a Church numeral, `:church <n>`
+  encodes 0–9999.
+- **Views** — pretty syntax tree (`:ast`), structured/collapsible AST in the web
+  panel, and de Bruijn indices (`:db`).
 - **Bilingual** — every user-facing message has a Chinese and an English form;
   `--lang zh|en|both` or `:lang` selects them (default `both`).
 
@@ -36,8 +54,8 @@ Light theme, captured from the web UI.
 
 ![REPL with a reduction trace](docs/screenshots/main.png)
 
-*Reduction trace: every β-step with a before/after diff, a step player, and the
-result annotated with its β-step count and Church-numeral value.*
+*Reduction trace: every step with a before/after diff, a step player, and the
+result annotated with its step count and Church-numeral value.*
 
 ![Syntax tree and de Bruijn view](docs/screenshots/ast.png)
 
@@ -45,8 +63,8 @@ result annotated with its β-step count and Church-numeral value.*
 
 ![Environment inspector](docs/screenshots/env.png)
 
-*Environment panel: definitions are listed with their terms; click a name to
-insert it, hover to delete it.*
+*Environment panel: definitions are listed with their terms and types; click a
+name to insert it, hover to delete it.*
 
 ![Usage guide](docs/screenshots/guide.png)
 
@@ -68,16 +86,24 @@ build.bat       # Windows
 ```
 
 Both compile with `ghc -O2 ... -threaded -rtsopts`. The Windows script also
-passes `-package containers -package haskeline`.
+passes `-package containers -package haskeline -package directory`.
+
+A Cabal file is provided for convenience; it builds the same two standalone
+executables (no shared library, deliberately):
+
+```bash
+cabal build all
+cabal run extension -- --help
+```
 
 ## Usage
 
 ```bash
-./extension [--lang zh|en|both] [--batch] [--json] [-h|--help] [file]
+./extension [--lang zh|en|both] [--lang=zh] [--timeout 秒] [--batch] [--json] [-v|--version] [-h|--help] [file...]
 ```
 
-If a file is given, its `name = expr` lines are loaded before the REPL.
-`test.lam` is a sample definitions file; its `ERR`/`ERROR` lines are
+If files are given, their definitions and commands are loaded in order before
+the REPL. `test.lam` is a sample definitions file; its `ERR`/`ERROR` lines are
 intentionally malformed so load-error reporting is exercised.
 
 ### REPL commands
@@ -85,15 +111,20 @@ intentionally malformed so load-error reporting is exercised.
 | Command | Meaning |
 | --- | --- |
 | `:help` | show help |
-| `:load <file>` | load definitions (`name = expr` per line) |
-| `:let name = expr` | define a variable |
-| `:env` / `:del <name>` / `:reset` | inspect / delete / reset the environment |
+| `:load <file>` | load definitions/commands (`name = expr`, comments, continuations) |
+| `:save <file>` | save user definitions in parser-readable source syntax |
+| `:let name = expr` / `:let rec name = expr` | define a variable / recursive definition |
+| `:env` / `:del <name>` / `:reset` | inspect (with types) / delete / reset the environment |
 | `:strategy applicative\|normal\|cbn\|cbv` | switch evaluation strategy |
 | `:steps <n>` | set the reduction step limit |
+| `:eta on\|off` | enable/disable eta reduction |
 | `:trace <expr>` | print the full reduction trace |
 | `:ast <expr>` / `:db <expr>` | syntax tree / de Bruijn indices |
 | `:type <expr>` | infer the simple type |
-| `:begin <expr>` / `:step` / `:run` / `:end` | interactive, one-step reduction |
+| `:eq <a> , <b>` / `:conv <a> , <b>` | α-equivalence / β-convertibility |
+| `:nf <expr>` / `:whnf <expr>` | full normal form / weak head normal form |
+| `:int <expr>` / `:church <n>` | decode / encode a Church numeral |
+| `:begin <expr>` / `:step [n]` / `:run` / `:end` | interactive reduction; `n` picks a redex |
 | `:lang zh\|en\|both` | switch output language |
 | `:q` | quit |
 
@@ -101,10 +132,14 @@ intentionally malformed so load-error reporting is exercised.
 
 - Variables: start with a letter or one of `+ - * / % ^ ? ! < > | & ~ # $`,
   then letters, digits, `_`, `'`, or operators.
-- Abstraction: `λx.body` or `\x.body`; multiple parameters: `λx y.body`.
+- Abstraction: `λx.body`, `λx → body`, or `\x -> body`; multiple parameters:
+  `λx y.body`.
 - Application: `f a`, left-associative; grouping: `(expr)`.
 - Numbers: `0`…`9999` become Church numerals.
-- Definitions: `name = expression`.
+- Definitions: `name = expression`; recursion: `rec name = expression`.
+- Equivalence commands separate the two expressions with a comma:
+  `:eq \a.a , \b.b`.
+- `.lam` files accept `--` or `#` comment lines and indented continuation lines.
 
 ### Examples
 
@@ -112,9 +147,22 @@ intentionally malformed so load-error reporting is exercised.
 λ> PLUS ONE TWO
 ⇒ λf → λx → f (f (f x))  (6 steps)  (Church numeral 3)
 
-λ> :trace (\x.\y.x) y
-1. β: (λx. …) y    (α-rename to avoid capture)
-2. λy' → y
+λ> :int (PRED THREE)
+⇒ 2
+
+λ> :eq \a.a , \b.b
+⇒ alpha-equivalent: λa → a  ,  λb → b
+
+λ> :conv PLUS ONE TWO , THREE
+⇒ beta-equivalent: λf → λx → f (f (f x))  ,  λf → λx → f (f (f x))
+
+λ> :eta on
+λ> :nf \x. f x
+⇒ f  (1 step)
+
+λ> :begin (\x.x) ((\y.y) z)
+λ> :step 2
+⇒ (λx → x) z
 
 λ> :type \f.\x.f (f x)
 ⊢ (t0 → t0) → t0 → t0 (polymorphic)
@@ -131,22 +179,36 @@ intentionally malformed so load-error reporting is exercised.
 ## Web UI (`web/`)
 
 `web/app.py` (Flask) keeps one persistent interpreter process per browser
-session and speaks the `--batch --json` protocol, so state no longer needs to be
-replayed on every keystroke.
+session and speaks the `--batch --json` protocol.
 
 - Terminal REPL with history, Tab completion, `Ctrl+L`, and error carets.
-- Live panels for **reduction trace** (step player + diff), **AST**, **type**
-  and **environment** (click to insert, hover to delete).
-- A **Guide** tab (opened on the first visit) explains typing, panels, manual
-  reduction and definitions.
-- Strategy selector, step-limit control, share link, `.lam` import/export,
-  light/dark theme, and a Chinese/English/bilingual switch.
-- `GET /api/prelude`, `POST /api/session`, `POST /api/eval` with
-  `{"session": "...", "line": "..."}`; the legacy `{"code": "..."}` form still
-  works. A 408 response means the term timed out.
+- Live panels for **reduction trace** (step player, play/pause, diff),
+  **AST** (collapsible tree + text tree), **type**, and **environment**
+  (click to insert, hover to delete, types shown for user definitions).
+- **Tools** tab for `:eq`, `:conv`, `:nf`, `:whnf`, `:int`, `:church`, `:eta`,
+  recursive definitions and `:save`; every command also works in the terminal.
+- **Redex picker** under the terminal in manual mode: click any redex to
+  contract it.
+- **AST** panel with a collapsible tree and an **SVG graph** view.
+- Output-row actions: copy, insert, define the result, and export the trace as
+  Markdown.
+- Strategy selector, step-limit control, share links (server-side short ids or
+  a full `#state=` payload), `.lam` import/export, light/dark theme, and a
+  Chinese/English/bilingual switch.
+- Language switching uses `POST /api/session/<sid>/lang` and re-renders existing
+  output locally from the server's `textZh`/`textEn` fields; it does not replay
+  commands or start a new interpreter.
+- `GET /api/prelude`, `GET /api/health`, `POST /api/share`,
+  `GET /api/share/<id>`, `POST /api/session`, `POST /api/eval`
+  (`{"session", "line"}`), `POST /api/session/<sid>/lang`, and
+  `DELETE /api/session/<sid>`. The legacy `{"code": "..."}` form still works.
+  A 408 response means the term timed out; a 410 means the session expired and
+  the client should replay its history.
 - `:load` is confined to the interpreter directory by default; the Env panel's
-  **Load** button prompts for such a relative path. Set `LAMBDA_LOAD_ROOT=*` to
-  allow any path (local use only).
+  **Load** button prompts for such a relative path. Set `LAMBDA_LOAD_ROOT=*`
+  to allow any path (local use only).
+- `:save` is disabled over the web by default; set `LAMBDA_ALLOW_SAVE=1` for
+  local use. Client-side **Export** does not need the server.
 - `HOST` and `PORT` override the default `127.0.0.1:8081`.
 - Interpreter lookup: `$LAMBDA_INTERP_BIN`, `$LAMBDA_INTERP_DIR/extension[.exe]`,
   `<repo>/extension[.exe]`, `/opt/lambda-calculus-interpreter/extension`.
@@ -165,11 +227,21 @@ python web/app.py          # http://127.0.0.1:8081
 `--json` makes every output a JSON object:
 
 ```json
-{"kind":"result","text":"...","term":"λf → λx → f x","steps":6,
- "limitHit":false,"hint":"...","strategy":"applicative",
+{"kind":"result","text":"...","textZh":"...","textEn":"...",
+ "term":"λf → λx → f x","steps":6,
+ "limitHit":false,"hint":"...","hintZh":"...","hintEn":"...",
+ "typeZh":"...","typeEn":"...","strategy":"applicative","eta":false,
  "ast":["λ x","└ • x"],"db":"λ.λ.#0",
- "trace":[{"n":1,"rule":"β","note":"...","before":"...","after":"..."}]}
+ "redexes":[{"i":1,"path":"root","term":"...","rule":"β"}],"redexCount":1,
+ "trace":[{"n":1,"rule":"β","note":"...","before":"...","after":"..."}],
+ "traceShown":1,"traceTruncated":false}
 ```
+
+Traces keep at most 500 steps in memory and clip long terms to 300 characters;
+`traceTruncated` tells the client when either limit applied. Structured
+`astTree` is emitted for terms up to 400 nodes and replaced by
+`astTreeOmitted: true` for larger ones. `redexes` is capped at 200 entries while
+`redexCount` is exact.
 
 `--batch` also forces UTF-8 on stdin/stdout/stderr, which removes the old
 Windows code-page workaround.
@@ -185,31 +257,47 @@ test.bat           # Windows
 python tests/run_tests.py --bin ./extension
 ```
 
-20 groups cover parsing positions, β-reduction results, capture avoidance,
+30 groups cover parsing positions, β-reduction results, capture avoidance,
 traces, all four strategies, step limits, Church/combinator hints, type
-inference, environment commands, file loading, manual reduction, AST/de Bruijn,
-bilingual output, JSON protocol, determinism, cross-strategy agreement, and the
-web API session with `:load` confinement.
+inference, environment commands, file loading (comments, continuations,
+commands, line numbers, save/reload, recursion, multiple files), manual
+reduction and redex picking, normal forms and eta, α/β equivalence, integer
+encoding, AST/de Bruijn, bilingual output, JSON protocol, determinism,
+cross-strategy agreement, trace capping, CLI options, web API sessions,
+expiry/language switching/health checks, short share links, bilingual protocol
+fields, wall-clock timeout, randomized properties, and a `main`/`extension`
+differential test.
 
 ## Implementation
 
 - A small-step evaluator (`stepOnce`) rewrites the whole term, so every trace
   step is a real before/after pair; strategies are described by four flags.
-- Capture-avoiding substitution uses fresh variables; α-equivalence powers the
-  Church/combinator hints.
+- Eta is a second rule tried after β; weak strategies do not reduce under
+  lambdas. `:nf` uses normal order, `:whnf` stops as soon as a head normal form
+  is reached.
+- Redexes are enumerated by path (`[Int]`), so any β-redex can be contracted by
+  index without changing the evaluator.
+- Capture-avoiding substitution uses fresh variables; α-equivalence is computed
+  by de Bruijn conversion that drops binder names.
 - Types are inferred with Hindley–Milner and let-generalisation.
-- The web backend keeps one interpreter process per session and exchanges JSON
-  Lines (`--batch --json`); `:load` is confined to the interpreter directory.
+- Definitions are stored already expanded; recursive definitions are encoded as
+  `Y (λname. body)` and printed/saved as `rec name = body`.
+- The web backend keeps one interpreter process per session; expired sessions
+  return 410 so the client replays its history rather than silently losing the
+  environment.
 
-## Notes
+## Limitations
 
-- The two files are deliberately standalone; core changes (`Expr`, `subst`,
-  `stepOnce`, parser) belong in both.
-- `main` has no definitions, types, or environment commands.
-- The default strategy is **applicative**, matching the historical `nf`.
-  Normal order terminates on more terms but may return weak head normal forms
-  under `cbn`/`cbv`.
+- Substitution copies terms; terms with heavy duplication (for example `rec
+  fact` under applicative order) can grow exponentially. Use a smaller
+  `:steps`, normal order, or accept the cost.
+- The CLI REPL has no wall-clock limit by default; pass `--timeout <s>` to set
+  one, or use `Ctrl+C`. The web backend enforces its own timeout by killing the
+  session.
+- `:save` is intentionally unavailable over the web unless explicitly enabled.
+- The parser reports one error per expression; `:eq`/`:conv` combine errors from
+  both sides, and `.lam` loading reports every failing line.
 
 ## License
 
-Open source; free to use and modify for learning or experimentation.
+MIT. See [LICENSE](./LICENSE).

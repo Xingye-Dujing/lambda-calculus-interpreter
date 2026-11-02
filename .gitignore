@@ -21,6 +21,7 @@
 /main.exe
 /extension
 /extension.exe
+dist-newstyle/
 
 # ---------------------------------------------------------------------------
 # Python

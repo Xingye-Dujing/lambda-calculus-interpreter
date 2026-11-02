@@ -1,0 +1,37 @@
+cabal-version:      3.0
+name:               lambda-calculus-interpreter
+version:            2.0.0
+synopsis:           Pure lambda calculus interpreter with traces and a web UI
+description:
+  Two standalone executables: a minimal REPL and an extended REPL with
+  definitions, types, reduction traces, redex picking and a batch/JSON mode.
+license:            MIT
+license-file:       LICENSE
+author:             lambda-calculus-interpreter contributors
+maintainer:         none
+build-type:         Simple
+extra-source-files: README.md
+                    README-CN.md
+                    CHANGELOG.md
+                    AGENTS.md
+                    test.lam
+
+executable main
+  main-is:          main.hs
+  hs-source-dirs:   .
+  build-depends:    base >=4.16 && <5
+                  , containers
+                  , directory
+                  , haskeline
+  default-language: Haskell2010
+  ghc-options:      -O2 -threaded -rtsopts
+
+executable extension
+  main-is:          extension.hs
+  hs-source-dirs:   .
+  build-depends:    base >=4.16 && <5
+                  , containers
+                  , directory
+                  , haskeline
+  default-language: Haskell2010
+  ghc-options:      -O2 -threaded -rtsopts

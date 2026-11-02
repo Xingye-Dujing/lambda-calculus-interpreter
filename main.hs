@@ -8,14 +8,20 @@
 
 import qualified Data.Set as Set
 import Control.Applicative ((<|>))
+import Control.Exception (catch, SomeException)
 import Control.Monad (void, when, unless, forM_)
 import Control.Monad.IO.Class (liftIO)
 import Data.Char (isAlpha, isDigit, isSpace)
 import Data.List (elemIndex, stripPrefix, isPrefixOf)
+import System.Directory (getHomeDirectory)
 import System.Environment (getArgs)
-import System.IO (hSetEncoding, utf8, hIsTerminalDevice, stdout, stdin, stderr)
+import System.Exit (exitFailure)
+import System.IO (hSetEncoding, utf8, hIsTerminalDevice, stdout, stdin, stderr, hPutStrLn)
 import System.Console.Haskeline
 import Text.ParserCombinators.ReadP
+
+versionString :: String
+versionString = "lambda-calculus-interpreter 2.0.0 (minimal)"
 
 -- ---------------------------------------------------------------------------
 -- 双语支持 Bilingual support
@@ -76,11 +82,17 @@ subst x v (Lam y body)
 data Strategy = Applicative | Normal | CallByName | CallByValue
   deriving (Eq, Show)
 
-strategyLabel :: Strategy -> String
-strategyLabel Applicative = "应用序（最左最内） applicative (leftmost-innermost)"
-strategyLabel Normal      = "正规序（最左最外） normal (leftmost-outermost)"
-strategyLabel CallByName  = "按名调用 call-by-name"
-strategyLabel CallByValue = "按值调用 call-by-value"
+strategyLabelZh :: Strategy -> String
+strategyLabelZh Applicative = "应用序（最左最内）"
+strategyLabelZh Normal      = "正规序（最左最外）"
+strategyLabelZh CallByName  = "按名调用（弱）"
+strategyLabelZh CallByValue = "按值调用（弱）"
+
+strategyLabelEn :: Strategy -> String
+strategyLabelEn Applicative = "applicative order (leftmost-innermost)"
+strategyLabelEn Normal      = "normal order (leftmost-outermost)"
+strategyLabelEn CallByName  = "call-by-name (weak)"
+strategyLabelEn CallByValue = "call-by-value (weak)"
 
 parseStrategy :: String -> Maybe Strategy
 parseStrategy s = lookup (map lower s)
@@ -145,6 +157,46 @@ stepOnce CallByValue = go
     isValue (Var _)   = True
     isValue _         = False
 
+-- ---------------------------------------------------------------------------
+-- η 归约 / eta reduction
+-- ---------------------------------------------------------------------------
+etaRoot :: Expr -> Maybe Reduction
+etaRoot (Lam x (App f (Var y)))
+  | x == y && x `Set.notMember` freeVars f =
+      Just (Reduction ("η 归约 η-reduction: λ" ++ x ++ ". … " ++ x ++ " → …") f)
+etaRoot _ = Nothing
+
+etaStep :: Strategy -> Expr -> Maybe StepOut
+etaStep strat = go
+  where
+    under = strat `elem` [Applicative, Normal]
+    go e@(Lam x b) =
+      case etaRoot e of
+        Just r -> Just (StepOut (redTerm r) r)
+        Nothing
+          | under -> do s <- go b; return s { soWhole = Lam x (soWhole s) }
+          | otherwise -> Nothing
+    go (App f a) =
+      (do s <- go f; return s { soWhole = App (soWhole s) a })
+      <|> (do s <- go a; return s { soWhole = App f (soWhole s) })
+    go _ = Nothing
+
+stepFor :: Bool -> Strategy -> Expr -> Maybe StepOut
+stepFor eta strat e =
+  stepOnce strat e <|> (if eta then etaStep strat e else Nothing)
+
+-- 弱首正规形 / weak head normal form
+isWHNF :: Expr -> Bool
+isWHNF e = case headSpine e of
+  (Lam _ _, _) -> False
+  _            -> True
+
+headSpine :: Expr -> (Expr, [Expr])
+headSpine = go []
+  where
+    go acc (App f a) = go (a : acc) f
+    go acc h         = (h, acc)
+
 data TraceStep = TraceStep
   { tsIndex :: Int, tsAfter :: Expr, tsNote :: String }
 
@@ -156,12 +208,13 @@ defaultLimit = 10000
 
 -- 求值循环：keepTrace 为 False 时不保留轨迹（省内存）
 -- Evaluation loop; with keepTrace=False the trace is dropped (saves memory).
-eval :: Bool -> Int -> Strategy -> Expr -> EvalResult
-eval keepTrace limit strat e0 = loop 1 e0 []
+evalUntil :: Bool -> Bool -> Int -> Strategy -> (Expr -> Bool) -> Expr -> EvalResult
+evalUntil eta keepTrace limit strat done e0 = loop 1 e0 []
   where
     loop n e acc
       | n > limit = EvalResult e (reverse acc) (n - 1) True
-      | otherwise = case stepOnce strat e of
+      | done e    = EvalResult e (reverse acc) (n - 1) False
+      | otherwise = case stepFor eta strat e of
           Just s ->
             let red  = soRed s
                 acc' = if keepTrace
@@ -170,11 +223,18 @@ eval keepTrace limit strat e0 = loop 1 e0 []
             in loop (n + 1) (soWhole s) acc'
           Nothing -> EvalResult e (reverse acc) (n - 1) False
 
-evalTrace :: Int -> Strategy -> Expr -> EvalResult
-evalTrace = eval True
+evalWith :: Bool -> Bool -> Int -> Strategy -> Expr -> EvalResult
+evalWith eta keepTrace limit strat =
+  evalUntil eta keepTrace limit strat (const False)
 
-evalFinal :: Int -> Strategy -> Expr -> EvalResult
-evalFinal = eval False
+evalTraceWith :: Bool -> Int -> Strategy -> Expr -> EvalResult
+evalTraceWith eta = evalWith eta True
+
+evalFinal :: Bool -> Int -> Strategy -> Expr -> EvalResult
+evalFinal eta = evalWith eta False
+
+evalWHNF :: Bool -> Int -> Strategy -> Expr -> EvalResult
+evalWHNF eta limit strat = evalUntil eta False limit strat isWHNF
 
 -- ---------------------------------------------------------------------------
 -- 语义提示 Semantic hints
@@ -249,11 +309,36 @@ ident = do
 parseExpr :: ReadP Expr
 parseExpr = spaces *> (parseLam <++ parseApp)
 
+-- 分隔符接受 `.`、`→` 和 `->`
+-- The delimiter accepts `.`, `→` and `->`.
+lambdaSep :: ReadP ()
+lambdaSep =
+      void (char '.')
+  <|> void (char '→')
+  <|> (void (char '-') >> void (char '>'))
+
+-- λ 的参数在遇到 `->` 时停止，因此 `\x->x` 与 `\x -> x` 都能解析
+-- Lambda parameters stop before `->`, so both `\x->x` and `\x -> x` parse.
+lamIdent :: ReadP String
+lamIdent = do
+  c <- satisfy isAlpha
+  cs <- go
+  return (c : cs)
+  where
+    go = do
+      rest <- look
+      case rest of
+        ('-':'>':_) -> return []
+        (ch:_) | isAlpha ch || isDigit ch || ch == '\'' -> do
+          _ <- get
+          (ch :) <$> go
+        _ -> return []
+
 parseLam :: ReadP Expr
 parseLam = do
   void $ char '\\' <|> char 'λ'
-  params <- many1 $ ident <* spaces
-  void $ char '.'
+  params <- many1 $ lamIdent <* spaces
+  lambdaSep
   spaces
   body <- parseExpr
   return $ foldr Lam body params
@@ -293,9 +378,9 @@ diagnose s rest pos
   | Just i <- unmatchedParen s =
       (i, ("括号不匹配：第 " ++ show i ++ " 列的括号没有闭合"
           , "Unbalanced parenthesis at column " ++ show i))
-  | isLambdaStart && not ('.' `elem` s) =
-      (pos, ("Lambda 表达式缺少 '.' 分隔符（形如 λx. body）"
-            , "Lambda abstraction is missing '.', e.g. λx. body"))
+  | isLambdaStart && not (hasSeparator s) =
+      (pos, ("Lambda 表达式缺少分隔符（形如 λx. body、λx → body 或 \\x -> body）"
+            , "Lambda abstraction is missing '.', '→' or '->', e.g. λx. body"))
   | null rest =
       (pos, ("语法错误，请检查表达式结构", "Syntax error, please check the expression"))
   | otherwise =
@@ -305,6 +390,7 @@ diagnose s rest pos
       ('λ':_)  -> True
       ('\\':_) -> True
       _        -> False
+    hasSeparator t = '.' `elem` t || '→' `elem` t || "->" `isPrefixOf` dropWhile (/= '-') t
 
 unmatchedParen :: String -> Maybe Int
 unmatchedParen s = go [] (zip [1..] s)
@@ -329,15 +415,19 @@ data Command
   | Trace Expr
   | Ast Expr
   | DbView Expr
+  | Nf Expr
+  | Whnf Expr
   | SetStrategy Strategy
   | SetSteps Int
+  | SetEta Bool
   | SetLang Lang
   | Help
   | Quit
 
 knownCommands :: [String]
 knownCommands =
-  [ ":help", ":trace", ":ast", ":db", ":strategy", ":steps", ":lang", ":q" ]
+  [ ":help", ":trace", ":ast", ":db", ":nf", ":whnf"
+  , ":strategy", ":steps", ":eta", ":lang", ":q" ]
 
 parseCommand :: String -> Either ParseError Command
 parseCommand raw
@@ -357,15 +447,28 @@ parseCommand raw
       case reads (trim rest) :: [(Int, String)] of
         [(n, "")] | n > 0 -> Right (SetSteps n)
         _ -> Left (ParseError 1 ("用法：:steps <正整数>", "Usage: :steps <positive integer>"))
+  | s == ":eta" = Right (SetEta True)
+  | Just rest <- stripPrefix ":eta " s =
+      case map lower (trim rest) of
+        "on"    -> Right (SetEta True)
+        "true"  -> Right (SetEta True)
+        "1"     -> Right (SetEta True)
+        "off"   -> Right (SetEta False)
+        "false" -> Right (SetEta False)
+        "0"     -> Right (SetEta False)
+        _ -> Left (ParseError 1 ("用法：:eta on|off", "Usage: :eta on|off"))
   | Just rest <- stripPrefix ":trace " s = Trace <$> parseExpr' rest
   | Just rest <- stripPrefix ":ast " s = Ast <$> parseExpr' rest
   | Just rest <- stripPrefix ":db " s = DbView <$> parseExpr' rest
+  | Just rest <- stripPrefix ":nf " s = Nf <$> parseExpr' rest
+  | Just rest <- stripPrefix ":whnf " s = Whnf <$> parseExpr' rest
   | Just _ <- stripPrefix ":" s = Left (ParseError 1
       ( "未知命令 " ++ takeWhile (not . isSpace) s ++ "，输入 :help 查看全部命令"
       , "Unknown command " ++ takeWhile (not . isSpace) s ++ "; type :help for the full list" ))
   | otherwise = Eval <$> runParserFull parseExpr s
   where
     s = trim raw
+    lower c = if c >= 'A' && c <= 'Z' then toEnum (fromEnum c + 32) else c
     parseExpr' src = case runParserFull parseExpr (trim src) of
       Left e  -> Left e { pePos = pePos e + (length s - length (trim src)) }
       Right x -> Right x
@@ -376,6 +479,7 @@ parseCommand raw
 data ReplState = ReplState
   { rsStrategy :: Strategy
   , rsLimit    :: Int
+  , rsEta      :: Bool
   , rsLang     :: Lang
   }
 
@@ -391,23 +495,28 @@ emit kind text = putStrLn (decorate kind ++ text)
     decorate "fail"   = "⚠ "
     decorate _        = ""
 
-runCommand :: ReplState -> Command -> IO (Maybe ReplState)
-runCommand st (Eval expr) = do
-  let res   = evalFinal (rsLimit st) (rsStrategy st) expr
-      final = erFinal res
+printEval :: ReplState -> EvalResult -> IO ()
+printEval st res = do
+  let final = erFinal res
       steps = erCount res
-      stepTxt = if steps > 0 then "  (" ++ show steps ++ " 步 steps)" else ""
+      stepTxt = if steps > 0
+                  then "  (" ++ say st (show steps ++ " 步") (show steps ++ " steps") ++ ")"
+                  else ""
   if erLimitHit res
     then emit "warn" (pretty final ++ stepTxt ++ say st
            (" —— 已达到 " ++ show (rsLimit st) ++ " 步上限，归约未完成")
            (" -- step limit " ++ show (rsLimit st) ++ " reached, reduction incomplete"))
     else emit "result" (pretty final ++ stepTxt ++ valueHint final)
+
+runCommand :: ReplState -> Command -> IO (Maybe ReplState)
+runCommand st (Eval expr) = do
+  printEval st (evalFinal (rsEta st) (rsLimit st) (rsStrategy st) expr)
   return (Just st)
 runCommand st (Trace expr) = do
-  let res = evalTrace (rsLimit st) (rsStrategy st) expr
+  let res = evalTraceWith (rsEta st) (rsLimit st) (rsStrategy st) expr
   putStrLn $ say st
-    ("归约轨迹（" ++ strategyLabel (rsStrategy st) ++ "，共 " ++ show (erCount res) ++ " 步）")
-    ("Reduction trace (" ++ strategyLabel (rsStrategy st) ++ ", " ++ show (erCount res) ++ " steps)")
+    ("归约轨迹（" ++ strategyLabelZh (rsStrategy st) ++ "，共 " ++ show (erCount res) ++ " 步）")
+    ("Reduction trace (" ++ strategyLabelEn (rsStrategy st) ++ ", " ++ show (erCount res) ++ " steps)")
   putStrLn $ "  0. " ++ pretty expr
   forM_ (erSteps res) $ \s -> do
     putStrLn $ "  " ++ show (tsIndex s) ++ ". " ++ tsNote s
@@ -417,14 +526,25 @@ runCommand st (Trace expr) = do
   return (Just st)
 runCommand st (Ast expr) = putStrLn (unlines (treeLines expr)) >> return (Just st)
 runCommand st (DbView expr) = putStrLn (deBruijnView expr) >> return (Just st)
+runCommand st (Nf expr) = do
+  printEval st (evalFinal (rsEta st) (rsLimit st) Normal expr)
+  return (Just st)
+runCommand st (Whnf expr) = do
+  printEval st (evalWHNF (rsEta st) (rsLimit st) (rsStrategy st) expr)
+  return (Just st)
 runCommand st (SetStrategy s) = do
   emit "info" (say st
-    ("求值策略：" ++ strategyLabel s)
-    ("Strategy: " ++ strategyLabel s))
+    ("求值策略：" ++ strategyLabelZh s)
+    ("Strategy: " ++ strategyLabelEn s))
   return (Just st { rsStrategy = s })
 runCommand st (SetSteps n) = do
   emit "info" (say st ("归约步数上限：" ++ show n) ("Reduction step limit: " ++ show n))
   return (Just st { rsLimit = n })
+runCommand st (SetEta on) = do
+  emit "info" (say st
+    ("η 归约：" ++ if on then "开启" else "关闭")
+    ("Eta reduction: " ++ if on then "on" else "off"))
+  return (Just st { rsEta = on })
 runCommand st (SetLang l) = do
   emit "info" (tr l "语言已切换为中文。" "Language switched to English.")
   return (Just st { rsLang = l })
@@ -435,20 +555,23 @@ helpMessage :: Lang -> String
 helpMessage lang = unlines $ map (renderMsg lang)
   [ ("λ 演算解释器（最小版）", "λ Calculus interpreter (minimal)")
   , ("", "")
-  , ("用法: ./main [--lang zh|en|both]", "Usage: ./main [--lang zh|en|both]")
+  , ("用法: ./main [--lang zh|en|both] [-v]", "Usage: ./main [--lang zh|en|both] [-v]")
   , ("", "")
   , ("命令:", "Commands:")
   , ("  :trace <表达式>  显示完整归约轨迹", "  :trace <expr>    show the full reduction trace")
   , ("  :ast <表达式>    显示语法树", "  :ast <expr>      show the syntax tree")
   , ("  :db <表达式>     de Bruijn 索引视图", "  :db <expr>       de Bruijn index view")
+  , ("  :nf <表达式>     归约到正规形", "  :nf <expr>       reduce to normal form")
+  , ("  :whnf <表达式>   归约到弱首正规形", "  :whnf <expr>     reduce to weak head normal form")
   , ("  :strategy <名称> 切换求值策略", "  :strategy <name> switch evaluation strategy")
   , ("  :steps <n>       设置归约步数上限", "  :steps <n>       set the reduction step limit")
+  , ("  :eta on|off      开启/关闭 η 归约", "  :eta on|off      turn eta reduction on/off")
   , ("  :lang <值>       切换语言 zh/en/both", "  :lang <v>        switch language zh/en/both")
   , ("  :help            显示本帮助", "  :help            show this help")
   , ("  :q               退出", "  :q               quit")
   , ("", "")
-  , ("抽象: λx.body 或 \\x.body；应用: f a（左结合）；括号: (expr)",
-     "Abstraction: λx.body or \\x.body; application: f a (left-assoc); grouping: (expr)")
+  , ("抽象: λx.body、λx → body 或 \\x -> body；应用: f a（左结合）；括号: (expr)",
+     "Abstraction: λx.body, λx → body or \\x -> body; application: f a (left-assoc); grouping: (expr)")
   ]
 
 -- ---------------------------------------------------------------------------
@@ -464,11 +587,19 @@ handleLine st line =
       return (Just st)
     Right cmd -> runCommand st cmd
 
-replSettings :: ReplState -> Settings IO
-replSettings st = setComplete (completeWord Nothing " \t" (completeFn st)) defaultSettings
+replSettings :: ReplState -> Maybe FilePath -> Settings IO
+replSettings st hist =
+  setComplete (completeWord Nothing " \t(),.\\λ→" (completeFn st))
+              (defaultSettings { historyFile = hist })
 
 completeFn :: ReplState -> String -> IO [Completion]
 completeFn _ left = return $ map simpleCompletion (filter (left `isPrefixOf`) knownCommands)
+
+historyPath :: IO (Maybe FilePath)
+historyPath = do
+  r <- catch (Right <$> getHomeDirectory)
+             (\(e :: SomeException) -> return (Left (show e)))
+  return $ either (const Nothing) (Just . (++ "/.lambda_history")) r
 
 repl :: ReplState -> InputT IO ()
 repl st = do
@@ -479,17 +610,37 @@ repl st = do
       me <- liftIO $ handleLine st input
       forM_ me repl
 
+-- 解析命令行；未知选项直接报错，避免拼写错误被静默忽略
+-- Parse the command line; unknown options are errors instead of being ignored.
+parseArgs :: [String] -> Either String (Lang, Bool, Bool)
+parseArgs = go Both False False
+  where
+    go lang help version [] = Right (lang, help, version)
+    go lang _ version ("--help":xs)    = go lang True version xs
+    go lang _ version ("-h":xs)        = go lang True version xs
+    go lang help _ ("--version":xs)    = go lang help True xs
+    go lang help _ ("-v":xs)           = go lang help True xs
+    go lang help version ("--lang":xs) = case xs of
+      (v:rest) -> case parseLang v of
+        Just l  -> go l help version rest
+        Nothing -> Left ("未知语言 / unknown language: " ++ v)
+      [] -> Left "缺少 --lang 的值 / missing value for --lang"
+    go lang help version (x:xs)
+      | Just v <- stripPrefix "--lang=" x =
+          case parseLang v of
+            Just l  -> go l help version xs
+            Nothing -> Left ("未知语言 / unknown language: " ++ v)
+      | "-" `isPrefixOf` x = Left ("未知选项 / unknown option: " ++ x)
+      | otherwise = Left ("无法识别的参数 / unexpected argument: " ++ x)
+
 main :: IO ()
 main = do
   args <- getArgs
-  let lang = maybe Both id (lookupFlag "--lang" args >>= parseLang)
-      lookupFlag flag xs = case dropWhile (/= flag) xs of
-        (_:v:_) -> Just v
-        _       -> Nothing
-      st0 = ReplState Applicative defaultLimit lang
-  if any (`elem` ["-h", "--help"]) args
-    then putStrLn (helpMessage lang)
-    else do
+  case parseArgs args of
+    Left err -> do
+      hPutStrLn stderr err
+      exitFailure
+    Right (lang, help, version) -> do
       -- 管道 / 重定向时统一用 UTF-8，避免 Windows 代码页问题
       -- Use UTF-8 when piped or redirected, avoiding Windows code-page issues.
       term <- hIsTerminalDevice stdout
@@ -497,4 +648,11 @@ main = do
         hSetEncoding stdin utf8
         hSetEncoding stdout utf8
         hSetEncoding stderr utf8
-      runInputT (replSettings st0) (repl st0)
+      if help
+        then putStrLn (helpMessage lang)
+        else if version
+          then putStrLn versionString
+          else do
+            let st0 = ReplState Applicative defaultLimit False lang
+            hist <- historyPath
+            runInputT (replSettings st0 hist) (repl st0)

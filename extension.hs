@@ -5,16 +5,23 @@
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import Control.Applicative ((<|>))
-import Control.Exception (catch, SomeException)
-import Control.Monad (void, when, unless, forM_, forM, guard)
+import Control.Exception (catch, mask_, throwIO, SomeException, AsyncException(..))
+import Control.Monad (void, when, unless, forM_, forM, guard, foldM)
 import Control.Monad.IO.Class (liftIO)
 import Data.Char (isAlpha, isDigit, isSpace, ord)
 import Data.List (elemIndex, find, stripPrefix, isPrefixOf, intercalate, foldl')
+import Data.Maybe (fromMaybe)
 import Numeric (showHex)
+import System.Directory (getHomeDirectory)
 import System.Environment (getArgs)
+import System.Exit (exitFailure)
 import System.IO
+import System.Timeout (timeout)
 import System.Console.Haskeline
 import Text.ParserCombinators.ReadP
+
+versionString :: String
+versionString = "lambda-calculus-interpreter 2.0.0"
 
 -- ---------------------------------------------------------------------------
 -- 双语支持 Bilingual Support
@@ -84,14 +91,14 @@ subst x v (Lam y body)
 -- ---------------------------------------------------------------------------
 -- α 等价（de Bruijn 化后比较）Alpha Equivalence
 -- ---------------------------------------------------------------------------
-data DB = DVar Int | DFree String | DLam String DB | DApp DB DB
+data DB = DVar Int | DFree String | DLam DB | DApp DB DB
   deriving (Eq)
 
--- 绑定变量转成索引，自由变量保留名字，因此可以直接判断 α 等价
--- Bound variables become indices; free variables keep their names, so α-equivalence is structural equality.
+-- 绑定变量转成索引，绑定名本身不参与比较，因此 α 等价就是结构相等
+-- Bound variables become indices and binder names are dropped, so α-equivalence is structural equality.
 toDB :: [String] -> Expr -> DB
 toDB bound (Var x) = maybe (DFree x) DVar (elemIndex x bound)
-toDB bound (Lam x b) = DLam x (toDB (x : bound) b)
+toDB bound (Lam x b) = DLam (toDB (x : bound) b)
 toDB bound (App f a) = DApp (toDB bound f) (toDB bound a)
 
 alphaEq :: Expr -> Expr -> Bool
@@ -204,6 +211,52 @@ stepOnce strat = go
     isValue (Var _)   = True
     isValue _         = False
 
+-- ---------------------------------------------------------------------------
+-- η 归约与组合式单步 / eta reduction and the combined step
+-- ---------------------------------------------------------------------------
+-- η：λx. f x → f，前提是 x 不在 f 中自由出现
+-- eta: λx. f x -> f when x is not free in f.
+etaRoot :: Expr -> Maybe Reduction
+etaRoot (Lam x (App f (Var y)))
+  | x == y && x `Set.notMember` freeVars f =
+      Just (Reduction "η"
+        ("η 归约 η-reduction: λ" ++ x ++ ". … " ++ x ++ " → …") f)
+etaRoot _ = Nothing
+
+etaStep :: Strategy -> Expr -> Maybe StepOut
+etaStep strat = go
+  where
+    Order{..} = orderOf strat
+    go e@(Lam x b) =
+      case etaRoot e of
+        Just r -> Just (StepOut (redTerm r) r)
+        Nothing
+          | underLambda -> do
+              s <- go b
+              return s { soWhole = Lam x (soWhole s) }
+          | otherwise -> Nothing
+    go (App f a) =
+      (do s <- go f; return s { soWhole = App (soWhole s) a })
+      <|> (do s <- go a; return s { soWhole = App f (soWhole s) })
+    go _ = Nothing
+
+-- 先做 β，没有 β 再考虑 η / try beta first, then eta
+stepFor :: Bool -> Strategy -> Expr -> Maybe StepOut
+stepFor eta strat e =
+  stepOnce strat e <|> (if eta then etaStep strat e else Nothing)
+
+-- 弱首正规形：λ 或中性项（头变量）/ weak head normal form
+isWHNF :: Expr -> Bool
+isWHNF e = case headSpine e of
+  (Lam _ _, _) -> False
+  _            -> True
+
+headSpine :: Expr -> (Expr, [Expr])
+headSpine = go []
+  where
+    go acc (App f a) = go (a : acc) f
+    go acc h         = (h, acc)
+
 data TraceStep = TraceStep
   { tsIndex  :: Int
   , tsBefore :: Expr
@@ -224,22 +277,90 @@ defaultLimit = 10000
 
 -- 求值循环：keepTrace 为 False 时不保留轨迹（省内存）
 -- Evaluation loop; with keepTrace=False the trace is dropped (saves memory).
-eval :: Bool -> Int -> Strategy -> Expr -> EvalResult
-eval keepTrace limit strat e0 = loop 1 e0 []
+evalUntil :: Bool -> Bool -> Int -> Strategy -> (Expr -> Bool) -> Expr -> EvalResult
+evalUntil eta keepTrace limit strat done e0 = loop 1 e0 []
   where
     loop n e acc
       | n > limit = EvalResult e (reverse acc) (n - 1) True
-      | otherwise = case stepOnce strat e of
+      | done e    = EvalResult e (reverse acc) (n - 1) False
+      | otherwise = case stepFor eta strat e of
           Just s ->
             let red  = soRed s
-                acc' = if keepTrace
+                acc' = if keepTrace && n <= traceLimit
                          then TraceStep n e (soWhole s) (redRule red) (redNote red) : acc
                          else acc
             in loop (n + 1) (soWhole s) acc'
           Nothing -> EvalResult e (reverse acc) (n - 1) False
 
+evalWith :: Bool -> Bool -> Int -> Strategy -> Expr -> EvalResult
+evalWith eta keepTrace limit strat =
+  evalUntil eta keepTrace limit strat (const False)
+
+eval :: Bool -> Int -> Strategy -> Expr -> EvalResult
+eval = evalWith False
+
 evalTrace :: Int -> Strategy -> Expr -> EvalResult
-evalTrace = eval True
+evalTrace = evalWith False True
+
+evalTraceWith :: Bool -> Int -> Strategy -> Expr -> EvalResult
+evalTraceWith eta = evalWith eta True
+
+-- 归约到弱首正规形 / reduce only to weak head normal form
+evalWHNF :: Bool -> Int -> Strategy -> Expr -> EvalResult
+evalWHNF eta limit strat = evalUntil eta True limit strat isWHNF
+
+-- ---------------------------------------------------------------------------
+-- 归约位置 Redex positions：列出项中所有 β-redex，并可按序号归约
+-- All β-redexes with paths, so the user can pick which one to contract.
+-- ---------------------------------------------------------------------------
+type Path = [Int]
+
+isRedex :: Expr -> Bool
+isRedex (App (Lam _ _) _) = True
+isRedex _                 = False
+
+redexAtRoot :: Expr -> Maybe StepOut
+redexAtRoot (App (Lam x b) a) =
+  let r = betaStep x b a in Just (StepOut (redTerm r) r)
+redexAtRoot _ = Nothing
+
+allRedexPaths :: Expr -> [Path]
+allRedexPaths e =
+  (if isRedex e then [[]] else []) ++
+  case e of
+    App f a   -> map (0 :) (allRedexPaths f) ++ map (1 :) (allRedexPaths a)
+    Lam _ b   -> map (0 :) (allRedexPaths b)
+    Var _     -> []
+
+subtermAt :: Path -> Expr -> Maybe Expr
+subtermAt [] e            = Just e
+subtermAt (0:ps) (App f _) = subtermAt ps f
+subtermAt (1:ps) (App _ a) = subtermAt ps a
+subtermAt (0:ps) (Lam _ b) = subtermAt ps b
+subtermAt _ _             = Nothing
+
+stepAt :: Path -> Expr -> Maybe StepOut
+stepAt [] e = redexAtRoot e
+stepAt (0:ps) (App f a) =
+  (\s -> s { soWhole = App (soWhole s) a }) <$> stepAt ps f
+stepAt (1:ps) (App f a) =
+  (\s -> s { soWhole = App f (soWhole s) }) <$> stepAt ps a
+stepAt (0:ps) (Lam x b) =
+  (\s -> s { soWhole = Lam x (soWhole s) }) <$> stepAt ps b
+stepAt _ _ = Nothing
+
+stepAtIndex :: Int -> Expr -> Maybe StepOut
+stepAtIndex i e =
+  case drop (max 0 (i - 1)) (allRedexPaths e) of
+    (p:_) -> stepAt p e
+    []    -> Nothing
+
+redexCount :: Expr -> Int
+redexCount = length . allRedexPaths
+
+pathText :: Path -> String
+pathText [] = "root"
+pathText ps = intercalate "." (map show ps)
 
 -- ---------------------------------------------------------------------------
 -- 宏展开（带绑定集与展开燃料）Macro Expansion
@@ -302,25 +423,30 @@ combinators =
 combinatorOf :: Expr -> Maybe String
 combinatorOf e = fst <$> find (alphaEq e . snd) combinators
 
-valueHint :: Lang -> Expr -> String
-valueHint lang e = case (isChurchNumeral e, isChurchBoolean e, isChurchPair e) of
-  (Just 0, Just False, _) -> "  " ++ tr lang
-    "(邱奇数 0 / Church 布尔值 False)"
-    "(Church numeral 0 / Church boolean False)"
-  (Just n, _, _) -> "  " ++ tr lang
-    ("邱奇数 " ++ show n) ("Church numeral " ++ show n)
-  (_, Just True, _) -> "  " ++ tr lang
-    "(Church 布尔值 True / K 组合子)"
-    "(Church boolean True / K combinator)"
-  (_, Just False, _) -> "  " ++ tr lang
-    "(Church 布尔值 False)" "(Church boolean False)"
-  (_, _, Just (a, b)) -> "  " ++ tr lang
-    ("(Church 序对 " ++ shorten 20 (pretty a) ++ ", " ++ shorten 20 (pretty b) ++ ")")
-    ("(Church pair " ++ shorten 20 (pretty a) ++ ", " ++ shorten 20 (pretty b) ++ ")")
+-- 提示保留中英两版，供前端在不重放历史的情况下切换语言
+-- Hints keep both languages so the client can switch without replaying.
+valueHintMsg :: Expr -> Msg
+valueHintMsg e = case (isChurchNumeral e, isChurchBoolean e, isChurchPair e) of
+  (Just 0, Just False, _) ->
+    ("  (邱奇数 0 / Church 布尔值 False)",
+     "  (Church numeral 0 / Church boolean False)")
+  (Just n, _, _) ->
+    ("  (邱奇数 " ++ show n ++ ")", "  (Church numeral " ++ show n ++ ")")
+  (_, Just True, _) ->
+    ("  (Church 布尔值 True / K 组合子)",
+     "  (Church boolean True / K combinator)")
+  (_, Just False, _) ->
+    ("  (Church 布尔值 False)", "  (Church boolean False)")
+  (_, _, Just (a, b)) ->
+    let sa = shorten 20 (pretty a); sb = shorten 20 (pretty b)
+    in ("  (Church 序对 " ++ sa ++ ", " ++ sb ++ ")",
+        "  (Church pair " ++ sa ++ ", " ++ sb ++ ")")
   _ -> case combinatorOf e of
-         Just n  -> "  " ++ tr lang
-           ("(" ++ n ++ " 组合子)") ("(" ++ n ++ " combinator)")
-         Nothing -> ""
+         Just n  -> ("  (" ++ n ++ " 组合子)", "  (" ++ n ++ " combinator)")
+         Nothing -> ("", "")
+
+valueHint :: Lang -> Expr -> String
+valueHint lang = renderMsg lang . valueHintMsg
 
 -- ---------------------------------------------------------------------------
 -- 美观打印 Pretty Printing
@@ -378,11 +504,38 @@ ident = do
 parseExpr :: ReadP Expr
 parseExpr = spaces *> (parseLam <++ parseApp)
 
+-- 分隔符接受 `.`、`→` 和 `->`
+-- The delimiter accepts `.`, `→` and `->`.
+lambdaSep :: ReadP ()
+lambdaSep =
+      void (char '.')
+  <|> void (char '→')
+  <|> (void (char '-') >> void (char '>'))
+
+-- λ 的参数在遇到 `->` 时停止，因此 `\x->x` 与 `\x -> x` 都能解析
+-- Lambda parameters stop before `->`, so both `\x->x` and `\x -> x` parse.
+lamIdent :: ReadP String
+lamIdent = do
+  c <- satisfy (\ch -> isAlpha ch || isOperatorChar ch)
+  cs <- go
+  return (c : cs)
+  where
+    go = do
+      rest <- look
+      case rest of
+        ('-':'>':_) -> return []
+        (ch:_) | isAlpha ch || isDigit ch
+               || ch `elem` ("_'" :: String)
+               || isOperatorChar ch -> do
+          _ <- get
+          (ch :) <$> go
+        _ -> return []
+
 parseLam :: ReadP Expr
 parseLam = do
   void $ char '\\' <|> char 'λ'
-  params <- many1 $ ident <* spaces
-  void $ char '.'
+  params <- many1 $ lamIdent <* spaces
+  lambdaSep
   spaces
   body <- parseExpr
   return $ foldr Lam body params
@@ -438,8 +591,8 @@ diagnose s rest pos
       (i, ( "括号不匹配：第 " ++ show i ++ " 列的括号没有闭合"
           , "Unbalanced parenthesis at column " ++ show i ))
   | isLambdaStart && not ('.' `elem` s) =
-      (pos, ( "Lambda 表达式缺少 '.' 分隔符（形如 λx. body）"
-            , "Lambda abstraction is missing '.', e.g. λx. body" ))
+      (pos, ( "Lambda 表达式缺少分隔符（形如 λx. body、λx → body 或 \\x -> body）"
+            , "Lambda abstraction is missing '.', '→' or '->', e.g. λx. body" ))
   | Just (i, c) <- firstIllegal s =
       (i, ( "非法字符 '" ++ [c] ++ "'，只允许 λ \\ → . 字母 数字 ' _ 和括号"
            , "Illegal character '" ++ [c] ++ "'; expected λ \\ → . letters digits ' _ or parentheses" ))
@@ -512,18 +665,27 @@ parseAssignment str =
 data Command
   = Eval Expr
   | Define String Expr
+  | DefineRec String Expr
   | LoadFile FilePath
+  | SaveFile FilePath
   | ShowEnv
   | DeleteDef String
   | ResetEnv
   | SetStrategy Strategy
   | SetSteps Int
+  | SetEta Bool
   | Trace Expr
   | Ast Expr
   | DbView Expr
   | TypeOf Expr
+  | EqExpr Expr Expr
+  | ConvExpr Expr Expr
+  | Nf Expr
+  | Whnf Expr
+  | IntOf Expr
+  | ChurchOf Integer
   | Begin Expr
-  | StepCmd
+  | StepCmd (Maybe Int)
   | RunCmd
   | EndCmd
   | SetLang Lang
@@ -534,18 +696,26 @@ knownCommands :: [(String, Msg)]
 knownCommands =
   [ (":help", ("显示帮助", "show help"))
   , (":load", ("加载定义文件", "load a definitions file"))
-  , (":let", ("定义变量", "define a variable"))
+  , (":save", ("保存当前定义为 .lam 文件", "save the current definitions to a .lam file"))
+  , (":let", ("定义变量；:let rec 支持递归", "define a variable; :let rec allows recursion"))
   , (":env", ("显示当前环境", "show the environment"))
   , (":del", ("删除一个定义", "delete a definition"))
   , (":reset", ("重置为预定义环境", "reset to the prelude"))
   , (":strategy", ("切换求值策略", "switch evaluation strategy"))
   , (":steps", ("设置归约步数上限", "set the reduction step limit"))
+  , (":eta", ("开启/关闭 η 归约", "turn eta reduction on/off"))
   , (":trace", ("显示完整归约轨迹", "show the full reduction trace"))
   , (":ast", ("显示语法树", "show the syntax tree"))
   , (":db", ("de Bruijn 索引视图", "de Bruijn index view"))
   , (":type", ("推断简单类型", "infer the simple type"))
+  , (":eq", ("判断两个表达式是否 α 等价", "test two expressions for alpha-equivalence"))
+  , (":conv", ("判断两个表达式是否 β 等价", "test two expressions for beta-convertibility"))
+  , (":nf", ("归约到正规形", "reduce to normal form"))
+  , (":whnf", ("归约到弱首正规形", "reduce to weak head normal form"))
+  , (":int", ("把邱奇数转成整数", "decode a Church numeral as an integer"))
+  , (":church", ("把 0-9999 转成邱奇数", "encode 0-9999 as a Church numeral"))
   , (":begin", ("开始交互式归约", "start interactive reduction"))
-  , (":step", ("归约一步", "reduce one step"))
+  , (":step", ("归约一步；:step <n> 选择第 n 个 redex", "reduce one step; :step <n> picks the nth redex"))
   , (":run", ("归约到底", "reduce to the end"))
   , (":end", ("结束交互式归约", "end interactive reduction"))
   , (":lang", ("切换语言 zh/en/both", "switch language zh/en/both"))
@@ -555,15 +725,29 @@ knownCommands =
 parseCommand :: String -> Either ParseError Command
 parseCommand raw
   | null s = Left (ParseError 1 ("空输入", "Empty input"))
-  | Just rest <- stripPrefix ":load " s = Right $ LoadFile (trim rest)
+  | Just rest <- stripPrefix ":load " s = loadOrSave rest LoadFile
+  | Just rest <- stripPrefix ":save " s = loadOrSave rest SaveFile
+  | Just rest <- stripPrefix ":let rec " s = uncurry DefineRec <$> parseAssignment rest
   | Just rest <- stripPrefix ":let " s = uncurry Define <$> parseAssignment rest
+  | Just rest <- stripPrefix "rec " s, '=' `elem` rest =
+      uncurry DefineRec <$> parseAssignment rest
   | s == ":env" = Right ShowEnv
   | s == ":reset" = Right ResetEnv
   | s `elem` [":help", ":h", ":?"] = Right Help
   | s `elem` [":q", ":quit"] = Right Quit
-  | s == ":step" = Right StepCmd
+  | s == ":step" = Right (StepCmd Nothing)
+  | Just rest <- stripPrefix ":step " s =
+      case reads (trim rest) :: [(Int, String)] of
+        [(n, "")] | n > 0 -> Right (StepCmd (Just n))
+        _ -> Left (ParseError 1
+               ("用法：:step <redex 序号>", "Usage: :step <redex index>"))
   | s == ":run" = Right RunCmd
   | s == ":end" = Right EndCmd
+  | s == ":eta" = Right (SetEta True)
+  | Just rest <- stripPrefix ":eta " s =
+      maybe (Left (ParseError 1
+              ("用法：:eta on|off", "Usage: :eta on|off")))
+            (Right . SetEta) (parseOnOff rest)
   | Just rest <- stripPrefix ":lang " s =
       maybe (Left (ParseError 1
               ("未知语言，可用：zh / en / both", "Unknown language; use zh / en / both")))
@@ -585,6 +769,16 @@ parseCommand raw
   | Just rest <- stripPrefix ":ast " s = Ast <$> parseExpr' rest
   | Just rest <- stripPrefix ":db " s = DbView <$> parseExpr' rest
   | Just rest <- stripPrefix ":type " s = TypeOf <$> parseExpr' rest
+  | Just rest <- stripPrefix ":nf " s = Nf <$> parseExpr' rest
+  | Just rest <- stripPrefix ":whnf " s = Whnf <$> parseExpr' rest
+  | Just rest <- stripPrefix ":int " s = IntOf <$> parseExpr' rest
+  | Just rest <- stripPrefix ":church " s =
+      case reads (trim rest) :: [(Integer, String)] of
+        [(n, "")] | n >= 0 && n <= 9999 -> Right (ChurchOf n)
+        _ -> Left (ParseError 1
+               ("用法：:church <0-9999>", "Usage: :church <0-9999>"))
+  | Just rest <- stripPrefix ":eq " s = uncurry EqExpr <$> parsePairIn ":eq" rest
+  | Just rest <- stripPrefix ":conv " s = uncurry ConvExpr <$> parsePairIn ":conv" rest
   | Just rest <- stripPrefix ":begin " s = Begin <$> parseExpr' rest
   | Just _ <- stripPrefix ":" s = Left (ParseError 1
       ( "未知命令 " ++ takeWhile (not . isSpace) s ++ "，输入 :help 查看全部命令"
@@ -601,9 +795,48 @@ parseCommand raw
       in if null name
            then Left (ParseError 1 ("用法：:del <名字>", "Usage: :del <name>"))
            else Right (DeleteDef name)
+    loadOrSave rest ctor =
+      let path = trim rest
+      in if null path
+           then Left (ParseError 1
+                  ("缺少文件路径", "Missing file path"))
+           else Right (ctor path)
     parseExpr' src = case runParserFull parseExpr (trim src) of
       Left e  -> Left e { pePos = pePos e + (length s - length (trim src)) }
       Right x -> Right x
+
+-- 用逗号分隔两个表达式；逗号不属于表达式语法
+-- Two expressions separated by a comma (a comma cannot occur in an expression).
+parsePairIn :: String -> String -> Either ParseError (Expr, Expr)
+parsePairIn cmdName src =
+  case break (== ',') src of
+    (l, ',':r)
+      | null (trim l) || null (trim r) -> usage
+      | otherwise ->
+          case (runParserFull parseExpr (trim l), runParserFull parseExpr (trim r)) of
+            (Right a, Right b) -> Right (a, b)
+            (Left e, Right _)  -> Left e
+            (Right _, Left e)  -> Left e
+            (Left e1, Left e2) -> Left (ParseError 1
+              ( "左侧错误：" ++ fst (peMsg e1) ++ "；右侧错误：" ++ fst (peMsg e2)
+              , "left: " ++ snd (peMsg e1) ++ "; right: " ++ snd (peMsg e2) ))
+    _ -> usage
+  where
+    usage = Left (ParseError 1
+      ( "用法：" ++ cmdName ++ " <表达式> , <表达式>"
+      , "Usage: " ++ cmdName ++ " <expr> , <expr>" ))
+
+parseOnOff :: String -> Maybe Bool
+parseOnOff raw = case map lower (trim raw) of
+  "on"  -> Just True
+  "1"   -> Just True
+  "true" -> Just True
+  "off" -> Just False
+  "0"   -> Just False
+  "false" -> Just False
+  _     -> Nothing
+  where
+    lower c = if c >= 'A' && c <= 'Z' then toEnum (fromEnum c + 32) else c
 
 -- ---------------------------------------------------------------------------
 -- 简单类型推断 Simple Type Inference (Hindley–Milner)
@@ -793,7 +1026,36 @@ initEnv = Map.fromList
   , ("SUCC",  Lam "n" $ Lam "f" $ Lam "x" $ App (Var "f") (App (App (Var "n") (Var "f")) (Var "x")))
   , ("PLUS",  Lam "m" $ Lam "n" $ Lam "f" $ Lam "x" $ App (App (Var "m") (Var "f")) (App (App (Var "n") (Var "f")) (Var "x")))
   , ("MULT",  Lam "m" $ Lam "n" $ Lam "f" $ App (Var "m") (App (Var "n") (Var "f")))
+  , ("EXP",   Lam "m" $ Lam "n" $ App (Var "n") (Var "m"))
+  , ("PRED",  Lam "n" $ Lam "f" $ Lam "x" $
+              App (App (App (Var "n")
+                    (Lam "g" $ Lam "h" $ App (Var "h") (App (Var "g") (Var "f"))))
+                    (Lam "u" (Var "x")))
+                  (Lam "u" (Var "u")))
+  , ("SUB",   Lam "m" $ Lam "n" $ App (App (Var "n") (Var "PRED")) (Var "m"))
+  , ("ISZERO", Lam "n" $ App (App (Var "n") (Lam "x" (Var "FALSE"))) (Var "TRUE"))
+  , ("LEQ",   Lam "m" $ Lam "n" $ App (Var "ISZERO") (App (App (Var "SUB") (Var "m")) (Var "n")))
+  , ("EQ",    Lam "m" $ Lam "n" $
+              App (App (Var "AND") (App (App (Var "LEQ") (Var "m")) (Var "n")))
+                            (App (App (Var "LEQ") (Var "n")) (Var "m")))
+  , ("PAIR",  Lam "a" $ Lam "b" $ Lam "f" $
+              App (App (Var "f") (Var "a")) (Var "b"))
+  , ("FST",   Lam "p" $ App (Var "p") (Var "TRUE"))
+  , ("SND",   Lam "p" $ App (Var "p") (Var "FALSE"))
+  , ("NIL",   Lam "n" $ Lam "c" $ Var "n")
+  , ("CONS",  Lam "h" $ Lam "t" $ Lam "n" $ Lam "c" $
+              App (App (Var "c") (Var "h")) (Var "t"))
+  , ("HEAD",  Lam "l" $ App (App (Var "l") (Var "NIL"))
+              (Lam "h" $ Lam "t" $ Var "h"))
+  , ("TAIL",  Lam "l" $ App (App (Var "l") (Var "NIL"))
+              (Lam "h" $ Lam "t" $ Var "t"))
+  , ("Y",     yComb)
   ]
+
+-- 不动点组合子 / fixed-point combinator
+yComb :: Expr
+yComb = Lam "f" $ App (Lam "x" $ App (Var "f") (App (Var "x") (Var "x")))
+                     (Lam "x" $ App (Var "f") (App (Var "x") (Var "x")))
 
 initTypeEnv :: TypeEnv
 initTypeEnv = buildTypeEnv Map.empty (Map.toList initEnv)
@@ -801,7 +1063,9 @@ initTypeEnv = buildTypeEnv Map.empty (Map.toList initEnv)
 buildTypeEnv :: TypeEnv -> [(String, Expr)] -> TypeEnv
 buildTypeEnv = foldl' step
   where
-    step tenv (name, expr) = case inferScheme tenv expr of
+    -- 先展开宏再推断，避免依赖 Map 的遍历顺序
+    -- Expand macros before inference so the result does not depend on Map order.
+    step tenv (name, expr) = case inferScheme tenv (expandTop initEnv expr) of
       Right sc -> Map.insert name sc tenv
       Left _   -> tenv
 
@@ -813,6 +1077,8 @@ data ReplState = ReplState
   , rsTypeEnv :: TypeEnv
   , rsStrategy :: Strategy
   , rsLimit   :: Int
+  , rsTimeout :: Int
+  , rsEta     :: Bool
   , rsJson    :: Bool
   , rsLang    :: Lang
   , rsCurrent :: Maybe Expr
@@ -855,14 +1121,35 @@ decorate "warn"   = "⚠ "
 decorate "fail"   = "⚠ "
 decorate _        = ""
 
+-- 输出同时携带两种语言；text 用当前语言，textZh/textEn 供前端本地切换
+-- Output carries both languages; text uses the current language and
+-- textZh/textEn let the client re-render without replaying commands.
+emitL :: ReplState -> String -> String -> String -> [(String, J)] -> IO ()
+emitL st kind zh en fields
+  | rsJson st = mask_ . putStrLn . encode $
+      JObj (("kind" .= JStr kind)
+            : ("text" .= JStr (renderMsg (rsLang st) (zh, en)))
+            : ("textZh" .= JStr zh)
+            : ("textEn" .= JStr en)
+            : fields)
+  | otherwise = mask_ . putStrLn $
+      decorate kind ++ renderMsg (rsLang st) (zh, en)
+
 emit :: ReplState -> String -> String -> [(String, J)] -> IO ()
-emit st kind text fields
-  | rsJson st = putStrLn . encode $
-      JObj (("kind" .= JStr kind) : ("text" .= JStr text) : fields)
-  | otherwise = putStrLn (decorate kind ++ text)
+emit st kind text = emitL st kind text text
+
+-- 轨迹上限：超出后仍保留计数，但只在 JSON 中返回前若干步
+-- Trace cap: the count is always exact; JSON carries only the first steps.
+traceLimit :: Int
+traceLimit = 500
+
+traceClipped :: [TraceStep] -> Bool
+traceClipped steps = any longStep steps
+  where
+    longStep s = max (length (pretty (tsBefore s))) (length (pretty (tsAfter s))) > 300
 
 traceField :: [TraceStep] -> (String, J)
-traceField steps = "trace" .= JArr (map one (take 500 steps))
+traceField steps = "trace" .= JArr (map one (take traceLimit steps))
   where
     one s = JObj
       [ "n"      .= JNum (tsIndex s)
@@ -871,31 +1158,113 @@ traceField steps = "trace" .= JArr (map one (take 500 steps))
       , "before" .= JStr (shorten 300 (pretty (tsBefore s)))
       , "after"  .= JStr (shorten 300 (pretty (tsAfter s))) ]
 
+traceMetaField :: Int -> [TraceStep] -> [(String, J)]
+traceMetaField total steps
+  | null steps = []
+  | otherwise =
+      [ "traceShown"     .= JNum (length steps)
+      , "traceTruncated" .= JBool (total > length steps || traceClipped steps) ]
+
 astField :: Expr -> (String, J)
 astField e = "ast" .= JArr (map JStr (treeLines e))
 
 treeField :: Expr -> (String, J)
 treeField e = "tree" .= JArr (map JStr (treeLines e))
 
+-- 结构化语法树，供 Web 端折叠显示
+-- Structured AST for the collapsible web tree.
+astJson :: Expr -> J
+astJson (Var x) = JObj ["k" .= JStr "var", "label" .= JStr x]
+astJson (Lam x b) = JObj
+  [ "k" .= JStr "lam", "label" .= JStr x
+  , "c" .= JArr [astJson b] ]
+astJson (App f a) = JObj
+  [ "k" .= JStr "app", "label" .= JStr "App"
+  , "c" .= JArr [astJson f, astJson a] ]
+
+astTreeField :: Expr -> (String, J)
+astTreeField e = "astTree" .= astJson e
+
+-- 项规模，用于限制结构化 AST 的 JSON 体积
+-- Term size, used to cap the structured AST payload.
+exprSize :: Expr -> Int
+exprSize (Var _)   = 1
+exprSize (Lam _ b) = 1 + exprSize b
+exprSize (App f a) = 1 + exprSize f + exprSize a
+
+-- 结构化 AST 只对较小的项输出，避免深层 Church 数把 JSON 撑大
+-- Emit the structured AST only for small terms; deep Church numerals would bloat JSON.
+astTreeFields :: Expr -> [(String, J)]
+astTreeFields e
+  | exprSize e <= 400 = [astTreeField e]
+  | otherwise         = [ "astTreeOmitted" .= JBool True ]
+
+-- 归约位置列表 / list of β-redexes (capped so huge terms stay bounded)
+redexFields :: Expr -> [(String, J)]
+redexFields e =
+  [ "redexes" .= JArr (map one (zip [1..] (take 200 paths)))
+  , "redexCount" .= JNum (length paths) ]
+  where
+    paths = allRedexPaths e
+    one (i, p) =
+      let sub  = fromMaybe e (subtermAt p e)
+          rule = maybe "β" (redRule . soRed) (stepAt p e)
+      in JObj
+        [ "i"    .= JNum i
+        , "path" .= JStr (pathText p)
+        , "term" .= JStr (shorten 200 (pretty sub))
+        , "rule" .= JStr rule ]
+
 -- ---------------------------------------------------------------------------
 -- 表格打印 Print Table
 -- ---------------------------------------------------------------------------
-padRight :: Int -> String -> String
-padRight n s = s ++ replicate (max 0 (n - length s)) ' '
+-- 终端显示宽度：CJK 字符占两格 / terminal display width (CJK glyphs use two cells)
+displayWidth :: String -> Int
+displayWidth = sum . map charWidth
+  where
+    charWidth c
+      | o >= 0x1100 && o <= 0x115F = 2
+      | o >= 0x2E80 && o <= 0xA4CF = 2
+      | o >= 0xAC00 && o <= 0xD7A3 = 2
+      | o >= 0xF900 && o <= 0xFAFF = 2
+      | o >= 0xFE30 && o <= 0xFE6F = 2
+      | o >= 0xFF00 && o <= 0xFF60 = 2
+      | o >= 0xFFE0 && o <= 0xFFE6 = 2
+      | o >= 0x1F300 && o <= 0x1FAFF = 2
+      | o >= 0x20000 = 2
+      | otherwise = 1
+      where o = ord c
 
-renderTable :: Lang -> [(String, String)] -> String
+padRight :: Int -> String -> String
+padRight n s = s ++ replicate (max 0 (n - displayWidth s)) ' '
+
+renderTable :: Lang -> [(String, String, String)] -> String
 renderTable _ [] = ""
 renderTable lang rows = unlines $
-  [top, formatRow (renderMsg lang ("变量名", "Var Name"), renderMsg lang ("值", "Value")), mid]
+  [top, formatRow (head1, head2, head3), mid]
   ++ map formatRow rows ++ [bottom]
   where
-    col1Len = maximum $ length (renderMsg lang ("变量名", "Var Name")) : map (length . fst) rows
-    col2Len = maximum $ length (renderMsg lang ("值", "Value")) : map (length . snd) rows
-    mkBorder c1 c2 c3 = c1 : replicate (col1Len + 2) '─' ++ [c2] ++ replicate (col2Len + 2) '─' ++ [c3]
+    hasTy   = any (not . null . third) rows
+    head1   = renderMsg lang ("变量名", "Var Name")
+    head2   = renderMsg lang ("值", "Value")
+    head3   = renderMsg lang ("类型", "Type")
+    col1Len = maximum $ displayWidth head1 : map (displayWidth . first) rows
+    col2Len = maximum $ displayWidth head2 : map (displayWidth . second) rows
+    col3Len = maximum $ displayWidth head3 : map (displayWidth . third) rows
+    first  (a, _, _) = a
+    second (_, b, _) = b
+    third  (_, _, c) = c
+    mkBorder c1 c2 c3 =
+      c1 : replicate (col1Len + 2) '─'
+         ++ [c2] ++ replicate (col2Len + 2) '─'
+         ++ if hasTy then [c2] ++ replicate (col3Len + 2) '─' ++ [c3] else [c3]
     top    = mkBorder '┌' '┬' '┐'
     mid    = mkBorder '├' '┼' '┤'
     bottom = mkBorder '└' '┴' '┘'
-    formatRow (a, b) = "│ " ++ padRight col1Len a ++ " │ " ++ padRight col2Len b ++ " │"
+    formatRow (a, b, c)
+      | hasTy     = "│ " ++ padRight col1Len a ++ " │ " ++ padRight col2Len b
+                    ++ " │ " ++ padRight col3Len c ++ " │"
+      | otherwise = "│ " ++ padRight col1Len a ++ " │ " ++ padRight col2Len b ++ " │"
 
 -- ---------------------------------------------------------------------------
 -- 文件加载 File Loading
@@ -905,11 +1274,48 @@ readFileSafe path = catch (Right <$> readFile path)
   (\(e :: SomeException) -> return $ Left $ show e)
 
 data LoadOutcome = LoadOutcome
-  { loEnv     :: Env
-  , loTypeEnv :: TypeEnv
-  , loOk      :: [(String, Expr)]
-  , loFail    :: [(Int, String)]
+  { loEnv      :: Env
+  , loTypeEnv  :: TypeEnv
+  , loOk       :: [(String, Expr)]
+  , loFail     :: [(Int, String)]
+  , loStrategy :: Maybe Strategy
+  , loLimit    :: Maybe Int
+  , loLang     :: Maybe Lang
   }
+
+-- 注释行：`--` 或 `#` 开头 / comment lines start with `--` or `#`
+isCommentLine :: String -> Bool
+isCommentLine line = case trim line of
+  ('-':'-':_) -> True
+  ('#':_)     -> True
+  _           -> False
+
+parenDelta :: String -> Int
+parenDelta = foldl' step 0
+  where
+    step d '(' = d + 1
+    step d ')' = d - 1
+    step d _   = d
+
+-- 逻辑行：跳过空行/注释，括号未闭合时自动续行
+-- Logical lines: skip blanks/comments, join continuation lines while parentheses stay open.
+logicalLines :: String -> [(Int, String)]
+logicalLines content = go (zip [1..] (lines content))
+  where
+    go [] = []
+    go ((n, l):rest)
+      | null (trim l) || isCommentLine l = go rest
+      | otherwise =
+          let (joined, rest') = gather (trim l) (parenDelta l) rest
+          in (n, joined) : go rest'
+    gather acc depth rest@((_, l):more)
+      | isCommentLine l = gather acc depth more
+      | depth > 0 || (startsIndented l && '=' `elem` acc) =
+          gather (acc ++ " " ++ trim l) (depth + parenDelta l) more
+      | otherwise = (acc, rest)
+    gather acc _ [] = (acc, [])
+    startsIndented (c:_) = isSpace c
+    startsIndented []    = False
 
 loadDefinitionsFromFile :: Env -> TypeEnv -> FilePath -> IO (Either String LoadOutcome)
 loadDefinitionsFromFile env0 tenv0 path = do
@@ -917,10 +1323,8 @@ loadDefinitionsFromFile env0 tenv0 path = do
   case contentOrErr of
     Left err -> return (Left err)
     Right content -> do
-      let numbered = zip [1..] $ filter (not . null) $ lines content
-      let start = LoadOutcome env0 tenv0 [] []
-      let out = foldl' processLine start numbered
-      return (Right out)
+      let start = LoadOutcome env0 tenv0 [] [] Nothing Nothing Nothing
+      return (Right (foldl' processLine start (logicalLines content)))
   where
     processLine acc (n, line) =
       case parseCommand line of
@@ -931,110 +1335,243 @@ loadDefinitionsFromFile env0 tenv0 path = do
                 Right sc -> Map.insert var sc (loTypeEnv acc)
                 Left _   -> loTypeEnv acc
           in acc { loEnv = env', loTypeEnv = tenv', loOk = (var, expr') : loOk acc }
+        Right (DefineRec var expr) ->
+          let body  = expandTop (Map.delete var (loEnv acc)) expr
+              expr' = App yComb (Lam var body)
+              env'  = Map.insert var expr' (loEnv acc)
+          in acc { loEnv = env', loOk = (var, expr') : loOk acc }
+        Right (SetStrategy s) -> acc { loStrategy = Just s }
+        Right (SetSteps k)    -> acc { loLimit = Just k }
+        Right (SetLang l)     -> acc { loLang = Just l }
         _ -> acc { loFail = (n, line) : loFail acc }
+
+applyLoadOutcome :: ReplState -> LoadOutcome -> ReplState
+applyLoadOutcome st out = st
+  { rsEnv      = loEnv out
+  , rsTypeEnv  = loTypeEnv out
+  , rsStrategy = fromMaybe (rsStrategy st) (loStrategy out)
+  , rsLimit    = fromMaybe (rsLimit st) (loLimit out)
+  , rsLang     = fromMaybe (rsLang st) (loLang out)
+  }
+
+-- 可被解析器重新读取的源语法（与 pretty 的 → 不同）
+-- Source syntax that the parser can read back (unlike pretty's →).
+sourceExpr :: Expr -> String
+sourceExpr = go 0
+  where
+    go :: Int -> Expr -> String
+    go _ (Var x) = x
+    go p (Lam x b) =
+      let s = "\\" ++ x ++ "." ++ go 0 b
+      in if p > 0 then "(" ++ s ++ ")" else s
+    go p (App f a) =
+      let s = go 1 f ++ " " ++ go 2 a
+      in if p > 1 then "(" ++ s ++ ")" else s
+
+-- 保存时把 Y 编码还原为 rec，避免写出一整段不动点组合子
+-- Restore a Y-encoded definition to `rec` form when saving.
+sourceDef :: String -> Expr -> String
+sourceDef name e = case e of
+  App f (Lam x b) | x == name && alphaEq f yComb ->
+    "rec " ++ name ++ " = " ++ sourceExpr b
+  _ -> name ++ " = " ++ sourceExpr e
+
+writeFileUtf8 :: FilePath -> String -> IO (Either String ())
+writeFileUtf8 path text =
+  catch (withFile path WriteMode $ \h -> do
+           hSetEncoding h utf8
+           hPutStr h text
+           return (Right ()))
+        (\(e :: SomeException) -> return (Left (show e)))
 
 -- ---------------------------------------------------------------------------
 -- 命令执行 Command Execution
 -- ---------------------------------------------------------------------------
+-- 定义在消息中的可读形式；递归定义显示为 rec
+-- Human-readable definition text; recursive ones are shown as rec.
+prettyDef :: String -> Expr -> String
+prettyDef name e = case e of
+  App f (Lam x b) | x == name && alphaEq f yComb ->
+    "rec " ++ name ++ " = " ++ pretty b
+  _ -> name ++ " = " ++ pretty e
+
+-- 求值结果统一输出，供 :eval / :nf / :whnf / :run 复用
+-- Shared output for evaluation results.
+emitEvalResult :: ReplState -> EvalResult -> Maybe Expr -> IO ()
+emitEvalResult st res mExpr = do
+  let final   = erFinal res
+      hintMsg = valueHintMsg final
+      steps   = erCount res
+      stepZh  = if steps > 0 then "  (" ++ show steps ++ " 步)" else ""
+      stepEn  = if steps > 0 then "  (" ++ show steps ++ " steps)" else ""
+      textZh  = pretty final ++ stepZh ++ fst hintMsg
+      textEn  = pretty final ++ stepEn ++ snd hintMsg
+      mtyMsg  = case mExpr of
+        Just expr -> either (const ("", "")) prettySchemeMsg
+                           (inferScheme (rsTypeEnv st) expr)
+        Nothing   -> ("", "")
+      trail   = erSteps res
+      fields  = [ "steps"    .= JNum steps
+                , "term"     .= JStr (pretty final)
+                , "limitHit" .= JBool (erLimitHit res)
+                , "hint"     .= JStr (renderMsg (rsLang st) hintMsg)
+                , "hintZh"   .= JStr (fst hintMsg)
+                , "hintEn"   .= JStr (snd hintMsg)
+                , "strategy" .= JStr (strategyId (rsStrategy st))
+                , "eta"      .= JBool (rsEta st)
+                , astField final
+                , "db"       .= JStr (deBruijnView final)
+                ]
+                ++ redexFields final
+                ++ astTreeFields final
+                ++ (if mtyMsg == ("", "") then []
+                      else [ "type"   .= JStr (renderMsg (rsLang st) mtyMsg)
+                           , "typeZh" .= JStr (fst mtyMsg)
+                           , "typeEn" .= JStr (snd mtyMsg) ])
+                ++ (if null trail then []
+                      else traceField trail : traceMetaField (erCount res) trail)
+  if erLimitHit res
+    then emitL st "warn"
+          (textZh ++ " —— 已达到 " ++ show (rsLimit st) ++ " 步上限，归约未完成")
+          (textEn ++ " -- step limit " ++ show (rsLimit st) ++ " reached, reduction incomplete")
+          fields
+    else emitL st "result" textZh textEn fields
+
 runCommand :: ReplState -> Command -> IO (Maybe ReplState)
 runCommand st (Eval expr) = do
-  let e'    = expandTop (rsEnv st) expr
-      res   = eval (rsJson st) (rsLimit st) (rsStrategy st) e'
-      final = erFinal res
-      hint  = valueHint (rsLang st) final
-      steps = erCount res
-      stepTxt = if steps > 0
-                  then "  (" ++ say st (show steps ++ " 步") (show steps ++ " steps") ++ ")"
-                  else ""
-      text  = pretty final ++ stepTxt ++ hint
-      mty   = either (const "") (prettyScheme (rsLang st))
-                       (inferScheme (rsTypeEnv st) expr)
-      fields = [ "steps"    .= JNum steps
-               , "term"     .= JStr (pretty final)
-               , "limitHit" .= JBool (erLimitHit res)
-               , "hint"     .= JStr hint
-               , "strategy" .= JStr (strategyId (rsStrategy st))
-               , astField final
-               , "db"       .= JStr (deBruijnView final) ]
-               ++ [ "type" .= JStr mty | not (null mty) ]
-               ++ [ traceField (erSteps res) | not (null (erSteps res)) ]
-  if erLimitHit res
-    then emit st "warn" (text ++ say st
-          (" —— 已达到 " ++ show (rsLimit st) ++ " 步上限，归约未完成")
-          (" -- step limit " ++ show (rsLimit st) ++ " reached, reduction incomplete")) fields
-    else emit st "result" text fields
+  let e'  = expandTop (rsEnv st) expr
+      res = evalWith (rsEta st) (rsJson st) (rsLimit st) (rsStrategy st) e'
+  emitEvalResult st res (Just expr)
   return (Just st)
 runCommand st (Define var expr) = do
   let expr' = expandTop (rsEnv st) expr
       env'  = Map.insert var expr' (rsEnv st)
-      (tenv', mty) = case inferScheme (rsTypeEnv st) expr of
-        Right sc -> (Map.insert var sc (rsTypeEnv st), Just (prettyScheme (rsLang st) sc))
+      (tenv', mtyMsg) = case inferScheme (rsTypeEnv st) expr of
+        Right sc -> (Map.insert var sc (rsTypeEnv st), Just (prettySchemeMsg sc))
         Left _   -> (rsTypeEnv st, Nothing)
       fields = [ "name"  .= JStr var
                , "value" .= JStr (pretty expr') ]
-               ++ [ "type" .= JStr ty | Just ty <- [mty] ]
-  emit st "define" ("defined " ++ var ++ " = " ++ pretty expr') fields
+               ++ [ "type" .= JStr (renderMsg (rsLang st) ty) | Just ty <- [mtyMsg] ]
+               ++ [ "typeZh" .= JStr (fst ty) | Just ty <- [mtyMsg] ]
+               ++ [ "typeEn" .= JStr (snd ty) | Just ty <- [mtyMsg] ]
+  emitL st "define"
+    ("已定义 " ++ var ++ " = " ++ pretty expr')
+    ("defined " ++ var ++ " = " ++ pretty expr') fields
   return (Just st { rsEnv = env', rsTypeEnv = tenv' })
+runCommand st (DefineRec var expr) = do
+  let body  = expandTop (Map.delete var (rsEnv st)) expr
+      expr' = App yComb (Lam var body)
+      env'  = Map.insert var expr' (rsEnv st)
+  emitL st "define"
+    ("已定义递归 " ++ var ++ " = " ++ pretty body)
+    ("defined recursive " ++ var ++ " = " ++ pretty body)
+    [ "name"  .= JStr var
+    , "value" .= JStr (pretty expr')
+    , "rec"   .= JBool True ]
+  return (Just st { rsEnv = env' })
 runCommand st (LoadFile path) = do
   res <- loadDefinitionsFromFile (rsEnv st) (rsTypeEnv st) path
   case res of
     Left err -> do
-      emit st "fail" (say st ("文件加载错误: " ++ err) ("File load error: " ++ err)) []
+      emitL st "fail" ("文件加载错误: " ++ err) ("File load error: " ++ err) []
       return (Just st)
     Right out -> do
+      let st' = applyLoadOutcome st out
       forM_ (reverse (loOk out)) $ \(name, ex) ->
-        emit st "define" ("defined " ++ name ++ " = " ++ pretty ex)
+        emitL st "define"
+          ("已定义 " ++ prettyDef name ex)
+          ("defined " ++ prettyDef name ex)
           [ "name" .= JStr name
           , "value" .= JStr (pretty ex) ]
       forM_ (reverse (loFail out)) $ \(n, line) ->
-        emit st "error" (say st
+        emitL st "error"
           ("解析错误: 第 " ++ show n ++ " 行: " ++ shorten 60 line)
-          ("Parse error on line " ++ show n ++ ": " ++ shorten 60 line))
+          ("Parse error on line " ++ show n ++ ": " ++ shorten 60 line)
           [ "line" .= JNum n ]
-      emit st "info" (say st
+      emitL st "info"
         ("成功加载 " ++ show (length (loOk out)) ++ " 个定义，失败 " ++ show (length (loFail out)) ++ " 行")
-        ("Loaded " ++ show (length (loOk out)) ++ " definitions, " ++ show (length (loFail out)) ++ " lines failed"))
+        ("Loaded " ++ show (length (loOk out)) ++ " definitions, " ++ show (length (loFail out)) ++ " lines failed")
         [ "loaded" .= JNum (length (loOk out))
         , "failed" .= JNum (length (loFail out)) ]
-      return $ Just st { rsEnv = loEnv out, rsTypeEnv = loTypeEnv out }
+      forM_ (loStrategy out) $ \s -> emitL st' "info"
+        ("求值策略：" ++ strategyLabel s) ("Strategy: " ++ strategyLabelEn s)
+        [ "strategy" .= JStr (strategyId s) ]
+      forM_ (loLimit out) $ \n -> emitL st' "info"
+        ("归约步数上限：" ++ show n) ("Reduction step limit: " ++ show n)
+        [ "limit" .= JNum n ]
+      forM_ (loLang out) $ \_ -> emitL st' "info"
+        "语言已切换。" "Language switched." []
+      return (Just st')
+runCommand st (SaveFile path) = do
+  let userDefs n e = Map.lookup n initEnv /= Just e
+      defs = [ sourceDef n e
+             | (n, e) <- Map.toList (rsEnv st), userDefs n e ]
+      body = unlines defs
+  res <- writeFileUtf8 path body
+  case res of
+    Left err -> emitL st "fail"
+      ("保存失败: " ++ err) ("Save failed: " ++ err) []
+    Right () -> emitL st "info"
+      ("已保存 " ++ show (length defs) ++ " 个定义到 " ++ path)
+      ("Saved " ++ show (length defs) ++ " definitions to " ++ path)
+      [ "file" .= JStr path, "saved" .= JNum (length defs) ]
+  return (Just st)
 runCommand st ShowEnv = do
-  let rows = [(n, pretty e) | (n, e) <- Map.toList (rsEnv st)]
+  -- 预定义项的推断类型往往很长，环境面板只显示用户定义的类型
+  -- Prelude schemes are long; show types for user definitions only.
+  let tyOf n
+        | Map.member n initEnv = ("", "")
+        | otherwise = maybe ("", "") prettySchemeMsg (Map.lookup n (rsTypeEnv st))
+      rows = [(n, pretty e, tyOf n) | (n, e) <- Map.toList (rsEnv st)]
   if null rows
-    then emit st "info" (say st "当前环境为空。" "The environment is empty.") []
+    then emitL st "info" "当前环境为空。" "The environment is empty." []
     else if rsJson st
       then emit st "env" "" [ "rows" .= JArr
-             [ JObj ["name" .= JStr a, "value" .= JStr b] | (a, b) <- rows ] ]
-      else putStr (renderTable (rsLang st) rows) >> hFlush stdout
+             [ JObj [ "name" .= JStr a, "value" .= JStr b
+                    , "type" .= JStr (renderMsg (rsLang st) ty)
+                    , "typeZh" .= JStr (fst ty), "typeEn" .= JStr (snd ty) ]
+             | (a, b, ty) <- rows ] ]
+      else putStr (renderTable (rsLang st) [(a, b, renderMsg (rsLang st) ty) | (a, b, ty) <- rows])
+             >> hFlush stdout
   return (Just st)
 runCommand st (DeleteDef name)
   | Map.member name (rsEnv st) = do
-      emit st "info" (say st ("已删除 " ++ name) ("Deleted " ++ name)) []
+      emitL st "info" ("已删除 " ++ name) ("Deleted " ++ name) []
       return $ Just st { rsEnv = Map.delete name (rsEnv st)
                        , rsTypeEnv = Map.delete name (rsTypeEnv st) }
   | otherwise = do
-      emit st "fail" (say st ("未找到定义：" ++ name) ("Definition not found: " ++ name)) []
+      emitL st "fail" ("未找到定义：" ++ name) ("Definition not found: " ++ name) []
       return (Just st)
 runCommand st ResetEnv = do
-  emit st "info" (say st "环境已重置为预定义状态。" "Environment reset to the prelude.") []
+  emitL st "info" "环境已重置为预定义状态。" "Environment reset to the prelude." []
   return $ Just st { rsEnv = initEnv, rsTypeEnv = initTypeEnv, rsCurrent = Nothing }
 runCommand st (SetStrategy s) = do
-  emit st "info" (say st
+  emitL st "info"
     ("求值策略：" ++ strategyLabel s ++ "（" ++ strategyId s ++ "）")
-    ("Strategy: " ++ strategyLabelEn s ++ " (" ++ strategyId s ++ ")"))
+    ("Strategy: " ++ strategyLabelEn s ++ " (" ++ strategyId s ++ ")")
     [ "strategy" .= JStr (strategyId s) ]
   return $ Just st { rsStrategy = s }
 runCommand st (SetSteps n) = do
-  emit st "info" (say st ("归约步数上限：" ++ show n) ("Reduction step limit: " ++ show n))
+  emitL st "info" ("归约步数上限：" ++ show n) ("Reduction step limit: " ++ show n)
     [ "limit" .= JNum n ]
   return $ Just st { rsLimit = n }
+runCommand st (SetEta on) = do
+  emitL st "info"
+    ("η 归约：" ++ if on then "开启" else "关闭")
+    ("Eta reduction: " ++ if on then "on" else "off")
+    [ "eta" .= JBool on ]
+  return $ Just st { rsEta = on }
 runCommand st (Trace expr) = do
   let e'  = expandTop (rsEnv st) expr
-      res = evalTrace (rsLimit st) (rsStrategy st) e'
+      res = evalTraceWith (rsEta st) (rsLimit st) (rsStrategy st) e'
+      trail = erSteps res
       fields = [ "final"    .= JStr (pretty (erFinal res))
                , "steps"    .= JNum (erCount res)
                , "limitHit" .= JBool (erLimitHit res)
+               , "eta"      .= JBool (rsEta st)
                , "strategy" .= JStr (strategyId (rsStrategy st))
-               , traceField (erSteps res) ]
+               , traceField trail ]
+               ++ traceMetaField (erCount res) trail
   if rsJson st
     then emit st "trace" "" fields
     else do
@@ -1042,9 +1579,12 @@ runCommand st (Trace expr) = do
         ("归约轨迹（" ++ strategyLabel (rsStrategy st) ++ "，共 " ++ show (erCount res) ++ " 步）")
         ("Reduction trace (" ++ strategyLabelEn (rsStrategy st) ++ ", " ++ show (erCount res) ++ " steps)")
       putStrLn $ "  0. " ++ pretty e'
-      forM_ (erSteps res) $ \s -> do
+      forM_ trail $ \s -> do
         putStrLn $ "  " ++ show (tsIndex s) ++ ". " ++ tsNote s
         putStrLn $ "       " ++ pretty (tsAfter s)
+      when (erCount res > length trail || traceClipped trail) $ putStrLn (say st
+        "  ⚠ 轨迹较长，JSON 中只保留前 500 步并截断长项"
+        "  ⚠ Long trace: JSON keeps the first 500 steps and clips long terms")
       when (erLimitHit res) $ putStrLn (say st
         "  ⚠ 已达到步数上限，归约未完成"
         "  ⚠ Step limit reached, reduction incomplete")
@@ -1052,78 +1592,172 @@ runCommand st (Trace expr) = do
 runCommand st (Ast expr) = do
   let e' = expandTop (rsEnv st) expr
   if rsJson st
-    then emit st "ast" "" [treeField e']
+    then emit st "ast" "" [treeField e', astTreeField e']
     else putStrLn (unlines (treeLines e'))
   return (Just st)
 runCommand st (DbView expr) = do
   let e' = expandTop (rsEnv st) expr
   emit st "db" (deBruijnView e')
     [ astField e'
+    , astTreeField e'
     , "term" .= JStr (pretty e') ]
   return (Just st)
 runCommand st (TypeOf expr) = do
   case inferScheme (rsTypeEnv st) expr of
     Left err0 -> do
       let err = scrubTyNames err0
-      emit st "fail" (say st ("无法类型化：" ++ err) ("Cannot type: " ++ err)) []
+      emitL st "fail" ("无法类型化：" ++ err) ("Cannot type: " ++ err) []
       return (Just st)
     Right sc -> do
-      let ty = prettyScheme (rsLang st) sc
+      let ty = prettySchemeMsg sc
+          tyZh = "类型：" ++ fst ty
+          tyEn = "Type: " ++ snd ty
       if rsJson st
-        then emit st "type" ty [ "type" .= JStr ty ]
-        else putStrLn (say st ("类型：" ++ ty) ("Type: " ++ ty))
+        then emitL st "type" (fst ty) (snd ty)
+               [ "type"   .= JStr (renderMsg (rsLang st) ty)
+               , "typeZh" .= JStr (fst ty)
+               , "typeEn" .= JStr (snd ty) ]
+        else putStrLn (renderMsg (rsLang st) (tyZh, tyEn))
       return (Just st)
+runCommand st (EqExpr a b) = do
+  let a' = expandTop (rsEnv st) a
+      b' = expandTop (rsEnv st) b
+      ok = alphaEq a' b'
+      zh = (if ok then "α 等价：" else "不 α 等价：") ++ pretty a' ++ "  ,  " ++ pretty b'
+      en = (if ok then "alpha-equivalent: " else "not alpha-equivalent: ")
+             ++ pretty a' ++ "  ,  " ++ pretty b'
+  emitL st "eq" zh en
+    [ "equal" .= JBool ok
+    , "left"  .= JStr (pretty a')
+    , "right" .= JStr (pretty b') ]
+  return (Just st)
+runCommand st (ConvExpr a b) = do
+  let a' = expandTop (rsEnv st) a
+      b' = expandTop (rsEnv st) b
+      ra = evalWith (rsEta st) False (rsLimit st) Normal a'
+      rb = evalWith (rsEta st) False (rsLimit st) Normal b'
+      hit = erLimitHit ra || erLimitHit rb
+      ok = not hit && alphaEq (erFinal ra) (erFinal rb)
+      la = pretty (erFinal ra)
+      lb = pretty (erFinal rb)
+      zh = if hit then "无法判定（达到步数上限）：" ++ la ++ "  ,  " ++ lb
+           else if ok then "β 等价：" ++ la ++ "  ,  " ++ lb
+           else "不 β 等价：" ++ la ++ "  ,  " ++ lb
+      en = if hit then "inconclusive (step limit): " ++ la ++ "  ,  " ++ lb
+           else if ok then "beta-equivalent: " ++ la ++ "  ,  " ++ lb
+           else "not beta-equivalent: " ++ la ++ "  ,  " ++ lb
+  emitL st "conv" zh en
+    [ "equal"    .= JBool ok
+    , "limitHit" .= JBool hit
+    , "left"     .= JStr la
+    , "right"    .= JStr lb ]
+  return (Just st)
+runCommand st (Nf expr) = do
+  let e'  = expandTop (rsEnv st) expr
+      res = evalTraceWith (rsEta st) (rsLimit st) Normal e'
+  emitEvalResult st res (Just expr)
+  return (Just st)
+runCommand st (Whnf expr) = do
+  let e'  = expandTop (rsEnv st) expr
+      res = evalWHNF (rsEta st) (rsLimit st) (rsStrategy st) e'
+  emitEvalResult st res (Just expr)
+  return (Just st)
+runCommand st (IntOf expr) = do
+  let e'  = expandTop (rsEnv st) expr
+      res = evalWith (rsEta st) False (rsLimit st) (rsStrategy st) e'
+      final = erFinal res
+  case isChurchNumeral final of
+    Just n | not (erLimitHit res) ->
+      emit st "int" (show n)
+        [ "value" .= JNum (fromIntegral n)
+        , "term"  .= JStr (pretty final) ]
+    Just _ -> emitL st "fail"
+      "归约达到步数上限，无法确认邱奇数"
+      "Step limit reached; cannot confirm a Church numeral" []
+    Nothing -> emitL st "fail"
+      ("不是邱奇数：" ++ pretty final)
+      ("Not a Church numeral: " ++ pretty final) []
+  return (Just st)
+runCommand st (ChurchOf n) = do
+  let e' = churchNumeral n
+      ty = either (const ("", "")) prettySchemeMsg (inferScheme (rsTypeEnv st) e')
+  emit st "church" (pretty e')
+    ([ "value" .= JNum (fromIntegral n)
+     , "term"  .= JStr (pretty e') ]
+     ++ (if ty == ("", "") then []
+           else [ "type"   .= JStr (renderMsg (rsLang st) ty)
+                , "typeZh" .= JStr (fst ty)
+                , "typeEn" .= JStr (snd ty) ]))
+  return (Just st)
 runCommand st (Begin expr) = do
   let e' = expandTop (rsEnv st) expr
-      fields = [ "steps" .= JNum 0
-               , "term" .= JStr (pretty e')
-               , "strategy" .= JStr (strategyId (rsStrategy st)) ]
+      n  = redexCount e'
+      fields = [ "steps"    .= JNum 0
+               , "term"     .= JStr (pretty e')
+               , "strategy" .= JStr (strategyId (rsStrategy st))
+               , "eta"      .= JBool (rsEta st) ]
+               ++ redexFields e'
+  let hintTxt = say st
+        ("（" ++ show n ++ " 个可归约位置；:step 按策略归约，:step <序号> 任选）")
+        (" (" ++ show n ++ " redex(es); :step follows the strategy, :step <n> picks one)")
   if rsJson st
     then emit st "term" (pretty e') fields
     else putStrLn (say st
       ("开始手动归约：" ++ pretty e' ++ "\n  用 :step 归约一步，:run 归约到底，:end 结束。")
-      ("Manual reduction started: " ++ pretty e' ++ "\n  Use :step to reduce one step, :run to finish, :end to stop."))
+      ("Manual reduction started: " ++ pretty e' ++ "\n  Use :step to reduce one step, :run to finish, :end to stop.")
+      ++ "\n  " ++ hintTxt)
   return $ Just st { rsCurrent = Just e' }
-runCommand st StepCmd = case rsCurrent st of
+runCommand st (StepCmd mi) = case rsCurrent st of
   Nothing -> do
-    emit st "fail" (say st
+    emitL st "fail"
       "当前没有进行中的归约，先用 :begin <表达式> 开始。"
-      "No reduction in progress; start one with :begin <expr>.") []
+      "No reduction in progress; start one with :begin <expr>." []
     return (Just st)
-  Just e -> case stepOnce (rsStrategy st) e of
-    Nothing -> do
-      emit st "info" (say st ("已是正规形：" ++ pretty e) ("Already in normal form: " ++ pretty e)) []
-      return (Just st)
-    Just (StepOut whole red) -> do
-      emit st "step" (pretty whole)
-        [ "rule"   .= JStr (redRule red)
-        , "note"   .= JStr (redNote red)
-        , "before" .= JStr (pretty e)
-        , "term"   .= JStr (pretty whole) ]
-      return $ Just st { rsCurrent = Just whole }
+  Just e ->
+    let mstep = case mi of
+          Nothing -> stepFor (rsEta st) (rsStrategy st) e
+          Just i  -> stepAtIndex i e
+    in case mstep of
+      Nothing -> do
+        let (zh, en) = case mi of
+              Just i  ->
+                ( "没有第 " ++ show i ++ " 个 redex（当前 " ++ show (redexCount e) ++ " 个）。"
+                , "No redex #" ++ show i ++ " (there are " ++ show (redexCount e) ++ ")." )
+              Nothing ->
+                ( "已是正规形：" ++ pretty e
+                , "Already in normal form: " ++ pretty e )
+        emitL st (if mi == Nothing then "info" else "fail") zh en []
+        return (Just st)
+      Just (StepOut whole red) -> do
+        let stepNo = maybe "" (\i -> " #" ++ show i) mi
+        emit st "step" (pretty whole)
+          ([ "rule"     .= JStr (redRule red)
+           , "note"     .= JStr (redNote red)
+           , "before"   .= JStr (pretty e)
+           , "term"     .= JStr (pretty whole)
+           , "redex"    .= JStr stepNo
+           , "eta"      .= JBool (rsEta st) ]
+           ++ redexFields whole)
+        return $ Just st { rsCurrent = Just whole }
 runCommand st RunCmd = case rsCurrent st of
   Nothing -> do
-    emit st "fail" (say st
+    emitL st "fail"
       "当前没有进行中的归约，先用 :begin <表达式> 开始。"
-      "No reduction in progress; start one with :begin <expr>.") []
+      "No reduction in progress; start one with :begin <expr>." []
     return (Just st)
   Just e -> do
-    let res = evalTrace (rsLimit st) (rsStrategy st) e
-        final = erFinal res
-    emit st "result" (pretty final ++ valueHint (rsLang st) final)
-      [ "steps"    .= JNum (erCount res)
-      , "limitHit" .= JBool (erLimitHit res)
-      , "term"     .= JStr (pretty final) ]
+    let res = evalTraceWith (rsEta st) (rsLimit st) (rsStrategy st) e
+    emitEvalResult st res Nothing
     return $ Just st { rsCurrent = Nothing }
 runCommand st EndCmd = do
-  emit st "info" (say st "已结束手动归约。" "Manual reduction ended.") []
+  emitL st "info" "已结束手动归约。" "Manual reduction ended." []
   return $ Just st { rsCurrent = Nothing }
 runCommand st (SetLang l) = do
-  emit st "info" (tr l "语言已切换为中文。" "Language switched to English.") []
+  emitL st "info" "语言已切换。" "Language switched." []
   return $ Just st { rsLang = l }
 runCommand st Help = do
   if rsJson st
-    then emit st "help" (helpMessage (rsLang st)) []
+    then emitL st "help" (helpMessage Zh) (helpMessage En) []
     else putStrLn (helpMessage (rsLang st))
   return (Just st)
 runCommand _ Quit = return Nothing
@@ -1137,14 +1771,14 @@ strategyLabelEn CallByValue = "call-by-value (weak)"
 say :: ReplState -> String -> String -> String
 say st zh en = renderMsg (rsLang st) (zh, en)
 
-prettyScheme :: Lang -> Scheme -> String
-prettyScheme lang (Forall vars t0) =
+prettySchemeMsg :: Scheme -> Msg
+prettySchemeMsg (Forall vars t0) =
   let base = prettyTy (normalizeNames t0)
-      poly = case lang of
-        Zh   -> "（多态）"
-        En   -> " (polymorphic)"
-        Both -> "（多态） / (polymorphic)"
-  in base ++ (if null vars then "" else poly)
+      poly = if null vars then ("", "") else ("（多态）", " (polymorphic)")
+  in (base ++ fst poly, base ++ snd poly)
+
+prettyScheme :: Lang -> Scheme -> String
+prettyScheme lang = renderMsg lang . prettySchemeMsg
 
 -- ---------------------------------------------------------------------------
 -- 帮助信息 Help Message
@@ -1157,20 +1791,26 @@ helpMessage lang = unlines $ map (renderMsg lang) helpLines
         , "λ Calculus interpreter - Church encodings / reduction traces / type inference" )
       , ("", "")
       , ("用法:", "Usage:")
-      , ("  ./extension [选项] [文件]", "  ./extension [options] [file]")
+      , ("  ./extension [选项] [文件...]", "  ./extension [options] [file...]")
       , ("", "")
       , ("选项:", "Options:")
       , ("  -h, --help       显示此帮助信息并退出", "  -h, --help       show this help and exit")
+      , ("  -v, --version    显示版本号并退出", "  -v, --version    print the version and exit")
       , ("     --batch       批处理模式（从 stdin 逐行读取，供 Web 后端使用）"
         , "     --batch       batch mode (one command per stdin line, used by the web backend)")
       , ("     --json        以 JSON Lines 输出，便于程序消费"
         , "     --json        emit JSON Lines for programmatic use")
-      , ("     --lang <值>   输出语言：zh / en / both（默认 both）"
-        , "     --lang <v>    output language: zh / en / both (default both)")
+      , ("     --lang <值>   输出语言：zh / en / both（默认 both；也接受 --lang=zh）"
+        , "     --lang <v>    output language: zh / en / both (default both; --lang=zh also works)")
+      , ("     --timeout <秒> 单条命令的墙钟上限，0 表示不限制（默认 0）"
+        , "     --timeout <s> wall-clock limit per command; 0 disables it (default 0)")
       , ("", "")
       , ("参数:", "Arguments:")
-      , ("  文件              启动时自动加载文件中的定义（每行格式: name = expr）"
-        , "  file              load definitions on startup (one `name = expr` per line)")
+      , ("  文件              启动时按顺序加载多个文件", "  files             loaded in order at startup")
+      , ("                    每行 `name = expr`；支持 -- 注释、括号未闭合时续行"
+        , "                    one `name = expr` per line; -- comments; open parens continue the line")
+      , ("                    也可包含 :strategy / :steps / :lang 命令"
+        , "                    :strategy / :steps / :lang commands are accepted too")
       , ("", "")
       , ("REPL 内建命令:", "REPL commands:")
       ]
@@ -1181,36 +1821,56 @@ helpMessage lang = unlines $ map (renderMsg lang) helpLines
       , ("表达式语法:", "Expression syntax:")
       , ("  - 变量: 字母或特定运算符开头，后可跟字母/数字/下划线/单引号/特定运算符 (+ - * / % ^ ? ! < > | & ~ # $)"
         , "  - variable: starts with a letter or allowed operator char, then letters/digits/_/'/operators")
-      , ("  - 定义变量：name = expr", "  - definition: name = expr")
-      , ("  - 抽象: λx.body 或 \\x.body，多个参数可写为 λx y.body"
-        , "  - abstraction: λx.body or \\x.body; multiple params as λx y.body")
+      , ("  - 定义变量：name = expr；递归定义：rec name = expr 或 :let rec name = expr"
+        , "  - definition: name = expr; recursion: rec name = expr or :let rec name = expr")
+      , ("  - 抽象: λx.body、λx → body、\\x -> body；多个参数可写为 λx y.body"
+        , "  - abstraction: λx.body, λx → body or \\x -> body; multiple params as λx y.body")
       , ("  - 应用: f a，左结合", "  - application: f a, left-associative")
       , ("  - 括号: (expr)", "  - grouping: (expr)")
       , ("  - 邱奇数: 直接输入数字 (0-9999) 自动转为 Church 编码"
         , "  - Church numerals: a literal number (0-9999) becomes its Church encoding")
+      , ("  - :eq / :conv 用逗号分隔两个表达式，例如 :eq \\a.a , \\b.b"
+        , "  - :eq / :conv take two expressions separated by a comma, e.g. :eq \\a.a , \\b.b")
       , ("", "")
-      , ("预定义环境包含: TRUE, FALSE, NOT, AND, OR, IF, ZERO, ONE, TWO, THREE, SUCC, PLUS, MULT"
-        , "Prelude: TRUE, FALSE, NOT, AND, OR, IF, ZERO, ONE, TWO, THREE, SUCC, PLUS, MULT")
+      , ("预定义环境: TRUE FALSE NOT AND OR IF ZERO ONE TWO THREE SUCC PLUS MULT EXP PRED SUB"
+        , "Prelude: TRUE FALSE NOT AND OR IF ZERO ONE TWO THREE SUCC PLUS MULT EXP PRED SUB")
+      , ("             ISZERO LEQ EQ PAIR FST SND NIL CONS HEAD TAIL Y"
+        , "         ISZERO LEQ EQ PAIR FST SND NIL CONS HEAD TAIL Y")
       ]
 
 -- ---------------------------------------------------------------------------
 -- REPL
 -- ---------------------------------------------------------------------------
+-- 墙钟超时：0 表示不限制；web 后端另有进程级超时
+-- Wall-clock timeout; 0 disables it. The web backend also has a process timeout.
+runWithTimeout :: ReplState -> IO (Maybe ReplState) -> IO (Maybe ReplState)
+runWithTimeout st act
+  | rsTimeout st <= 0 = act
+  | otherwise = do
+      r <- timeout (rsTimeout st * 1000000) act
+      case r of
+        Just x  -> return x
+        Nothing -> do
+          emitL st "warn"
+            ("命令超时（超过 " ++ show (rsTimeout st) ++ " 秒），已中止")
+            ("Command timed out after " ++ show (rsTimeout st) ++ " s") []
+          return (Just st)
+
 handleLine :: ReplState -> String -> IO (Maybe ReplState)
 handleLine st line =
   case parseCommand line of
     Left err -> do
-      emit st "error"
-        (renderMsg (rsLang st)
-          ( "解析错误: 第 " ++ show (pePos err) ++ " 列 — " ++ fst (peMsg err)
-          , "Parse error at column " ++ show (pePos err) ++ " -- " ++ snd (peMsg err) ))
+      emitL st "error"
+        ( "解析错误: 第 " ++ show (pePos err) ++ " 列 — " ++ fst (peMsg err))
+        ( "Parse error at column " ++ show (pePos err) ++ " -- " ++ snd (peMsg err))
         [ "pos" .= JNum (pePos err) ]
       return (Just st)
-    Right cmd -> runCommand st cmd
+    Right cmd -> runWithTimeout st (runCommand st cmd)
 
-replSettings :: ReplState -> Settings IO
-replSettings st =
-  setComplete (completeWord Nothing " \t" (completeFn st)) defaultSettings
+replSettings :: ReplState -> Maybe FilePath -> Settings IO
+replSettings st hist =
+  setComplete (completeWord Nothing " \t(),.\\λ→" (completeFn st))
+              (defaultSettings { historyFile = hist })
 
 completeFn :: ReplState -> String -> IO [Completion]
 completeFn st left = return $ map simpleCompletion
@@ -1218,13 +1878,26 @@ completeFn st left = return $ map simpleCompletion
   where
     candidates = Map.keys (rsEnv st) ++ map fst knownCommands
 
+-- 交互式历史文件：~/.lambda_history（失败时静默不保存）
+-- Interactive history: ~/.lambda_history (silently disabled on failure).
+historyPath :: IO (Maybe FilePath)
+historyPath = do
+  r <- catch (Right <$> getHomeDirectory)
+             (\(e :: SomeException) -> return (Left (show e)))
+  return $ either (const Nothing) (Just . (++ "/.lambda_history")) r
+
 repl :: ReplState -> InputT IO ()
 repl st = do
   minput <- getInputLine "λ> "
   case minput of
     Nothing     -> return ()
     Just input  -> do
-      me <- liftIO $ handleLine st input
+      me <- liftIO $ handleLine st input `catch` \(e :: AsyncException) ->
+        case e of
+          UserInterrupt -> do
+            emitL st "warn" "已中断当前计算。" "Interrupted." []
+            return (Just st)
+          _ -> throwIO e
       forM_ me repl
 
 -- ---------------------------------------------------------------------------
@@ -1251,51 +1924,110 @@ batchLoop st = do
 -- ---------------------------------------------------------------------------
 -- 主程序 Main Program
 -- ---------------------------------------------------------------------------
+data Options = Options
+  { optBatch   :: Bool
+  , optJson    :: Bool
+  , optLang    :: Lang
+  , optTimeout :: Int
+  , optFiles   :: [FilePath]
+  , optHelp    :: Bool
+  , optVersion :: Bool
+  }
+
+parseArgs :: [String] -> Either String Options
+parseArgs = go (Options False False Both 0 [] False False)
+  where
+    go o [] = Right o
+    go o ("--batch":xs)   = go o { optBatch = True } xs
+    go o ("--json":xs)    = go o { optJson = True } xs
+    go o ("-j":xs)        = go o { optJson = True } xs
+    go o ("--help":xs)    = go o { optHelp = True } xs
+    go o ("-h":xs)        = go o { optHelp = True } xs
+    go o ("--version":xs) = go o { optVersion = True } xs
+    go o ("-v":xs)        = go o { optVersion = True } xs
+    go o ("--lang":xs) = case xs of
+      (v:rest) -> case parseLang v of
+        Just l  -> go o { optLang = l } rest
+        Nothing -> Left ("未知语言 / unknown language: " ++ v)
+      [] -> Left "缺少 --lang 的值 / missing value for --lang"
+    go o ("--timeout":xs) = case xs of
+      (v:rest) -> case reads v :: [(Int, String)] of
+        [(n, "")] | n >= 0 -> go o { optTimeout = n } rest
+        _ -> Left ("无效的 --timeout 秒数 / invalid --timeout: " ++ v)
+      [] -> Left "缺少 --timeout 的值 / missing value for --timeout"
+    go o (x:xs)
+      | Just v <- stripPrefix "--lang=" x =
+          case parseLang v of
+            Just l  -> go o { optLang = l } xs
+            Nothing -> Left ("未知语言 / unknown language: " ++ v)
+      | Just v <- stripPrefix "--timeout=" x =
+          case reads v :: [(Int, String)] of
+            [(n, "")] | n >= 0 -> go o { optTimeout = n } xs
+            _ -> Left ("无效的 --timeout 秒数 / invalid --timeout: " ++ v)
+      | "-" `isPrefixOf` x = Left ("未知选项 / unknown option: " ++ x)
+      | otherwise          = go o { optFiles = optFiles o ++ [x] } xs
+
+-- 启动时加载一个文件；失败只报告，不中断后续文件
+-- Load one startup file; failures are reported but do not stop later files.
+loadStartupFile :: ReplState -> FilePath -> IO ReplState
+loadStartupFile st path = do
+  res <- loadDefinitionsFromFile (rsEnv st) (rsTypeEnv st) path
+  case res of
+    Left err -> do
+      emitL st "fail" ("文件加载错误: " ++ err) ("File load error: " ++ err) []
+      return st
+    Right out -> do
+      let st' = applyLoadOutcome st out
+      unless (null (loOk out)) $
+        emitL st' "info"
+          ("成功加载 " ++ show (length (loOk out)) ++ " 个定义")
+          ("Loaded " ++ show (length (loOk out)) ++ " definitions")
+          [ "loaded" .= JNum (length (loOk out)) ]
+      forM_ (reverse (loFail out)) $ \(n, line) ->
+        emitL st' "error"
+          ("第 " ++ show n ++ " 行解析失败: " ++ shorten 60 line)
+          ("Line " ++ show n ++ " failed to parse: " ++ shorten 60 line)
+          [ "line" .= JNum n ]
+      forM_ (loStrategy out) $ \s -> emitL st' "info"
+        ("求值策略：" ++ strategyLabel s) ("Strategy: " ++ strategyLabelEn s)
+        [ "strategy" .= JStr (strategyId s) ]
+      forM_ (loLimit out) $ \n -> emitL st' "info"
+        ("归约步数上限：" ++ show n) ("Reduction step limit: " ++ show n)
+        [ "limit" .= JNum n ]
+      forM_ (loLang out) $ \_ -> emitL st' "info"
+        "语言已切换。" "Language switched." []
+      return st'
+
 main :: IO ()
 main = do
   args <- getArgs
-  let json  = "--json"  `elem` args || "-j" `elem` args
-      batch = "--batch" `elem` args
-      lang  = maybe Both id (lookupFlag "--lang" args >>= parseLang)
-      files = positional args
-      lookupFlag flag xs = case dropWhile (/= flag) xs of
-        (_:v:_) -> Just v
-        _       -> Nothing
-  if any (`elem` ["-h", "--help"]) args
-    then putStrLn (helpMessage lang)
-    else do
+  case parseArgs args of
+    Left err -> do
+      hPutStrLn stderr err
+      exitFailure
+    Right opts -> do
       term <- hIsTerminalDevice stdout
-      when (batch || not term) $ do
-        hSetEncoding stdin utf8
+      when (not term) $ do
         hSetEncoding stdout utf8
         hSetEncoding stderr utf8
-      when batch $ hSetBuffering stdout LineBuffering
-      let st0 = ReplState initEnv initTypeEnv Applicative defaultLimit json lang Nothing
-      st1 <- case files of
-        (f:_) -> do
-          res <- loadDefinitionsFromFile initEnv initTypeEnv f
-          case res of
-            Left err -> do
-              putStrLn (renderMsg lang
-                ("文件加载错误: " ++ err, "File load error: " ++ err))
-              return st0
-            Right out -> do
-              unless (null (loOk out)) $
-                putStrLn $ renderMsg lang
-                  ( "成功加载 " ++ show (length (loOk out)) ++ " 个定义"
-                  , "Loaded " ++ show (length (loOk out)) ++ " definitions" )
-              forM_ (reverse (loFail out)) $ \(n, line) ->
-                putStrLn $ renderMsg lang
-                  ( "第 " ++ show n ++ " 行解析失败: " ++ shorten 60 line
-                  , "Line " ++ show n ++ " failed to parse: " ++ shorten 60 line )
-              return st0 { rsEnv = loEnv out, rsTypeEnv = loTypeEnv out }
-        _ -> return st0
-      if batch
-        then batchLoop st1
-        else runInputT (replSettings st1) (repl st1)
-  where
-    positional [] = []
-    positional ("--lang":_:rest) = positional rest
-    positional (a:rest)
-      | "-" `isPrefixOf` a = positional rest
-      | otherwise          = a : positional rest
+      if optHelp opts
+        then putStrLn (helpMessage (optLang opts))
+        else if optVersion opts
+          then putStrLn versionString
+          else do
+            let json  = optJson opts
+                batch = optBatch opts
+                lang  = optLang opts
+            when (batch || not term) $ do
+              hSetEncoding stdin utf8
+              hSetEncoding stdout utf8
+              hSetEncoding stderr utf8
+            when batch $ hSetBuffering stdout LineBuffering
+            let st0 = ReplState initEnv initTypeEnv Applicative defaultLimit
+                                (optTimeout opts) False json lang Nothing
+            st1 <- foldM loadStartupFile st0 (optFiles opts)
+            if batch
+              then batchLoop st1
+              else do
+                hist <- historyPath
+                runInputT (replSettings st1 hist) (repl st1)
