@@ -22,6 +22,33 @@
 - **中英双语**：所有面向用户的文本都有中英两种形式；用
   `--lang zh|en|both` 或 `:lang` 切换（默认 `both`）。
 
+## 界面截图
+
+浅色主题，取自实际运行的网页界面。
+
+![带归约轨迹的 REPL](docs/screenshots/main.png)
+
+*归约轨迹：每一步的归约前后差异、步进播放器，结果附带 β 步数与邱奇数释义。*
+
+![语法树与 de Bruijn 视图](docs/screenshots/ast.png)
+
+*结果的语法树，以及绑定变量的 de Bruijn 索引视图。*
+
+![环境面板](docs/screenshots/env.png)
+
+*环境面板：列出定义及其表达式；点击名称插入，悬停删除。*
+
+![使用指引](docs/screenshots/guide.png)
+
+*内置使用指引在首次访问时打开，也可随时从「指引」标签页查看。*
+
+在网页界面运行时重新生成截图：
+
+```bash
+pip install -r tools/requirements.txt
+python tools/screenshot.py            # 或 tools\screenshot.bat
+```
+
 ## 编译
 
 ```bash
@@ -138,9 +165,10 @@ test.bat           # Windows
 python tests/run_tests.py --bin ./extension
 ```
 
-共 19 组，覆盖解析错误位置、β 归约结果、变量捕获、归约轨迹、四种策略、
+共 20 组，覆盖解析错误位置、β 归约结果、变量捕获、归约轨迹、四种策略、
 步数上限、邱奇编码与组合子提示、类型推断、环境命令、文件加载、手动归约、
-语法树 / de Bruijn、双语输出、JSON 协议、确定性与跨策略一致性。
+语法树 / de Bruijn、双语输出、JSON 协议、确定性与跨策略一致性，以及
+Web API 会话与 `:load` 路径限制。
 
 ## 说明
 

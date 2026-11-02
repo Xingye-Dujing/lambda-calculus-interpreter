@@ -174,10 +174,11 @@ test.bat           # Windows
 python tests/run_tests.py --bin ./extension
 ```
 
-19 groups cover parsing positions, β-reduction results, capture avoidance,
+20 groups cover parsing positions, β-reduction results, capture avoidance,
 traces, all four strategies, step limits, Church/combinator hints, type
 inference, environment commands, file loading, manual reduction, AST/de Bruijn,
-bilingual output, JSON protocol, determinism, and cross-strategy agreement.
+bilingual output, JSON protocol, determinism, cross-strategy agreement, and the
+web API session with `:load` confinement.
 
 ## Notes
 
