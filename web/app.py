@@ -40,6 +40,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import re
 import subprocess
 import threading
 import time
@@ -54,6 +55,40 @@ EVAL_TIMEOUT = float(os.environ.get("LAMBDA_EVAL_TIMEOUT", "10"))
 SESSION_IDLE = float(os.environ.get("LAMBDA_SESSION_IDLE", "1800"))
 MAX_SESSIONS = int(os.environ.get("LAMBDA_MAX_SESSIONS", "32"))
 ALLOWED_LANGS = {"zh", "en", "both"}
+
+# `:load` 默认只允许解释器目录内的文件，防止 Web 用户读取服务器任意路径；
+# 设为 `*` 可关闭限制（仅建议在本地使用）。
+# `:load` is restricted to the interpreter directory by default so web users
+# cannot read arbitrary server files; set LAMBDA_LOAD_ROOT=* to disable.
+LOAD_RE = re.compile(r"^:load\s+(.+)$")
+
+
+def load_root() -> Path | None:
+    raw = os.environ.get("LAMBDA_LOAD_ROOT")
+    if raw is None:
+        return INTERP_DIR
+    if raw.strip() in ("", "*"):
+        return None
+    return Path(raw).expanduser().resolve()
+
+
+def validate_line(line: str) -> str | None:
+    match = LOAD_RE.match(line.strip())
+    if not match:
+        return None
+    root = load_root()
+    if root is None:
+        return None
+    raw = match.group(1).strip().strip('"').strip("'")
+    try:
+        target = Path(raw)
+        if not target.is_absolute():
+            target = root / target
+        target.resolve().relative_to(root)
+    except (ValueError, OSError):
+        return (f":load 仅允许解释器目录内的路径 / :load is restricted to {root} "
+                "(set LAMBDA_LOAD_ROOT=* to allow any path)")
+    return None
 
 
 def _resolve_interp() -> Path:
@@ -265,6 +300,10 @@ def api_eval():
     legacy = data.get("code") or data.get("expr")
     if legacy is not None:
         try:
+            for ln in str(legacy).splitlines():
+                problem = validate_line(ln)
+                if problem:
+                    return jsonify({"ok": False, "error": problem}), 400
             if not INTERP_BIN.is_file():
                 return jsonify({"ok": False, "error": _missing_bin_msg()}), 500
             results = run_interpreter(str(legacy), lang)
@@ -280,6 +319,11 @@ def api_eval():
             return jsonify({"ok": False, "error": "empty request"}), 400
     else:
         lines = [line]
+
+    for ln in lines:
+        problem = validate_line(str(ln))
+        if problem:
+            return jsonify({"ok": False, "error": problem}), 400
 
     try:
         sid, interp = get_session(data.get("session"), lang)

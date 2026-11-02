@@ -107,6 +107,7 @@
   .manual-bar .mterm{color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:46%;}
   .panel-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px;}
   .panel-head h3{margin:0;}
+  .panel-head .hp{display:flex;gap:6px;flex:none;}
   /* 右侧面板 / inspector */
   .side{background:transparent;border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;}
   .tabs{display:flex;border-bottom:1px solid var(--border);overflow-x:auto;}
@@ -276,6 +277,8 @@
     endB:    {zh:"结束", en:"end"},
     reset:   {zh:"重置", en:"reset"},
     resetAsk:{zh:"确定要清空所有自定义定义吗？", en:"Reset all user definitions?"},
+    loadB:   {zh:"加载", en:"load"},
+    loadAsk: {zh:".lam 文件路径（相对解释器目录）", en:"path to a .lam file (relative to the interpreter directory)"},
     manualEmpty:{zh:"先输入一个表达式，再点“开始”。", en:"Type an expression first, then press begin."},
     trace:   {zh:"轨迹", en:"trace"}, ast:{zh:"结构", en:"AST"}, type:{zh:"类型", en:"type"},
     welcome: {zh:"REPL 就绪。输入表达式后按 Enter 执行；右侧面板会显示归约轨迹、语法树与类型。", en:"REPL ready. Press Enter to run; the panel shows traces, AST and types."},
@@ -485,6 +488,12 @@
       switchTab("ast");
       return;
     }
+    if (obj.kind === "db"){
+      addLine("info", "db: " + (obj.text || ""));
+      state.selected = {term: obj.term || "", ast: obj.ast || [], db: obj.text || ""};
+      switchTab("ast");
+      return;
+    }
     if (obj.kind === "type"){
       addLine("info", "⊢ " + (obj.type || obj.text));
       state.selected = obj;
@@ -566,8 +575,10 @@
 
   function renderEnv(){
     var head = '<div class="panel-head"><h3>' + esc(t("env")) + ' · ' + state.envRows.length +
-               '</h3><button class="mini" type="button" data-reset="1">' + esc(t("reset")) +
-               '</button></div>';
+               '</h3><span class="hp">' +
+               '<button class="mini" type="button" data-load="1">' + esc(t("loadB")) + '</button>' +
+               '<button class="mini" type="button" data-reset="1">' + esc(t("reset")) + '</button>' +
+               '</span></div>';
     if (!state.envRows.length) return head + '<p class="empty">' + esc(t("envEmpty")) + '</p>';
     var html = head;
     html += '<p class="empty" style="margin-bottom:8px;font-style:normal">' + esc(t("envHint")) + '</p>';
@@ -643,6 +654,15 @@
     });
     Array.prototype.forEach.call(panel.querySelectorAll("[data-del]"), function(el){
       el.addEventListener("click", function(){ execSilent(":del " + el.dataset.del).then(refreshEnv); });
+    });
+    Array.prototype.forEach.call(panel.querySelectorAll("[data-load]"), function(el){
+      el.addEventListener("click", function(){
+        var path = window.prompt(t("loadAsk"), "");
+        if (path == null) return;
+        path = path.trim();
+        if (!path) return;
+        exec(":load " + path).then(refreshEnv);
+      });
     });
     Array.prototype.forEach.call(panel.querySelectorAll("[data-reset]"), function(el){
       el.addEventListener("click", function(){
@@ -753,7 +773,7 @@
 
     if (/^:end\b/.test(trimmed)) setManual(false);
     if (/^:reset\b/.test(trimmed)){ setManual(false); await refreshEnv(); }
-    if (/^:del\b/.test(trimmed)) await refreshEnv();
+    if (/^:del\b/.test(trimmed) || /^:load\b/.test(trimmed)) await refreshEnv();
 
     var last = outputs.filter(function(o){ return o.kind === "result" || o.kind === "warn"; }).pop();
     if (last){
