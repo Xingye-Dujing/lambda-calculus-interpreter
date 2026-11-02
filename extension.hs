@@ -1078,7 +1078,9 @@ runCommand st (Ast expr) = do
   return (Just st)
 runCommand st (DbView expr) = do
   let e' = expandTop (rsEnv st) expr
-  emit st "info" (deBruijnView e') []
+  emit st "db" (deBruijnView e')
+    [ astField e'
+    , "term" .= JStr (pretty e') ]
   return (Just st)
 runCommand st (TypeOf expr) = do
   case inferScheme (rsTypeEnv st) expr of
