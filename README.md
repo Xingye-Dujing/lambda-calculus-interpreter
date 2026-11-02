@@ -1,224 +1,158 @@
-# Lambda Calculus Interpreter with Church Encoding ([中文版描述](./README-CN.md))
+# Lambda Calculus Interpreter with Church Encoding ([中文版](./README-CN.md))
 
-A Haskell-based interpreter for pure lambda calculus, supporting Church numerals, Church booleans, and a macro-like definition environment. Two versions are provided:
+A Haskell implementation of pure lambda calculus: Church numerals and booleans,
+capture-avoiding substitution, reduction traces, four evaluation strategies,
+simple type inference, and a small definition environment. Two standalone
+interpreters are provided:
 
-- `main`: Minimal interpreter with basic lambda calculus and normal-order reduction.
-- `extension`: Enhanced interpreter with definitions, file loading, environment inspection, and extended syntax (operator symbols in variable names, automatic numeral conversion, etc.).
-
-## Online Demo
-
-The enhanced interpreter runs in the browser at **<http://47.116.114.77/lambda/>**. The page in `web/` is a thin Flask wrapper around the same compiled `extension` binary.
+- `main` — the minimal core REPL.
+- `extension` — definitions, file loading, traces, AST/de Bruijn views, types,
+  a batch/JSON mode for the web UI, and Chinese/English output.
 
 ## Features
 
-1. Pure lambda calculus with alpha-equivalence and capture-avoiding substitution.
-2. Normal-order (applicative-order) reduction to beta-normal form.
-3. Church numeral and Church boolean detection – results are annotated with their numeric/boolean values when applicable.
-4. Extension only:
-
-- Define variables (`name = expression`) and reuse them.
-- Load definitions from a file (`:load file`).
-- Show current environment (`:env`).
-- Variables may contain operators (`+`, `-`, `*`, `/`, `%`, `^`, `?`, `!`, `<`, `>`, `|`, `&`, `~`, `#`, `$`), underscores, digits, and quotes, but must not start with a digit.
-- Automatic conversion of decimal numbers to Church numerals.
-- Built-in predefined environment: `TRUE`, `FALSE`, `NOT`, `AND`, `OR`, `IF`, `ZERO`, `ONE`, `TWO`, `THREE`, `SUCC`, `PLUS`, `MULT`.
-
-5. Web UI (`web/`) for the enhanced interpreter, with a terminal-style REPL, command history, dark mode, and clickable prelude/example chips.
+- **Pure lambda calculus** with α-equivalence and capture-avoiding substitution.
+- **Reduction traces** — every β-step is recorded with its before/after term.
+- **Four strategies** — applicative, normal, call-by-name, call-by-value
+  (weak strategies stop at weak head normal form).
+- **Step limit** (default 10,000) so non-terminating terms report instead of hang.
+- **Semantic hints** — Church numerals/booleans/pairs and the `I K S B C W`
+  combinators are recognised by α-equivalence.
+- **Simple types** — Hindley–Milner inference with let-generalisation (`:type`).
+- **Definitions** — `name = expr`, `:load`, `:env`, `:del`, `:reset`.
+- **Views** — pretty syntax tree (`:ast`) and de Bruijn indices (`:db`).
+- **Bilingual** — every user-facing message has a Chinese and an English form;
+  `--lang zh|en|both` or `:lang` selects them (default `both`).
 
 ## Building
 
-Use the provided `build.sh` script:
-
 ```bash
-chmod +x build.sh
-./build.sh
+./build.sh      # Linux / macOS
+build.bat       # Windows
 ```
 
-This compiles both interpreters with optimizations (`-O2`, `-split-sections`, `-optlc-O3`, `-threaded`, etc.). The executables `main` and `extension` will be created (`main.exe` / `extension.exe` on Windows). On Windows, use the equivalent `build.bat`, which also passes `-package containers -package haskeline`.
-
-The web interface has separate Python dependencies; it uses the compiled `extension` binary and does not need to be rebuilt with the Haskell sources.
+Both compile with `ghc -O2 ... -threaded -rtsopts`. The Windows script also
+passes `-package containers -package haskeline`.
 
 ## Usage
 
-### Minimal interpreter (`main`)
-
 ```bash
-./main
+./extension [--lang zh|en|both] [--batch] [--json] [-h|--help] [file]
 ```
 
-This starts a REPL. Enter lambda expressions:
+If a file is given, its `name = expr` lines are loaded before the REPL.
 
-```
-λ> \x. x
-⇒ λx → x
-λ> (\x. x) y
-⇒ y
-λ> \f x. f (f x)
-⇒ λf → λx → f (f x)
-λ> (\a.\b.a ((\n.\a.\b.a (n a b)) b)) (\f.\x.f (f x)) (\f.\x.f (f (f x)))
-⇒ λx → λb' → x (x (x (x (x (x (x (x (x (x (x (x (x (x (x (x b')))))))))))))))
-```
+### REPL commands
 
-Type `:q` to quit.
+| Command | Meaning |
+| --- | --- |
+| `:help` | show help |
+| `:load <file>` | load definitions (`name = expr` per line) |
+| `:let name = expr` | define a variable |
+| `:env` / `:del <name>` / `:reset` | inspect / delete / reset the environment |
+| `:strategy applicative\|normal\|cbn\|cbv` | switch evaluation strategy |
+| `:steps <n>` | set the reduction step limit |
+| `:trace <expr>` | print the full reduction trace |
+| `:ast <expr>` / `:db <expr>` | syntax tree / de Bruijn indices |
+| `:type <expr>` | infer the simple type |
+| `:begin <expr>` / `:step` / `:run` / `:end` | interactive, one-step reduction |
+| `:lang zh\|en\|both` | switch output language |
+| `:q` | quit |
 
-### Enhanced interpreter (`extension`)
+### Syntax
 
-```bash
-./extension [-h,--help] [file]
-```
+- Variables: start with a letter or one of `+ - * / % ^ ? ! < > | & ~ # $`,
+  then letters, digits, `_`, `'`, or operators.
+- Abstraction: `λx.body` or `\x.body`; multiple parameters: `λx y.body`.
+- Application: `f a`, left-associative; grouping: `(expr)`.
+- Numbers: `0`…`9999` become Church numerals.
+- Definitions: `name = expression`.
 
-If a file is given, definitions are loaded before entering the REPL.
+### Examples
 
-1. REPL commands:
+```text
+λ> PLUS ONE TWO
+⇒ λf → λx → f (f (f x))  (6 steps)  (Church numeral 3)
 
-- `:load <file>`: Load definitions from a file (one `name = expr` per line).
-- `:let name = expr`: Define a variable in the current environment.
-- `:env`: Show all current definitions.
-- `:q`: Quit the interpreter
+λ> :trace (\x.\y.x) y
+1. β: (λx. …) y    (α-rename to avoid capture)
+2. λy' → y
 
-2. Expression syntax:
+λ> :type \f.\x.f (f x)
+⊢ (t0 → t0) → t0 → t0 (polymorphic)
 
-- Variables: begin with a letter or an operator character (`+ - * / % ^ ? ! < > | & ~ # $`), followed by letters, digits, underscores, quotes, or more operators.
-- Lambda abstraction: `λx.body` or multiple parameters: λx y.body.
-- Application: `f a` (left-associative). Use parentheses for grouping.
-- Numbers: `0`, `1`, `2`, ..., `9` are automatically converted to Church numerals.
-- Definitions: `name = expression` (also allowed directly in REPL).
+λ> :strategy normal
+λ> (\x.y) ((\x.x x)(\x.x x))
+⇒ y  (1 step)          -- normal order discards the argument
 
-3. Examples:
-
-```
-λ> TRUE
-⇒ λt → λf → t  (Church boolean True)
-λ> TRUE 2 3
-⇒ λf → λx → f (f x)  (Church numeral 2)
-λ> PLUS 2 3
-⇒ λf → λx → f (f (f (f (f x))))  (Church numeral 5)
-λ> 3 2
-⇒ λx → λx' → x (x (x (x (x (x (x (x x')))))))  (Church numeral 8)
-λ> 2 3
-⇒ λx → λx' → x (x (x (x (x (x (x (x (x x'))))))))  (Church numeral 9)
-λ> + = PLUS
-defined + = λm → λn → λf → λx → m f (n f x)
-λ> + 4 3
-⇒ λf → λx → f (f (f (f (f (f (f x))))))  (Church numeral 7)
-λ> :env
-┌──────────┬─────────────────────────────────┐
-│ Var Name │ Value                           │
-├──────────┼─────────────────────────────────┤
-│ +        │ λm → λn → λf → λx → m f (n f x) │
-│ AND      │ λb1 → λb2 → b1 b2 FALSE         │
-│ FALSE    │ λt → λf → f                     │
-│ IF       │ λc → λt → λf → c t f            │
-│ MULT     │ λm → λn → λf → m (n f)          │
-│ NOT      │ λb → b FALSE TRUE               │
-│ ONE      │ λf → λx → f x                   │
-│ OR       │ λb1 → λb2 → b1 TRUE b2          │
-│ PLUS     │ λm → λn → λf → λx → m f (n f x) │
-│ SUCC     │ λn → λf → λx → f (n f x)        │
-│ THREE    │ λf → λx → f (f (f x))           │
-│ TRUE     │ λt → λf → t                     │
-│ TWO      │ λf → λx → f (f x)               │
-│ ZERO     │ λf → λx → x                     │
-└──────────┴─────────────────────────────────┘
-λ> :load test.lam
-
-成功加载 7 个定义：
-┌─────────────────┬─────────────────────────────────────────────────────────────────┐
-│ Var Name        │ Value                                                           │
-├─────────────────┼─────────────────────────────────────────────────────────────────┤
-│ id              │ λ? → ?                                                          │
-│ *               │ λm → λn → λf → m (n f)                                          │
-│ +               │ λm → λn → λf → λx → m f (n f x)                                 │
-│ aPOWbPOWc       │ λa → λb → λc → c b a                                            │
-│ tow_pow_eight   │ (λf → λx → f (f (f x))) (λf → λx → f (f x)) (λf → λx → f (f x)) │
-│ POW             │ λa → λb → b a                                                   │
-│ b_ADD_ONE_POW_a │ λa → λb → b ((λn → λf → λx → f (n f x)) a)                      │
-└─────────────────┴─────────────────────────────────────────────────────────────────┘
-
-！！！以下 2 行解析失败（已忽略）：
-  第 4 行: ERROR = \a.a b c)
-  第 2 行: ERR  = \a.
-
-λ> :env
-┌─────────────────┬─────────────────────────────────────────────────────────────────┐
-│ Var Name        │ Value                                                           │
-├─────────────────┼─────────────────────────────────────────────────────────────────┤
-│ *               │ λm → λn → λf → m (n f)                                          │
-│ +               │ λm → λn → λf → λx → m f (n f x)                                 │
-│ AND             │ λb1 → λb2 → b1 b2 FALSE                                         │
-│ FALSE           │ λt → λf → f                                                     │
-│ IF              │ λc → λt → λf → c t f                                            │
-│ MULT            │ λm → λn → λf → m (n f)                                          │
-│ NOT             │ λb → b FALSE TRUE                                               │
-│ ONE             │ λf → λx → f x                                                   │
-│ OR              │ λb1 → λb2 → b1 TRUE b2                                          │
-│ PLUS            │ λm → λn → λf → λx → m f (n f x)                                 │
-│ POW             │ λa → λb → b a                                                   │
-│ SUCC            │ λn → λf → λx → f (n f x)                                        │
-│ THREE           │ λf → λx → f (f (f x))                                           │
-│ TRUE            │ λt → λf → t                                                     │
-│ TWO             │ λf → λx → f (f x)                                               │
-│ ZERO            │ λf → λx → x                                                     │
-│ aPOWbPOWc       │ λa → λb → λc → c b a                                            │
-│ b_ADD_ONE_POW_a │ λa → λb → b ((λn → λf → λx → f (n f x)) a)                      │
-│ id              │ λ? → ?                                                          │
-│ tow_pow_eight   │ (λf → λx → f (f (f x))) (λf → λx → f (f x)) (λf → λx → f (f x)) │
-└─────────────────┴─────────────────────────────────────────────────────────────────┘
-λ> aPOWbPOWc 1 2 2
-⇒ λx' → λx → x' x  (Church numeral 1)
-λ> aPOWbPOWc 2 2 2
-⇒ λx' → λx → x' (x' (x' (x' (x' (x' (x' (x' (x' (x' (x' (x' (x' (x' (x' (x' x)))))))))))))))  (Church numeral 16)
-λ> id 3
-⇒ λf → λx → f (f (f x))  (Church numeral 3)
-λ> :let FOUR = \f x.f (f (f (f x)))
-defined FOUR = λf → λx → f (f (f (f x)))
-λ> FOUR
-⇒ λf → λx → f (f (f (f x)))  (Church numeral 4)
-λ> :q
+λ> :steps 40
+λ> (\x.y) ((\x.x x)(\x.x x))
+⚠ step limit 40 reached, reduction incomplete
 ```
 
 ## Web UI (`web/`)
 
-`web/` contains the browser interface for the enhanced interpreter: a small Flask server (`app.py`), the terminal-style page (`index.html`), its Python dependencies (`requirements.txt`), and the APL385 monospace font.
+`web/app.py` (Flask) keeps one persistent interpreter process per browser
+session and speaks the `--batch --json` protocol, so state no longer needs to be
+replayed on every keystroke.
 
-- **Online:** <http://47.116.114.77/lambda/>
-- **Local:**
+- Terminal REPL with history, Tab completion, `Ctrl+L`, and error carets.
+- Live panels for **reduction trace** (step player + diff), **AST**, **type**
+  and **environment** (click to insert, hover to delete).
+- Strategy selector, step-limit control, share link, `.lam` import/export,
+  light/dark theme, and a Chinese/English/bilingual switch.
+- `GET /api/prelude`, `POST /api/session`, `POST /api/eval` with
+  `{"session": "...", "line": "..."}`; the legacy `{"code": "..."}` form still
+  works. A 408 response means the term timed out.
+- Interpreter lookup: `$LAMBDA_INTERP_BIN`, `$LAMBDA_INTERP_DIR/extension[.exe]`,
+  `<repo>/extension[.exe]`, `/opt/lambda-calculus-interpreter/extension`.
+- `<base href="./">` keeps it working at `/` and behind the `/lambda/` prefix.
 
-  ```bash
-  python -m venv .venv
-  # Windows
-  .venv\Scripts\pip install -r web\requirements.txt
-  .venv\Scripts\python web\app.py
-  # Linux / macOS
-  .venv/bin/pip install -r web/requirements.txt
-  .venv/bin/python web/app.py
-  ```
+```bash
+pip install -r web/requirements.txt
+python web/app.py          # http://127.0.0.1:8081
+```
 
-  Open <http://127.0.0.1:8081/>. Build `extension` first; the page needs the compiled interpreter.
+## Batch and JSON protocol
 
-- `HOST` and `PORT` override the default `127.0.0.1:8081`.
-- Interpreter lookup order: `$LAMBDA_INTERP_BIN`, then `$LAMBDA_INTERP_DIR/extension[.exe]`, then `<repo>/extension[.exe]`, then `/opt/lambda-calculus-interpreter/extension`.
-- Endpoints: `GET /` (page), `GET /fonts/APL385.ttf`, `GET /api/prelude`, and `POST /api/eval` with `{"code": "PLUS ONE TWO\nid = \\x.x\nid 3"}`. Responses are `{"ok": true, "results": [{"kind": "result|define|error|info", "text": "..."}], "raw": [...]}`.
-- The frontend keeps the session state by replaying all previous lines to the stateless backend, so definitions remain available to later lines. `:clear` resets that history.
-- The page uses `<base href="./">`, so it works at `/` locally and behind the production reverse proxy at `/lambda/`, where Caddy's `handle_path /lambda/*` strips the prefix before forwarding to Flask.
-- On Windows the backend switches the console to UTF-8 and rewrites `λ` to `\` before calling the interpreter, working around GHC's locale encoding (otherwise `⇒` fails with `commitBuffer`).
+`--batch` reads one command per stdin line and prints `\x1e` after each result.
+`--json` makes every output a JSON object:
 
-## Technical Overview
+```json
+{"kind":"result","text":"...","term":"λf → λx → f x","steps":6,
+ "limitHit":false,"hint":"...","strategy":"applicative",
+ "ast":["λ x","└ • x"],"db":"λ.λ.#0",
+ "trace":[{"n":1,"rule":"β","note":"...","before":"...","after":"..."}]}
+```
 
-1. Both interpreters implement:
+`--batch` also forces UTF-8 on stdin/stdout/stderr, which removes the old
+Windows code-page workaround.
 
-- Capture-avoiding substitution using de Bruijn-like variable renaming (`freshVar`).
-- Normal‑order reduction (`nf`) that fully reduces expressions to beta-normal form.
-- Free variable calculation to avoid variable capture.
+## Tests
 
-2. The extension adds:
+There is no Cabal/Stack project, so the test suite drives the compiled binary
+end-to-end through the JSON protocol:
 
-- Macro expansion (`expand`): replaces defined variables with their bodies, respecting bound variables to avoid capture.
-- Parser with custom identifier rules and automatic number‑to‑Church conversion.
-- File loading with error reporting and a fold‑based line processor.
-- Dynamic table printing that adjusts column widths to the longest variable name and expression.
-- A Flask web layer (`web/`) that pipes code to `extension` over stdin, enforces a 10-second timeout, and classifies REPL output into `result` / `define` / `error` / `info` lines.
+```bash
+./test.sh          # Linux / macOS
+test.bat           # Windows
+python tests/run_tests.py --bin ./extension
+```
+
+19 groups cover parsing positions, β-reduction results, capture avoidance,
+traces, all four strategies, step limits, Church/combinator hints, type
+inference, environment commands, file loading, manual reduction, AST/de Bruijn,
+bilingual output, JSON protocol, determinism, and cross-strategy agreement.
+
+## Notes
+
+- The two files are deliberately standalone; core changes (`Expr`, `subst`,
+  `stepOnce`, parser) belong in both.
+- `main` has no definitions, types, or environment commands.
+- The default strategy is **applicative**, matching the historical `nf`.
+  Normal order terminates on more terms but may return weak head normal forms
+  under `cbn`/`cbv`.
 
 ## License
 
-This project is open source. Feel free to use and modify it for learning or experimentation.
+Open source; free to use and modify for learning or experimentation.

@@ -1,223 +1,151 @@
-# 支持邱奇数编码的 Lambda 演算解释器 ([English version description](./README.md))
+# 支持邱奇数编码的 Lambda 演算解释器（[English](./README.md)）
 
-基于 Haskell 实现的纯 lambda 演算解释器，支持邱奇数、邱奇布尔值以及宏定义环境。提供两个版本：
+一个 Haskell 实现的纯 lambda 演算解释器：邱奇数/邱奇布尔值、无捕获替换、
+归约轨迹、四种求值策略、简单类型推断，以及一个轻量的定义环境。提供两个
+独立可执行程序：
 
-- `main`: 最小核心解释器，仅支持 lambda 演算与正规序归约。
-- `extension`: 增强版，支持变量定义、文件加载、环境查看、扩展变量名语法（允许特定运算符）、自动数字转换等。
-
-## 在线使用
-
-增强版解释器已提供网页界面：**<http://47.116.114.77/lambda/>**。页面代码位于 `web/`，由一层轻量 Flask 封装调用同一个编译好的 `extension` 二进制。
+- `main` —— 最小核心 REPL。
+- `extension` —— 支持定义、文件加载、归约轨迹、语法树 / de Bruijn 视图、
+  类型推断，以及供网页使用的批处理 / JSON 模式；输出中英双语。
 
 ## 功能特点
 
-1. 纯 lambda 演算，支持 alpha 等价与无捕获替换。
-2. 正规序（应用序）归约至 beta-正规形。
-3. 自动识别邱奇数与邱奇布尔值，结果后附数字/布尔提示。
-4. 增强版独有：
+- **纯 lambda 演算**：α 等价、无捕获替换。
+- **归约轨迹**：记录每一次 β 归约的前后形态。
+- **四种求值策略**：应用序、正规序、按名调用、按值调用（后两者为弱策略，
+  停在弱首正规形）。
+- **步数上限**（默认 10000）：不终止的项给出提示，而不是卡死。
+- **语义提示**：按 α 等价识别邱奇数 / 布尔值 / 序对，以及 `I K S B C W` 组合子。
+- **简单类型**：Hindley–Milner 推断，支持 let 泛化（`:type`）。
+- **定义环境**：`name = expr`、`:load`、`:env`、`:del`、`:reset`。
+- **两种视图**：语法树（`:ast`）与 de Bruijn 索引（`:db`）。
+- **中英双语**：所有面向用户的文本都有中英两种形式；用
+  `--lang zh|en|both` 或 `:lang` 切换（默认 `both`）。
 
-- 定义变量 (`name = expression`) 并复用。
-- 从文件加载定义 (`:load file`).
-- 查看当前环境 (`:env`).
-- 变量名可包含运算符 (`+`, `-`, `*`, `/`, `%`, `^`, `?`, `!`, `<`, `>`, `|`, `&`, `~`, `#`, `$`) 、下划线、数字、单引号，但不能以数字开头。
-- 直接输入十进制数字自动转换为邱奇数。
-- 预定义环境：`TRUE`, `FALSE`, `NOT`, `AND`, `OR`, `IF`, `ZERO`, `ONE`, `TWO`, `THREE`, `SUCC`, `PLUS`, `MULT`.
-
-5. 网页界面（`web/`）：终端风格 REPL、命令历史、深色模式，以及可点击的预定义/示例标签。
-
-## Building
-
-使用提供的 `build.sh` 脚本：
+## 编译
 
 ```bash
-chmod +x build.sh
-./build.sh
+./build.sh      # Linux / macOS
+build.bat       # Windows
 ```
 
-脚本会以优化选项 (`-O2`, `-split-sections`, `-optlc-O3`, `-threaded`, etc.) 编译两个解释器，生成可执行文件`main` and `extension`（Windows 下为 `main.exe` / `extension.exe`）。Windows 请使用等价的 `build.bat`，它额外传入 `-package containers -package haskeline`。
-
-网页界面使用独立的 Python 依赖，直接调用编译好的 `extension`，不需要随 Haskell 源码一起重新编译。
+两者都以 `ghc -O2 ... -threaded -rtsopts` 编译；Windows 脚本额外传入
+`-package containers -package haskeline`。
 
 ## 使用方法
 
-### 最小解释器 (`main`)
-
 ```bash
-./main
+./extension [--lang zh|en|both] [--batch] [--json] [-h|--help] [文件]
 ```
 
-启动 REPL，直接输入 lambda 表达式：
+若给出文件，启动 REPL 前会先加载其中的 `name = expr` 定义。
 
-```
-λ> \x. x
-⇒ λx → x
-λ> (\x. x) y
-⇒ y
-λ> \f x. f (f x)
-⇒ λf → λx → f (f x)
-λ> (\a.\b.a ((\n.\a.\b.a (n a b)) b)) (\f.\x.f (f x)) (\f.\x.f (f (f x)))
-⇒ λx → λb' → x (x (x (x (x (x (x (x (x (x (x (x (x (x (x (x b')))))))))))))))
-```
+### REPL 命令
 
-输入 `:q` 退出。
+| 命令 | 说明 |
+| --- | --- |
+| `:help` | 显示帮助 |
+| `:load <文件>` | 加载定义（每行 `name = expr`） |
+| `:let name = expr` | 定义变量 |
+| `:env` / `:del <名字>` / `:reset` | 查看 / 删除 / 重置环境 |
+| `:strategy applicative\|normal\|cbn\|cbv` | 切换求值策略 |
+| `:steps <n>` | 设置归约步数上限 |
+| `:trace <表达式>` | 打印完整归约轨迹 |
+| `:ast <表达式>` / `:db <表达式>` | 语法树 / de Bruijn 索引 |
+| `:type <表达式>` | 推断简单类型 |
+| `:begin <表达式>` / `:step` / `:run` / `:end` | 交互式单步归约 |
+| `:lang zh\|en\|both` | 切换输出语言 |
+| `:q` | 退出 |
 
-### 增强解释器 (`extension`)
+### 语法
 
-```bash
-./extension [-h,--help] [file]
-```
+- 变量：以字母或 `+ - * / % ^ ? ! < > | & ~ # $` 之一开头，后续可含字母、
+  数字、`_`、`'` 或运算符。
+- 抽象：`λx.body` 或 `\x.body`；多参数写为 `λx y.body`。
+- 应用：`f a`，左结合；括号：`(expr)`。
+- 数字：`0`…`9999` 自动转为邱奇数。
+- 定义：`name = expression`。
 
-如果提供了文件名，启动 REPL 前会先加载文件中的定义。
+### 示例
 
-1. REPL 内建命令：
+```text
+λ> PLUS ONE TWO
+⇒ λf → λx → f (f (f x))  (6 步)  (邱奇数 3)
 
-- `:load <file>`: 加载定义文件 (每行格式：`name = expr`)
-- `:let name = expr`: 在当前环境中定义变量
-- `:env`: 显示当前所有定义
-- `:q`: 退出解释器
+λ> :trace (\x.\y.x) y
+1. β 归约: (λx. …) y  （先 α-重命名避免变量捕获）
+2. λy' → y
 
-2. 表达式语法：
+λ> :type \f.\x.f (f x)
+类型：(t0 → t0) → t0 → t0（多态）
 
-- 变量名：以字母或特定运算符开头 (`+ - * / % ^ ? ! < > | & ~ # $`)，后续可包含字母、数字、下划线、单引号或运算符。
-- Lambda 抽象：`λx.body` or 多个参数：`λx y.body`.
-- 应用：`f a` (左结合)，括号可用于分组。
-- 数字：直接输入`0`, `1`, `2`, ..., `9` 自动转换为邱奇数。
-- 定义：`name = expression` (也可直接在 REPL 中输入)。
+λ> :strategy normal
+λ> (\x.y) ((\x.x x)(\x.x x))
+⇒ y  (1 步)          -- 正规序先丢弃参数，不会发散
 
-3. 示例:
-
-```
-λ> TRUE
-⇒ λt → λf → t  (Church boolean True)
-λ> TRUE 2 3
-⇒ λf → λx → f (f x)  (Church numeral 2)
-λ> PLUS 2 3
-⇒ λf → λx → f (f (f (f (f x))))  (Church numeral 5)
-λ> 3 2
-⇒ λx → λx' → x (x (x (x (x (x (x (x x')))))))  (Church numeral 8)
-λ> 2 3
-⇒ λx → λx' → x (x (x (x (x (x (x (x (x x'))))))))  (Church numeral 9)
-λ> + = PLUS
-defined + = λm → λn → λf → λx → m f (n f x)
-λ> + 4 3
-⇒ λf → λx → f (f (f (f (f (f (f x))))))  (Church numeral 7)
-λ> :env
-┌──────────┬─────────────────────────────────┐
-│ Var Name │ Value                           │
-├──────────┼─────────────────────────────────┤
-│ +        │ λm → λn → λf → λx → m f (n f x) │
-│ AND      │ λb1 → λb2 → b1 b2 FALSE         │
-│ FALSE    │ λt → λf → f                     │
-│ IF       │ λc → λt → λf → c t f            │
-│ MULT     │ λm → λn → λf → m (n f)          │
-│ NOT      │ λb → b FALSE TRUE               │
-│ ONE      │ λf → λx → f x                   │
-│ OR       │ λb1 → λb2 → b1 TRUE b2          │
-│ PLUS     │ λm → λn → λf → λx → m f (n f x) │
-│ SUCC     │ λn → λf → λx → f (n f x)        │
-│ THREE    │ λf → λx → f (f (f x))           │
-│ TRUE     │ λt → λf → t                     │
-│ TWO      │ λf → λx → f (f x)               │
-│ ZERO     │ λf → λx → x                     │
-└──────────┴─────────────────────────────────┘
-λ> :load test.lam
-
-成功加载 7 个定义：
-┌─────────────────┬─────────────────────────────────────────────────────────────────┐
-│ Var Name        │ Value                                                           │
-├─────────────────┼─────────────────────────────────────────────────────────────────┤
-│ id              │ λ? → ?                                                          │
-│ *               │ λm → λn → λf → m (n f)                                          │
-│ +               │ λm → λn → λf → λx → m f (n f x)                                 │
-│ aPOWbPOWc       │ λa → λb → λc → c b a                                            │
-│ tow_pow_eight   │ (λf → λx → f (f (f x))) (λf → λx → f (f x)) (λf → λx → f (f x)) │
-│ POW             │ λa → λb → b a                                                   │
-│ b_ADD_ONE_POW_a │ λa → λb → b ((λn → λf → λx → f (n f x)) a)                      │
-└─────────────────┴─────────────────────────────────────────────────────────────────┘
-
-！！！以下 2 行解析失败（已忽略）：
-  第 4 行: ERROR = \a.a b c)
-  第 2 行: ERR  = \a.
-
-λ> :env
-┌─────────────────┬─────────────────────────────────────────────────────────────────┐
-│ Var Name        │ Value                                                           │
-├─────────────────┼─────────────────────────────────────────────────────────────────┤
-│ *               │ λm → λn → λf → m (n f)                                          │
-│ +               │ λm → λn → λf → λx → m f (n f x)                                 │
-│ AND             │ λb1 → λb2 → b1 b2 FALSE                                         │
-│ FALSE           │ λt → λf → f                                                     │
-│ IF              │ λc → λt → λf → c t f                                            │
-│ MULT            │ λm → λn → λf → m (n f)                                          │
-│ NOT             │ λb → b FALSE TRUE                                               │
-│ ONE             │ λf → λx → f x                                                   │
-│ OR              │ λb1 → λb2 → b1 TRUE b2                                          │
-│ PLUS            │ λm → λn → λf → λx → m f (n f x)                                 │
-│ POW             │ λa → λb → b a                                                   │
-│ SUCC            │ λn → λf → λx → f (n f x)                                        │
-│ THREE           │ λf → λx → f (f (f x))                                           │
-│ TRUE            │ λt → λf → t                                                     │
-│ TWO             │ λf → λx → f (f x)                                               │
-│ ZERO            │ λf → λx → x                                                     │
-│ aPOWbPOWc       │ λa → λb → λc → c b a                                            │
-│ b_ADD_ONE_POW_a │ λa → λb → b ((λn → λf → λx → f (n f x)) a)                      │
-│ id              │ λ? → ?                                                          │
-│ tow_pow_eight   │ (λf → λx → f (f (f x))) (λf → λx → f (f x)) (λf → λx → f (f x)) │
-└─────────────────┴─────────────────────────────────────────────────────────────────┘
-λ> aPOWbPOWc 1 2 2
-⇒ λx' → λx → x' x  (Church numeral 1)
-λ> aPOWbPOWc 2 2 2
-⇒ λx' → λx → x' (x' (x' (x' (x' (x' (x' (x' (x' (x' (x' (x' (x' (x' (x' (x' x)))))))))))))))  (Church numeral 16)
-λ> id 3
-⇒ λf → λx → f (f (f x))  (Church numeral 3)
-λ> :let FOUR = \f x.f (f (f (f x)))
-defined FOUR = λf → λx → f (f (f (f x)))
-λ> FOUR
-⇒ λf → λx → f (f (f (f x)))  (Church numeral 4)
-λ> :q
+λ> :steps 40
+λ> (\x.y) ((\x.x x)(\x.x x))
+⚠ 已达到 40 步上限，归约未完成
 ```
 
 ## 网页界面（`web/`）
 
-`web/` 是增强版的浏览器界面：Flask 服务（`app.py`）、终端风格页面（`index.html`）、Python 依赖（`requirements.txt`）以及 APL385 等宽字体。
+`web/app.py`（Flask）为每个浏览器会话保留一个常驻解释器进程，直接使用
+`--batch --json` 协议，因此不必再在每次输入时重放全部历史。
 
-- **在线使用：** <http://47.116.114.77/lambda/>
-- **本地运行：**
+- 终端风格 REPL：历史、Tab 补全、`Ctrl+L`、错误位置指示。
+- 实时面板：**归约轨迹**（步进播放器 + 差异高亮）、**语法树**、**类型**、
+  **环境**（点击插入、悬停删除）。
+- 策略选择、步数上限、分享链接、`.lam` 导入导出、深浅色主题、中/英/双语切换。
+- 接口：`GET /api/prelude`、`POST /api/session`、`POST /api/eval`
+  （请求体 `{"session": "...", "line": "..."}`；旧的 `{"code": "..."}` 仍可用）。
+  返回 408 表示计算超时。
+- 解释器查找顺序：`$LAMBDA_INTERP_BIN` → `$LAMBDA_INTERP_DIR/extension[.exe]`
+  → `<仓库根目录>/extension[.exe]` → `/opt/lambda-calculus-interpreter/extension`。
+- 页面使用 `<base href="./">`，本地 `/` 与线上 `/lambda/` 前缀下都能工作。
 
-  ```bash
-  python -m venv .venv
-  # Windows
-  .venv\Scripts\pip install -r web\requirements.txt
-  .venv\Scripts\python web\app.py
-  # Linux / macOS
-  .venv/bin/pip install -r web/requirements.txt
-  .venv/bin/python web/app.py
-  ```
+```bash
+pip install -r web/requirements.txt
+python web/app.py          # http://127.0.0.1:8081
+```
 
-  然后打开 <http://127.0.0.1:8081/>。需先编译出 `extension`，页面依赖该解释器。
+## 批处理与 JSON 协议
 
-- `HOST`、`PORT` 可覆盖默认的 `127.0.0.1:8081`。
-- 解释器查找顺序：`$LAMBDA_INTERP_BIN` → `$LAMBDA_INTERP_DIR/extension[.exe]` → `<仓库根目录>/extension[.exe]` → `/opt/lambda-calculus-interpreter/extension`。
-- 接口：`GET /`（页面）、`GET /fonts/APL385.ttf`、`GET /api/prelude`、`POST /api/eval`，请求体如 `{"code": "PLUS ONE TWO\nid = \\x.x\nid 3"}`；返回 `{"ok": true, "results": [{"kind": "result|define|error|info", "text": "..."}], "raw": [...]}`。
-- 后端无状态，前端通过重放此前的所有输入来保留定义；`:clear` 会同时清空历史。
-- 页面使用 `<base href="./">`，因此既能在本地根路径 `/` 使用，也能放在线上 `/lambda/` 反向代理之后（Caddy 的 `handle_path /lambda/*` 会剥掉前缀再转发给 Flask）。
-- Windows 下后端会先把控制台切到 UTF-8，并在调用解释器前把 `λ` 改写为 `\`，以规避 GHC 按本地代码页编码导致的 `⇒` 输出崩溃。
+`--batch` 从 stdin 逐行读取命令，每条命令后输出记录分隔符 `\x1e`；
+`--json` 让每条输出成为 JSON 对象：
 
-## 技术简述
+```json
+{"kind":"result","text":"...","term":"λf → λx → f x","steps":6,
+ "limitHit":false,"hint":"...","strategy":"applicative",
+ "ast":["λ x","└ • x"],"db":"λ.λ.#0",
+ "trace":[{"n":1,"rule":"β","note":"...","before":"...","after":"..."}]}
+```
 
-1. 两个解释器均实现：
+`--batch` 还会把 stdin/stdout/stderr 统一设为 UTF-8，因此不再需要旧的
+Windows 代码页变通。
 
-- 无捕获替换：通过 freshVar 重命名绑定变量，避免捕获自由变量。
-- 正规序归约（nf）：反复归约直至得到 beta-正规形。
-- 自由变量计算：用于替换时判断是否需要重命名。
+## 测试
 
-2. 增强版额外实现：
+项目没有 Cabal/Stack，测试直接驱动编译好的可执行文件，通过 JSON 协议做
+端到端校验：
 
-- 宏展开（`expand`）：将定义变量替换为其体，同时维护绑定变量集合避免捕获。
-- 解析器：支持自定义变量名规则和自动数字转邱奇数。
-- 文件加载：按行解析，统计成功/失败，输出友好表格。
-- 动态表格打印：自动调整列宽，适应最长的变量名和表达式字符串。
-- 网页层（`web/`）：Flask 通过 stdin 把代码喂给 `extension`，限制 10 秒超时，并把 REPL 输出分类为 `result` / `define` / `error` / `info`。
+```bash
+./test.sh          # Linux / macOS
+test.bat           # Windows
+python tests/run_tests.py --bin ./extension
+```
+
+共 19 组，覆盖解析错误位置、β 归约结果、变量捕获、归约轨迹、四种策略、
+步数上限、邱奇编码与组合子提示、类型推断、环境命令、文件加载、手动归约、
+语法树 / de Bruijn、双语输出、JSON 协议、确定性与跨策略一致性。
+
+## 说明
+
+- 两个文件故意保持独立；核心改动（`Expr`、`subst`、`stepOnce`、解析器）需
+  同时改 `main.hs` 与 `extension.hs`。
+- `main` 不含定义、类型与环境命令。
+- 默认策略为**应用序**，与历史上的 `nf` 行为一致；正规序在更多项上终止，
+  而 `cbn` / `cbv` 是弱策略，结果可能是弱首正规形。
 
 ## 许可证
 
