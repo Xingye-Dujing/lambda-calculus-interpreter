@@ -68,7 +68,7 @@
   .sel-opt[aria-selected="true"]{color:var(--text);border-left-color:var(--accent);}
   .modal{position:fixed;inset:0;z-index:60;background:rgba(0,0,0,.4);display:none;align-items:center;justify-content:center;padding:20px;}
   .modal.open{display:flex;}
-  .modal .box{width:min(420px,100%);background:var(--bg);border:1px solid var(--border-strong);border-radius:var(--radius);padding:16px;}
+  .modal .box{width:min(420px,100%);background:var(--bg);border:1px solid var(--border-strong);border-radius:var(--radius);padding:16px;font-family:var(--mono);}
   .modal h3{margin:0 0 8px;font-family:var(--mono);font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--dim);font-weight:400;}
   .modal p{margin:0 0 12px;font-size:12.5px;color:var(--dim);line-height:1.6;}
   .modal input{width:100%;background:transparent;border:1px solid var(--border);border-radius:var(--radius);color:var(--text);font-family:var(--mono);font-size:12.5px;padding:7px 9px;outline:none;margin-bottom:14px;}
@@ -138,7 +138,7 @@
   .tab[aria-selected="true"] .en{color:var(--dim);}
   body[data-lang="zh"] .tab .en{display:none;}
   body[data-lang="en"] .tab .zh{display:none;}
-  .panel{padding:12px 14px;min-height:280px;max-height:64vh;overflow:auto;}
+  .panel{padding:12px 14px;min-height:280px;max-height:64vh;overflow:auto;font-family:var(--mono);}
   .panel h3{font-size:11px;font-weight:400;color:var(--dim);margin:0 0 8px;letter-spacing:.05em;font-family:var(--mono);text-transform:uppercase;}
   .panel pre{font-family:var(--mono);font-size:12.5px;line-height:1.7;margin:0;white-space:pre-wrap;word-break:break-word;}
   .empty{color:var(--faint);font-size:12px;font-style:italic;}
@@ -331,6 +331,10 @@
     loadAsk: {zh:".lam 文件路径（相对解释器目录）", en:"path to a .lam file (relative to the interpreter directory)"},
     ok:      {zh:"确定", en:"OK"},
     cancel:  {zh:"取消", en:"cancel"},
+    share:   {zh:"分享", en:"Share"},
+    exportB: {zh:"导出", en:"Export"},
+    importB: {zh:"导入", en:"Import"},
+    placeholder:{zh:"输入表达式，回车执行", en:"type an expression, Enter to run"},
     manualEmpty:{zh:"先输入一个表达式，再点“开始”。", en:"Type an expression first, then press begin."},
     trace:   {zh:"轨迹", en:"trace"}, ast:{zh:"结构", en:"AST"}, type:{zh:"类型", en:"type"},
     welcome: {zh:"REPL 就绪。输入表达式后按 Enter 执行；右侧面板会显示归约轨迹、语法树与类型。", en:"REPL ready. Press Enter to run; the panel shows traces, AST and types."},
@@ -369,6 +373,7 @@
     manual: false,       // 手动归约模式 / manual reduction mode
     manualTerm: "",
     limit: 10000,
+    replaying: false,
     typing: false,
     acIndex: -1,
     acItems: []
@@ -395,6 +400,18 @@
     if (state.lang === "zh") return esc(zh);
     if (state.lang === "en") return esc(en);
     return esc(zh) + '<span class="en-line">' + esc(en) + '</span>';
+  }
+
+  var STRATEGY_LABELS = {
+    applicative: {zh: "应用序", en: "applicative"},
+    normal:      {zh: "正规序", en: "normal"},
+    cbn:         {zh: "按名调用", en: "call-by-name"},
+    cbv:         {zh: "按值调用", en: "call-by-value"}
+  };
+
+  function strategyText(value){
+    var p = STRATEGY_LABELS[value];
+    return p ? dual(p.zh, p.en) : value;
   }
 
   /* -------------------------------------------------- custom select / 下拉 */
@@ -633,7 +650,7 @@
     if (obj.kind === "fail" || obj.kind === "info" || obj.kind === "define" || obj.kind === "step" || obj.kind === "term"){
       var line = addLine(obj.kind, obj.text || obj.term);
       if (obj.kind === "step" && obj.term) line.querySelector(".body").textContent = obj.term;
-      if (obj.kind === "define") refreshEnv();
+      if (obj.kind === "define") { if (!state.replaying) refreshEnv(); }
       if (obj.kind === "term"){ setManual(true, obj.term); }
       if (obj.kind === "term" || obj.kind === "step"){
         var enriched = addActions(line, obj, source);
@@ -983,8 +1000,19 @@
     outputs.forEach(function(o){ renderOutput(o, line, opts.silent); });
 
     if (/^:end\b/.test(trimmed)) setManual(false);
-    if (/^:reset\b/.test(trimmed)){ setManual(false); await refreshEnv(); }
-    if (/^:del\b/.test(trimmed) || /^:load\b/.test(trimmed)) await refreshEnv();
+    if (/^:reset\b/.test(trimmed)){ setManual(false); if (!state.replaying) await refreshEnv(); }
+    if (/^:del\b/.test(trimmed) || /^:load\b/.test(trimmed)){ if (!state.replaying) await refreshEnv(); }
+
+    var stratMatch = trimmed.match(/^:strategy\s+(\S+)/);
+    if (stratMatch && STRATEGY_LABELS[stratMatch[1]]){
+      $("strategy").value = stratMatch[1];
+      applyStaticTexts();
+    }
+    var stepsMatch = trimmed.match(/^:steps\s+(\d+)/);
+    if (stepsMatch){
+      state.limit = parseInt(stepsMatch[1], 10);
+      $("st-limit").value = state.limit;
+    }
 
     var last = outputs.filter(function(o){ return o.kind === "result" || o.kind === "warn"; }).pop();
     if (last){
@@ -1107,6 +1135,27 @@
     });
   }
 
+  async function startSession(){
+    out.innerHTML = "";
+    state.selected = null;
+    state.envRows = [];
+    state.replaying = true;
+    setManual(false);
+    try {
+      await newSession();
+      addLine("info", t("welcome"));
+      for (var i = 0; i < state.codeLines.length; i++){
+        await exec(state.codeLines[i], {record: false});
+      }
+      await evalLine(":lang " + state.lang, true);
+      await evalLine(":strategy " + $("strategy").value, true);
+      await evalLine(":steps " + state.limit, true);
+      await refreshEnv();
+    } finally {
+      state.replaying = false;
+    }
+  }
+
   function clearAll(){
     out.innerHTML = "";
     state.codeLines = [];
@@ -1140,10 +1189,10 @@
     saveLocal();
   });
 
-  $("lang").addEventListener("change", function(){
+  $("lang").addEventListener("change", async function(){
     state.lang = $("lang").value;
     applyStaticTexts();
-    execSilent(":lang " + state.lang);
+    await startSession();
     renderPanel();
     saveLocal();
   });
@@ -1151,7 +1200,7 @@
   $("strategy").addEventListener("change", function(){
     execSilent(":strategy " + $("strategy").value).then(function(outs){
       outs.forEach(function(o){ if (o.kind === "info") addLine("info", o.text); });
-      $("st-strategy").textContent = $("strategy").value;
+      $("st-strategy").textContent = strategyText($("strategy").value);
       saveLocal();
     });
   });
@@ -1276,6 +1325,10 @@
     $("pre-title").textContent = t("preTitle");
     $("foot-hint").textContent = t("foot");
     $("clear").textContent = t("clear");
+    $("share").textContent = t("share");
+    $("export").textContent = t("exportB");
+    $("import").textContent = t("importB");
+    $("cmd").placeholder = t("placeholder");
     $("theme-toggle").textContent = state.theme === "dark" ? t("light") : t("dark");
     $("st-steps-label").textContent = t("steps");
     $("m-label").textContent = t("manual");
@@ -1283,6 +1336,10 @@
     $("m-step").textContent = t("stepB");
     $("m-run").textContent = t("runB");
     $("m-end").textContent = t("endB");
+    Array.prototype.forEach.call($("strategy").options, function(o){
+      if (STRATEGY_LABELS[o.value]) o.textContent = strategyText(o.value);
+    });
+    $("st-strategy").textContent = strategyText($("strategy").value);
     selects.forEach(function(s){ s.sync(); });
     renderExamples();
   }
@@ -1318,24 +1375,10 @@
       } catch(e){}
     }
 
-    await newSession();
-    addLine("info", t("welcome"));
-
-    if (state.codeLines.length){
-      for (var j = 0; j < state.codeLines.length; j++){
-        await exec(state.codeLines[j], {record: false});
-      }
-    }
-
-    await refreshEnv();
     var stepsLine = state.codeLines.filter(function(l){ return /^:steps\s+\d+/.test(l.trim()); }).pop();
-    if (stepsLine){
-      state.limit = parseInt(stepsLine.trim().split(/\s+/)[1], 10) || state.limit;
-      $("st-limit").value = state.limit;
-    } else {
-      await evalLine(":steps " + state.limit, true);
-    }
-    if ($("strategy").value !== "applicative") execSilent(":strategy " + $("strategy").value);
+    if (stepsLine) state.limit = parseInt(stepsLine.trim().split(/\s+/)[1], 10) || state.limit;
+    $("st-limit").value = state.limit;
+    await startSession();
     renderPanel();
     if (!saved && !state.codeLines.length) switchTab("guide");
     cmd.focus();
