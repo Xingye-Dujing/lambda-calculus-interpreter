@@ -74,9 +74,9 @@ Chinese/English**.
   (`Order`): reduce under lambdas, try the root redex first, require the
   argument to be a value, and reduce the argument only when the head is a λ.
   The default is **applicative**, matching the historical `nf`.
-- `nf` and `:eval` stop at the step limit (default 10000) and report
-  `limitHit` instead of hanging. Weak strategies (`cbn`, `cbv`) stop at weak
-  head normal form; that is intentional.
+- `eval` stops at the step limit (default 10000) and reports `limitHit` instead
+  of hanging; the trace is only retained when requested. Weak strategies (`cbn`,
+  `cbv`) stop at weak head normal form; that is intentional.
 - Definitions are stored already expanded (`expandTop` at definition time), so
   a later redefinition does not retroactively change earlier definitions. Types
   are inferred from the source expression and generalized (HM with let).
