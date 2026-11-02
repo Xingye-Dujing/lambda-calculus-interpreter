@@ -9,6 +9,12 @@ interpreters are provided:
 - `extension` — definitions, file loading, traces, AST/de Bruijn views, types,
   a batch/JSON mode for the web UI, and Chinese/English output.
 
+## Online Demo
+
+The enhanced interpreter runs in the browser at
+**<http://47.116.114.77/lambda/>**. The page in `web/` is a thin Flask wrapper
+around the same compiled `extension` binary.
+
 ## Features
 
 - **Pure lambda calculus** with α-equivalence and capture-avoiding substitution.
@@ -71,6 +77,8 @@ passes `-package containers -package haskeline`.
 ```
 
 If a file is given, its `name = expr` lines are loaded before the REPL.
+`test.lam` is a sample definitions file; its `ERR`/`ERROR` lines are
+intentionally malformed so load-error reporting is exercised.
 
 ### REPL commands
 
@@ -139,9 +147,12 @@ replayed on every keystroke.
 - `:load` is confined to the interpreter directory by default; the Env panel's
   **Load** button prompts for such a relative path. Set `LAMBDA_LOAD_ROOT=*` to
   allow any path (local use only).
+- `HOST` and `PORT` override the default `127.0.0.1:8081`.
 - Interpreter lookup: `$LAMBDA_INTERP_BIN`, `$LAMBDA_INTERP_DIR/extension[.exe]`,
   `<repo>/extension[.exe]`, `/opt/lambda-calculus-interpreter/extension`.
 - `<base href="./">` keeps it working at `/` and behind the `/lambda/` prefix.
+- `--batch` forces UTF-8; an interactive legacy Windows console may still garble
+  Unicode, so use Windows Terminal or `chcp 65001` there.
 
 ```bash
 pip install -r web/requirements.txt
@@ -179,6 +190,16 @@ traces, all four strategies, step limits, Church/combinator hints, type
 inference, environment commands, file loading, manual reduction, AST/de Bruijn,
 bilingual output, JSON protocol, determinism, cross-strategy agreement, and the
 web API session with `:load` confinement.
+
+## Implementation
+
+- A small-step evaluator (`stepOnce`) rewrites the whole term, so every trace
+  step is a real before/after pair; strategies are described by four flags.
+- Capture-avoiding substitution uses fresh variables; α-equivalence powers the
+  Church/combinator hints.
+- Types are inferred with Hindley–Milner and let-generalisation.
+- The web backend keeps one interpreter process per session and exchanges JSON
+  Lines (`--batch --json`); `:load` is confined to the interpreter directory.
 
 ## Notes
 

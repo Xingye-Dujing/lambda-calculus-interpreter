@@ -8,6 +8,11 @@
 - `extension` —— 支持定义、文件加载、归约轨迹、语法树 / de Bruijn 视图、
   类型推断，以及供网页使用的批处理 / JSON 模式；输出中英双语。
 
+## 在线使用
+
+增强版解释器已提供网页界面：**<http://47.116.114.77/lambda/>**。页面代码位于
+`web/`，由一层轻量 Flask 封装调用同一个编译好的 `extension` 二进制。
+
 ## 功能特点
 
 - **纯 lambda 演算**：α 等价、无捕获替换。
@@ -65,7 +70,8 @@ build.bat       # Windows
 ./extension [--lang zh|en|both] [--batch] [--json] [-h|--help] [文件]
 ```
 
-若给出文件，启动 REPL 前会先加载其中的 `name = expr` 定义。
+若给出文件，启动 REPL 前会先加载其中的 `name = expr` 定义。`test.lam` 是示例
+定义文件，其中 `ERR` / `ERROR` 两行故意写坏，用于演示加载错误报告。
 
 ### REPL 命令
 
@@ -130,9 +136,12 @@ build.bat       # Windows
   返回 408 表示计算超时。
 - `:load` 默认只允许解释器目录内的文件；环境面板的“加载”按钮会提示输入相对
   路径。设置 `LAMBDA_LOAD_ROOT=*` 可放开限制（仅建议本地使用）。
+- `HOST`、`PORT` 可覆盖默认的 `127.0.0.1:8081`。
 - 解释器查找顺序：`$LAMBDA_INTERP_BIN` → `$LAMBDA_INTERP_DIR/extension[.exe]`
   → `<仓库根目录>/extension[.exe]` → `/opt/lambda-calculus-interpreter/extension`。
 - 页面使用 `<base href="./">`，本地 `/` 与线上 `/lambda/` 前缀下都能工作。
+- `--batch` 会强制 UTF-8；旧的 Windows 交互式控制台仍可能乱码，请使用
+  Windows Terminal 或 `chcp 65001`。
 
 ```bash
 pip install -r web/requirements.txt
@@ -169,6 +178,15 @@ python tests/run_tests.py --bin ./extension
 步数上限、邱奇编码与组合子提示、类型推断、环境命令、文件加载、手动归约、
 语法树 / de Bruijn、双语输出、JSON 协议、确定性与跨策略一致性，以及
 Web API 会话与 `:load` 路径限制。
+
+## 实现要点
+
+- 小步求值器（`stepOnce`）每次重写整个项，因此每个轨迹步骤都是真实的前后对比；
+  四种策略由四个布尔开关描述。
+- 无捕获替换通过新鲜变量重命名；α 等价用于识别邱奇编码与组合子。
+- 类型使用 Hindley–Milner 推断并做 let 泛化。
+- Web 后端为每个会话保留一个解释器进程，通过 JSON Lines（`--batch --json`）
+  通信；`:load` 默认限制在解释器目录内。
 
 ## 说明
 
