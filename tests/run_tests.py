@@ -323,6 +323,9 @@ def test_views(b: Path) -> None:
 
     r = one([":db \\x.\\y.x y"], b)
     check("de bruijn", r.get("text") == "λ.λ.(#1 #0)", repr(r.get("text")))
+    check("de bruijn kind", r.get("kind") == "db", repr(r.get("kind")))
+    check("de bruijn ast", isinstance(r.get("ast"), list) and len(r.get("ast")) == 5, str(r.get("ast")))
+    check("de bruijn term", r.get("term") == "λx → λy → x y", repr(r.get("term")))
 
     r = one([":trace (\\x.x) a"], b)
     check("trace command", r.get("kind") == "trace" and r.get("steps") == 1, str(r))
@@ -417,6 +420,44 @@ def test_main_binary() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Web API：会话与 `:load` 路径限制 / web session and :load confinement
+# ---------------------------------------------------------------------------
+
+def test_web_api(b: Path) -> None:
+    try:
+        import flask  # noqa: F401
+    except ImportError:
+        return  # 未安装 Flask 时跳过 / skip when Flask is not installed
+    import sys as _sys
+    web_dir = str(ROOT / "web")
+    if web_dir not in _sys.path:
+        _sys.path.insert(0, web_dir)
+    import app as webapp  # noqa: WPS433
+
+    client = webapp.app.test_client()
+    sid = client.post("/api/session", json={"lang": "en"}).get_json()["session"]
+    try:
+        r = client.post("/api/eval", json={"session": sid, "line": "PLUS ONE TWO"})
+        out = r.get_json()["outputs"][0]
+        check("web eval", r.status_code == 200 and out.get("term") == "λf → λx → f (f (f x))", str(out))
+
+        r = client.post("/api/eval", json={"session": sid, "line": ":load test.lam"})
+        out = r.get_json()["outputs"]
+        check("web load ok", r.status_code == 200 and any(o["kind"] == "define" for o in out), str(out)[:120])
+        check("web load line numbers", any(o["kind"] == "error" and "line 2" in o.get("text", "").lower() for o in out), "")
+
+        r = client.post("/api/eval", json={"session": sid, "line": ":load ../../etc/passwd"})
+        check("web load confined", r.status_code == 400, str(r.status_code))
+        check("web load message", "restricted" in r.get_json().get("error", ""), r.get_json().get("error", ""))
+
+        r = client.post("/api/eval", json={"session": sid, "line": ":db \\x.\\y.x y"})
+        out = r.get_json()["outputs"][0]
+        check("web db kind", out.get("kind") == "db" and out.get("text") == "λ.λ.(#1 #0)", str(out))
+    finally:
+        client.delete(f"/api/session/{sid}")
+
+
+# ---------------------------------------------------------------------------
 # 运行器 / Runner
 # ---------------------------------------------------------------------------
 
@@ -439,6 +480,7 @@ TESTS = [
     test_protocol,
     test_determinism,
     test_cross_strategy_agreement,
+    test_web_api,
     test_main_binary,
 ]
 
