@@ -131,14 +131,14 @@
   /* 右侧面板 / inspector */
   .side{background:transparent;border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;}
   .tabs{display:flex;border-bottom:1px solid var(--border);overflow-x:auto;}
-  .tab{flex:0 0 auto;min-width:62px;display:flex;flex-direction:column;align-items:center;gap:1px;font-family:var(--mono);font-size:11.5px;color:var(--dim);background:transparent;border:0;border-bottom:1px solid transparent;padding:8px 10px 7px;cursor:pointer;white-space:nowrap;}
+  .tab{flex:0 0 auto;min-width:56px;display:flex;flex-direction:column;align-items:center;gap:1px;font-family:var(--mono);font-size:11.5px;color:var(--dim);background:transparent;border:0;border-bottom:1px solid transparent;padding:8px 7px 7px;cursor:pointer;white-space:nowrap;}
   .tab .en{font-size:9px;color:var(--faint);letter-spacing:.08em;text-transform:uppercase;}
   .tab:hover{color:var(--text);}
   .tab[aria-selected="true"]{color:var(--text);border-bottom-color:var(--accent);}
   .tab[aria-selected="true"] .en{color:var(--dim);}
   body[data-lang="zh"] .tab .en{display:none;}
   body[data-lang="en"] .tab .zh{display:none;}
-  .panel{padding:12px 14px;min-height:280px;max-height:56vh;overflow:auto;}
+  .panel{padding:12px 14px;min-height:280px;max-height:64vh;overflow:auto;}
   .panel h3{font-size:11px;font-weight:400;color:var(--dim);margin:0 0 8px;letter-spacing:.05em;font-family:var(--mono);text-transform:uppercase;}
   .panel pre{font-family:var(--mono);font-size:12.5px;line-height:1.7;margin:0;white-space:pre-wrap;word-break:break-word;}
   .empty{color:var(--faint);font-size:12px;font-style:italic;}
@@ -176,6 +176,12 @@
   .env-del:hover{color:var(--err);border-color:var(--err);}
   .help-dl dt{font-family:var(--mono);font-size:12px;color:var(--accent);margin-top:7px;}
   .help-dl dd{margin:0 0 2px 0;font-size:12px;color:var(--dim);}
+  .guide-step{padding:9px 0;border-top:1px dashed var(--border);}
+  .guide-step:first-of-type{border-top:0;padding-top:0;}
+  .guide-step h4{margin:0 0 3px;font-family:var(--mono);font-size:11px;letter-spacing:.05em;color:var(--text);font-weight:400;}
+  .guide-step p{margin:0;font-size:12.5px;color:var(--dim);line-height:1.65;}
+  .guide-step .en-line{display:block;color:var(--faint);font-size:11px;margin-top:2px;}
+  .guide-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;padding-top:12px;border-top:1px solid var(--border);}
   footer{margin-top:18px;}
   .helpers{margin-top:16px;}
   .helpers h2{font-size:10.5px;font-weight:400;color:var(--faint);margin:0 0 9px;letter-spacing:.14em;font-family:var(--mono);text-transform:uppercase;}
@@ -270,6 +276,7 @@
         <button class="tab" role="tab" data-tab="type"><span class="zh">类型</span><span class="en">Type</span></button>
         <button class="tab" role="tab" data-tab="env"><span class="zh">环境</span><span class="en">Env</span></button>
         <button class="tab" role="tab" data-tab="help"><span class="zh">帮助</span><span class="en">Help</span></button>
+        <button class="tab" role="tab" data-tab="guide"><span class="zh">指引</span><span class="en">Guide</span></button>
       </div>
       <div class="panel" id="panel"></div>
     </aside>
@@ -342,6 +349,7 @@
     timeout: {zh:"计算超时，已重置会话。", en:"Timed out; session reset."},
     conn:    {zh:"已连接", en:"connected"}, dead:{zh:"已断开", en:"disconnected"},
     helpTitle:{zh:"命令", en:"Commands"},
+    guideTitle:{zh:"使用指引", en:"Quick guide"},
     helpBody:{zh:"表达式语法：λx.body 或 \\\\x.body；应用 f a 左结合；括号 (expr)；数字自动转 Church 编码。", en:"Syntax: λx.body or \\\\x.body; application f a is left-assoc; grouping (expr); numbers become Church numerals."},
     typeHint:{zh:"简单类型（Hindley–Milner），自由变量用 t0, t1… 表示。", en:"Simple types (Hindley–Milner); free type variables appear as t0, t1…"},
     envHint:{zh:"点击变量名插入到输入框；悬停可删除。", en:"Click a name to insert it; hover to delete."}
@@ -375,6 +383,18 @@
     if (state.lang === "zh") return e.zh;
     if (state.lang === "en") return e.en;
     return e.zh + " / " + e.en;
+  }
+
+  function dual(zh, en){
+    if (state.lang === "zh") return zh;
+    if (state.lang === "en") return en;
+    return zh + " / " + en;
+  }
+
+  function bilingual(zh, en){
+    if (state.lang === "zh") return esc(zh);
+    if (state.lang === "en") return esc(en);
+    return esc(zh) + '<span class="en-line">' + esc(en) + '</span>';
   }
 
   /* -------------------------------------------------- custom select / 下拉 */
@@ -738,6 +758,37 @@
     return html;
   }
 
+  function renderGuide(){
+    var rows = [
+      {h: ["1 · 输入与执行", "1 · Type and run"],
+       b: ["输入表达式后按 Enter。Tab 补全、↑↓ 历史、Ctrl+L 清空。",
+           "Press Enter to run. Tab completes, ↑↓ history, Ctrl+L clears."]},
+      {h: ["2 · 看懂结果", "2 · Read the result"],
+       b: ["⇒ 是结果；「轨迹」看每一步前后差异，「结构」看语法树，「类型」看推断。",
+           "⇒ marks a result. Trace shows each step, AST the tree, Type the inference."]},
+      {h: ["3 · 手动归约", "3 · Step through"],
+       b: ["写好表达式后点「开始」，用「单步」观察，或「到底」一次算完。",
+           "Press Start, then Step through it or Run to finish."]},
+      {h: ["4 · 定义与环境", "4 · Definitions"],
+       b: ["用 id = \\x.x 定义；「环境」可插入、删除、加载 .lam、重置。",
+           "Define with id = \\x.x; Env inserts, deletes, loads .lam and resets."]},
+      {h: ["5 · 小贴士", "5 · Tips"],
+       b: ["数字自动转 Church 编码；下方示例点击即可填入。",
+           "Numbers become Church numerals; click an example to fill it in."]}
+    ];
+    var html = '<h3>' + esc(t("guideTitle")) + '</h3>';
+    rows.forEach(function(r){
+      html += '<div class="guide-step"><h4>' + bilingual(r.h[0], r.h[1]) + '</h4>' +
+              '<p>' + bilingual(r.b[0], r.b[1]) + '</p></div>';
+    });
+    html += '<div class="guide-actions">' +
+      '<button class="mini" data-guide="run" type="button">' + esc(dual("运行示例", "run example")) + '</button>' +
+      '<button class="mini" data-guide="manual" type="button">' + esc(dual("手动归约示例", "step example")) + '</button>' +
+      '<button class="mini" data-guide="start" type="button">' + esc(dual("开始使用", "start")) + '</button>' +
+      '</div>';
+    return html;
+  }
+
   function renderHelp(){
     var cmds = [
       [":help", "显示帮助 / show help"],
@@ -768,6 +819,7 @@
     else if (state.tab === "ast") html = renderAst();
     else if (state.tab === "type") html = renderType();
     else if (state.tab === "env") html = renderEnv();
+    else if (state.tab === "guide") html = renderGuide();
     else html = renderHelp();
     panel.innerHTML = html;
 
@@ -806,6 +858,20 @@
                                  input: true, ok: t("loadB")});
         if (!path) return;
         exec(":load " + path).then(refreshEnv);
+      });
+    });
+    Array.prototype.forEach.call(panel.querySelectorAll("[data-guide]"), function(el){
+      el.addEventListener("click", function(){
+        var action = el.dataset.guide;
+        if (action === "run"){
+          exec("PLUS TWO THREE").then(function(){ switchTab("trace"); });
+        } else if (action === "manual"){
+          insertText("(\\x.x) ((\\y.y) z)");
+          toast(dual("点终端下方的「开始」", "press Start below the terminal"));
+        } else {
+          switchTab("trace");
+          cmd.focus();
+        }
       });
     });
     Array.prototype.forEach.call(panel.querySelectorAll("[data-reset]"), function(el){
@@ -1271,6 +1337,7 @@
     }
     if ($("strategy").value !== "applicative") execSilent(":strategy " + $("strategy").value);
     renderPanel();
+    if (!saved && !state.codeLines.length) switchTab("guide");
     cmd.focus();
   }
 
