@@ -5,38 +5,40 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <base href="./">
 <link rel="icon" href="/icon.ico" type="image/x-icon">
-<title>Lambda 演算计算器</title>
+<title>Lambda 演算计算器 · Lambda Calculus</title>
 <style>
   @font-face{
     font-family:'APL385 Unicode';
     src:url(fonts/APL385.ttf) format('truetype');
     font-display:swap;
   }
-  .lam{font-family:'APL385 Unicode',monospace;}
+  .lam{font-family:'APL385 Unicode',var(--mono);}
   :root{
     color-scheme: light;
-    --bg:#f5f4ef; --paper:#ffffff; --term-bg:#fbfaf6;
-    --text:#1a1a1a; --dim:rgba(26,26,26,.55); --faint:rgba(26,26,26,.32);
-    --border:rgba(26,26,26,.16); --border-strong:rgba(26,26,26,.42);
-    --hover:rgba(26,26,26,.05);
-    --accent:#b0701f; --prompt:#b0701f;
-    --ok:#2f8f52; --err:#c0392b; --info:rgba(26,26,26,.55);
-    --sel:rgba(176,112,31,.26);
-    --scroll:#cfcabf; --scroll-hover:#b7b1a4;
+    --bg:#fafaf8; --paper:#ffffff; --term-bg:#ffffff;
+    --text:#141518; --dim:#5c5f66; --faint:#9a9da3;
+    --border:rgba(20,21,24,.14); --border-strong:rgba(20,21,24,.46);
+    --hover:rgba(20,21,24,.045);
+    --accent:#141518; --prompt:#141518;
+    --ok:#2f7d4f; --err:#b83a30; --warn:#8a6416; --info:#5c5f66;
+    --del:#b83a30; --ins:#2f7d4f;
+    --sel:rgba(20,21,24,.14);
+    --scroll:#dddcd6; --scroll-hover:#bfbeb7;
     --mono:'APL385 Unicode','SFMono-Regular','Cascadia Mono',Consolas,'Liberation Mono',Menlo,'Courier New',monospace;
     --serif:"Georgia","Times New Roman","Songti SC","SimSun","宋体",serif;
-    --radius:6px;
+    --radius:2px;
   }
   html[data-theme="dark"]{
     color-scheme: dark;
-    --bg:#2a2a28; --paper:#32322e; --term-bg:#242422;
-    --text:#e9e7e2; --dim:rgba(233,231,226,.6); --faint:rgba(233,231,226,.28);
-    --border:rgba(233,231,226,.16); --border-strong:rgba(233,231,226,.4);
-    --hover:rgba(233,231,226,.07);
-    --accent:#e0a83c; --prompt:#e0a83c;
-    --ok:#6fbf7f; --err:#e0715f; --info:rgba(233,231,226,.6);
-    --sel:rgba(224,168,60,.30);
-    --scroll:#54534f; --scroll-hover:#6a6964;
+    --bg:#0b0c0e; --paper:#0e0f11; --term-bg:#0b0c0e;
+    --text:#e8e9ec; --dim:#a2a5ac; --faint:#6b6f77;
+    --border:rgba(255,255,255,.13); --border-strong:rgba(255,255,255,.44);
+    --hover:rgba(255,255,255,.05);
+    --accent:#f0f1f3; --prompt:#f0f1f3;
+    --ok:#84c99b; --err:#e8887e; --warn:#d8b978; --info:#9ea1a8;
+    --del:#e8887e; --ins:#84c99b;
+    --sel:rgba(255,255,255,.16);
+    --scroll:#26282d; --scroll-hover:#3a3d43;
   }
   *{box-sizing:border-box;}
   ::selection{background:var(--sel);color:inherit;}
@@ -46,218 +48,935 @@
   ::-webkit-scrollbar-thumb{background:var(--scroll);border-radius:8px;border:3px solid transparent;background-clip:padding-box;}
   ::-webkit-scrollbar-thumb:hover{background:var(--scroll-hover);}
   body{margin:0;background:var(--bg);color:var(--text);font-family:var(--serif);font-size:14px;line-height:1.7;transition:background .2s ease,color .2s ease;}
-  .wrap{max-width:840px;margin:0 auto;padding:40px 24px 40px;}
-  header{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;border-bottom:1px solid var(--border);padding-bottom:14px;margin-bottom:20px;}
-  h1{font-size:19px;font-weight:400;margin:0 0 3px;letter-spacing:.02em;font-family:var(--mono);}
-  .sub{color:var(--dim);font-size:12px;margin:0;}
-  .theme-btn{flex:none;font-family:var(--mono);font-size:11.5px;color:var(--dim);background:var(--paper);border:1px solid var(--border);border-radius:var(--radius);padding:6px 12px;cursor:pointer;transition:background .15s,color .15s;}
-  .theme-btn:hover{background:var(--hover);color:var(--text);}
-  .theme-btn:focus-visible{outline:2px solid var(--accent);outline-offset:2px;}
-  .term{background:var(--term-bg);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;box-shadow:0 2px 12px rgba(0,0,0,.07);}
-  .term-bar{display:flex;align-items:center;gap:7px;padding:9px 13px;border-bottom:1px solid var(--border);}
-  .dot{width:10px;height:10px;border-radius:50%;display:inline-block;}
-  .dot.r{background:#d97a6c;} .dot.y{background:#e0b23c;} .dot.g{background:#7bbf8a;}
-  .term-title{margin-left:6px;font-family:var(--mono);font-size:11.5px;color:var(--faint);letter-spacing:.05em;}
-  .term-clear{margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--dim);background:transparent;border:1px solid var(--border);border-radius:var(--radius);padding:3px 9px;cursor:pointer;}
-  .term-clear:hover{background:var(--hover);color:var(--text);}
-  .term-body{padding:14px 16px 12px;}
-  .term-out{min-height:230px;max-height:52vh;overflow-y:auto;font-family:var(--mono);font-size:13.5px;line-height:1.8;white-space:pre-wrap;word-break:break-word;padding-right:6px;}
-  .term-out .line{margin:1px 0;}
-  .term-out .echo{color:var(--faint);}
-  .term-out .echo .p{color:var(--prompt);font-weight:600;}
-  .term-out .result{color:var(--text);}
-  .term-out .result::before{content:"⇒ ";color:var(--ok);}
-  .term-out .define{color:var(--dim);}
-  .term-out .define::before{content:"⟶ ";color:var(--faint);}
-  .term-out .error{color:var(--err);}
-  .term-out .error::before{content:"⚠ ";color:var(--err);}
-  .term-out .info{color:var(--info);}
-  .term-line{display:flex;align-items:center;gap:9px;margin-top:10px;font-family:var(--mono);font-size:13.5px;border-top:1px dashed var(--border);padding-top:11px;}
-  .prompt{color:var(--prompt);flex:none;user-select:none;font-weight:600;}
-  #cmd{flex:1;min-width:0;background:transparent;border:0;outline:none;color:var(--text);font-family:var(--mono);font-size:13.5px;caret-color:var(--accent);padding:2px 0;}
+  .app{max-width:1180px;margin:0 auto;padding:36px 20px 56px;}
+  header{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;border-bottom:1px solid var(--border);padding-bottom:16px;margin-bottom:22px;flex-wrap:wrap;}
+  h1{font-size:18px;font-weight:400;margin:0 0 4px;letter-spacing:.04em;font-family:var(--mono);}
+  .sub{color:var(--dim);font-size:11.5px;margin:0;letter-spacing:.01em;}
+  .controls{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}
+  select.ctl,button.ctl{font-family:var(--mono);font-size:11.5px;color:var(--dim);background:transparent;border:1px solid var(--border);border-radius:var(--radius);padding:6px 10px;cursor:pointer;transition:color .15s,border-color .15s;}
+  select.ctl:hover,button.ctl:hover{color:var(--text);border-color:var(--border-strong);}
+  select.ctl:focus-visible,button.ctl:focus-visible{outline:1px solid var(--accent);outline-offset:2px;}
+  main{display:grid;grid-template-columns:minmax(0,1fr) minmax(300px,380px);gap:18px;align-items:start;}
+  @media (max-width:900px){ main{grid-template-columns:minmax(0,1fr);} }
+  .term{background:transparent;border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;}
+  .term-bar{display:flex;align-items:center;gap:10px;padding:8px 14px;border-bottom:1px solid var(--border);}
+  .term-title{font-family:var(--mono);font-size:10px;color:var(--faint);letter-spacing:.16em;text-transform:uppercase;}
+  .term-tools{margin-left:auto;display:flex;gap:6px;}
+  .term-tools button{font-family:var(--mono);font-size:11px;color:var(--dim);background:transparent;border:1px solid var(--border);border-radius:var(--radius);padding:3px 9px;cursor:pointer;}
+  .term-tools button:hover{background:var(--hover);color:var(--text);}
+  .term-body{padding:12px 14px 10px;}
+  .term-out{min-height:250px;max-height:56vh;overflow-y:auto;font-family:var(--mono);font-size:13.5px;line-height:1.75;white-space:pre-wrap;word-break:break-word;padding-right:6px;}
+  .line{margin:2px 0;display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;}
+  .line .body{flex:1;min-width:0;white-space:pre-wrap;word-break:break-word;}
+  .line.echo{color:var(--faint);}
+  .line.echo .p{color:var(--prompt);font-weight:600;}
+  .line.result .body{color:var(--text);}
+  .line.result .mark{color:var(--ok);}
+  .line.define{color:var(--dim);}
+  .line.define .mark{color:var(--faint);}
+  .line.error .body{color:var(--err);}
+  .line.fail .body{color:var(--err);}
+  .line.warn .body{color:var(--warn);}
+  .line.info .body{color:var(--info);}
+  .mark{flex:none;font-weight:600;user-select:none;}
+  .meta{font-size:10.5px;color:var(--faint);border:1px solid var(--border);border-radius:var(--radius);padding:0 6px;white-space:nowrap;background:transparent;}
+  .line .act{font-family:var(--mono);font-size:10.5px;color:var(--dim);background:transparent;border:1px solid var(--border);border-radius:var(--radius);padding:0 7px;cursor:pointer;opacity:0;transition:opacity .12s,color .12s,border-color .12s;}
+  .line:hover .act,.line.sel .act{opacity:1;}
+  .line .act:hover{color:var(--text);border-color:var(--border-strong);}
+  .line.sel{background:var(--hover);border-radius:var(--radius);}
+  .caret{color:var(--err);font-family:var(--mono);white-space:pre;}
+  .term-line{display:flex;align-items:flex-start;gap:9px;margin-top:10px;font-family:var(--mono);font-size:13.5px;border-top:1px solid var(--border);padding-top:11px;}
+  .prompt{color:var(--prompt);flex:none;user-select:none;font-weight:600;padding-top:2px;}
+  .input-wrap{flex:1;min-width:0;position:relative;}
+  #cmd{width:100%;background:transparent;border:0;outline:none;color:var(--text);font-family:var(--mono);font-size:13.5px;caret-color:var(--accent);padding:2px 0;resize:none;line-height:1.7;}
   #cmd::placeholder{color:var(--faint);}
-  .helpers{margin-top:22px;}
-  .helpers h2{font-size:12px;font-weight:400;color:var(--dim);margin:0 0 9px;letter-spacing:.05em;font-family:var(--mono);}
+  .ac{position:absolute;left:0;top:100%;z-index:20;background:var(--bg);border:1px solid var(--border-strong);border-radius:var(--radius);min-width:220px;max-height:240px;overflow:auto;display:none;}
+  .ac.open{display:block;}
+  .ac .item{padding:4px 10px;font-family:var(--mono);font-size:12.5px;cursor:pointer;display:flex;justify-content:space-between;gap:12px;}
+  .ac .item .hint{color:var(--faint);font-size:11px;}
+  .ac .item.active,.ac .item:hover{background:var(--hover);}
+  .status{display:flex;gap:12px;flex-wrap:wrap;font-family:var(--mono);font-size:10.5px;color:var(--faint);margin-top:8px;}
+  .status b{font-weight:500;color:var(--dim);}
+  #st-steps{cursor:pointer;border-bottom:1px dashed var(--faint);}
+  /* 右侧面板 / inspector */
+  .side{background:transparent;border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;}
+  .tabs{display:flex;border-bottom:1px solid var(--border);overflow-x:auto;}
+  .tab{flex:1;min-width:60px;font-family:var(--mono);font-size:11px;color:var(--dim);background:transparent;border:0;border-bottom:1px solid transparent;padding:9px 6px;cursor:pointer;white-space:nowrap;letter-spacing:.02em;}
+  .tab:hover{color:var(--text);}
+  .tab[aria-selected="true"]{color:var(--text);border-bottom-color:var(--accent);}
+  .panel{padding:12px 14px;min-height:280px;max-height:56vh;overflow:auto;}
+  .panel h3{font-size:11px;font-weight:400;color:var(--dim);margin:0 0 8px;letter-spacing:.05em;font-family:var(--mono);text-transform:uppercase;}
+  .panel pre{font-family:var(--mono);font-size:12.5px;line-height:1.7;margin:0;white-space:pre-wrap;word-break:break-word;}
+  .empty{color:var(--faint);font-size:12px;font-style:italic;}
+  .player{display:flex;align-items:center;gap:8px;margin-bottom:10px;}
+  .player button{font-family:var(--mono);font-size:12px;background:transparent;border:1px solid var(--border);border-radius:var(--radius);color:var(--dim);width:28px;height:26px;cursor:pointer;}
+  .player button:hover{color:var(--text);border-color:var(--border-strong);}
+  .player input[type=range]{flex:1;accent-color:var(--accent);}
+  .player .count{font-family:var(--mono);font-size:11px;color:var(--faint);white-space:nowrap;}
+  .cmp{border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;margin-bottom:10px;}
+  .cmp .row{padding:8px 10px;font-family:var(--mono);font-size:12.5px;white-space:pre-wrap;word-break:break-word;}
+  .cmp .row + .row{border-top:1px dashed var(--border);}
+  .cmp .lab{font-size:10px;color:var(--faint);font-family:var(--mono);letter-spacing:.05em;display:block;margin-bottom:2px;}
+  .cmp del{background:rgba(192,57,43,.16);color:var(--del);text-decoration:none;border-radius:2px;}
+  .cmp ins{background:rgba(47,143,82,.16);color:var(--ins);text-decoration:none;border-radius:2px;}
+  .note{font-family:var(--mono);font-size:11.5px;color:var(--dim);margin-bottom:10px;}
+  .steps-list{display:flex;flex-direction:column;gap:2px;}
+  .steps-list .st{font-family:var(--mono);font-size:11.5px;color:var(--dim);padding:4px 8px;border-left:1px solid transparent;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .steps-list .st:hover{color:var(--text);border-left-color:var(--border-strong);}
+  .steps-list .st.active{color:var(--text);border-left-color:var(--accent);}
+  .env-row{display:flex;flex-direction:column;gap:1px;padding:5px 0;border-bottom:1px dashed var(--border);}
+  .env-row:last-child{border-bottom:0;}
+  .env-head{display:flex;align-items:center;gap:8px;}
+  .env-name{font-family:var(--mono);font-size:12.5px;color:var(--text);cursor:pointer;border-bottom:1px solid transparent;}
+  .env-name:hover{border-bottom-color:var(--border-strong);}
+  .env-val{font-family:var(--mono);font-size:11.5px;color:var(--dim);white-space:pre-wrap;word-break:break-word;}
+  .env-ty{font-family:var(--mono);font-size:10.5px;color:var(--faint);}
+  .env-del{margin-left:auto;font-size:10.5px;color:var(--faint);background:transparent;border:1px solid var(--border);border-radius:var(--radius);padding:0 6px;cursor:pointer;opacity:0;}
+  .env-row:hover .env-del{opacity:1;}
+  .env-del:hover{color:var(--err);border-color:var(--err);}
+  .help-dl dt{font-family:var(--mono);font-size:12px;color:var(--accent);margin-top:7px;}
+  .help-dl dd{margin:0 0 2px 0;font-size:12px;color:var(--dim);}
+  footer{margin-top:18px;}
+  .helpers{margin-top:16px;}
+  .helpers h2{font-size:10.5px;font-weight:400;color:var(--faint);margin:0 0 9px;letter-spacing:.14em;font-family:var(--mono);text-transform:uppercase;}
   .chips{display:flex;flex-wrap:wrap;gap:7px;}
-  .chip{font-family:var(--mono);font-size:12px;padding:4px 10px;border:1px solid var(--border);border-radius:999px;color:var(--dim);cursor:pointer;background:var(--paper);transition:color .12s,border-color .12s,background .12s;}
-  .chip:hover{color:var(--text);border-color:var(--border-strong);background:var(--hover);}
+  .chip{font-family:var(--mono);font-size:12px;padding:4px 10px;border:1px solid var(--border);border-radius:var(--radius);color:var(--dim);cursor:pointer;background:transparent;transition:color .12s,border-color .12s;}
+  .chip:hover{color:var(--text);border-color:var(--border-strong);}
   .hint{color:var(--faint);font-size:11.5px;margin-top:9px;font-family:var(--mono);}
   kbd{font-family:var(--mono);font-size:11px;border:1px solid var(--border);border-bottom-width:2px;border-radius:4px;padding:0 5px;color:var(--dim);}
+  .toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:var(--bg);border:1px solid var(--border-strong);border-radius:var(--radius);padding:8px 14px;font-family:var(--mono);font-size:12px;color:var(--text);opacity:0;pointer-events:none;transition:opacity .2s;}
+  .toast.show{opacity:1;}
 </style>
 </head>
 <body>
-<div class="wrap">
+<div class="app">
   <header>
     <div>
-      <h1>Lambda 演算计算器</h1>
-      <p class="sub">Haskell 解释器 · 输入后按 <kbd>Enter</kbd> 执行 · 支持 <span class="lam">λ</span> 抽象 / 应用 / Church 编码 / 组合子</p>
+      <h1><span class="lam">λ</span> 演算计算器 <span style="color:var(--faint)">/ Lambda Calculus</span></h1>
+      <p class="sub" id="subline">Haskell 解释器 · 归约轨迹 · 语法树 · 类型推断</p>
     </div>
-    <button class="theme-btn" id="theme-toggle" type="button">深色</button>
+    <div class="controls">
+      <select class="ctl" id="lang" aria-label="language">
+        <option value="both">中 / EN</option>
+        <option value="zh">中文</option>
+        <option value="en">English</option>
+      </select>
+      <select class="ctl" id="strategy" aria-label="strategy">
+        <option value="applicative">应用序 / applicative</option>
+        <option value="normal">正规序 / normal</option>
+        <option value="cbn">按名 / call-by-name</option>
+        <option value="cbv">按值 / call-by-value</option>
+      </select>
+      <button class="ctl" id="share" type="button">分享 / Share</button>
+      <button class="ctl" id="export" type="button">导出 / Export</button>
+      <button class="ctl" id="import" type="button">导入 / Import</button>
+      <button class="ctl" id="theme-toggle" type="button">深色 / Dark</button>
+      <input type="file" id="file" accept=".lam,.txt" hidden>
+    </div>
   </header>
 
-  <div class="term">
-    <div class="term-bar">
-      <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
-      <span class="term-title">lambda-repl</span>
-      <button class="term-clear" id="clear" type="button">清空</button>
-    </div>
-    <div class="term-body">
-      <div class="term-out" id="out"></div>
-      <div class="term-line">
-        <span class="prompt">λ&gt;</span>
-        <input id="cmd" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="输入表达式，回车执行（↑↓ 翻历史，:clear 清屏）">
+  <main>
+    <section class="term" aria-label="REPL">
+      <div class="term-bar">
+        <span class="term-title">lambda-repl</span>
+        <div class="term-tools">
+          <button id="clear" type="button">清空 / clear</button>
+        </div>
       </div>
-    </div>
-  </div>
+      <div class="term-body">
+        <div class="term-out" id="out" aria-live="polite"></div>
+        <div class="term-line">
+          <span class="prompt">λ&gt;</span>
+          <div class="input-wrap">
+            <textarea id="cmd" rows="1" autocomplete="off" autocapitalize="off" spellcheck="false"
+              placeholder="输入表达式，回车执行 / type an expression, Enter to run"></textarea>
+            <div class="ac" id="ac" role="listbox"></div>
+          </div>
+        </div>
+        <div class="status">
+          <span><b id="st-strategy">applicative</b></span>
+          <span><b id="st-steps">10000</b> <span id="st-steps-label">steps</span></span>
+          <span><b id="st-type">—</b></span>
+          <span id="st-conn">●</span>
+        </div>
+      </div>
+    </section>
 
-  <div class="helpers">
-    <h2>示例（点击填到输入框，回车执行）</h2>
-    <div class="chips" id="examples"></div>
-  </div>
-  <div class="helpers">
-    <h2>预定义环境（点击插入）</h2>
-    <div class="chips" id="chips"></div>
-  </div>
-  <p class="hint">提示：用 \x.x 或 <span class="lam">λ</span>x.x 写抽象；数字自动转 Church 编码；先输入 <b>id = \x.x</b> 定义，后续行即可使用 id。</p>
+    <aside class="side" aria-label="inspector">
+      <div class="tabs" role="tablist">
+        <button class="tab" role="tab" data-tab="trace" aria-selected="true">轨迹 / Trace</button>
+        <button class="tab" role="tab" data-tab="ast">结构 / AST</button>
+        <button class="tab" role="tab" data-tab="type">类型 / Type</button>
+        <button class="tab" role="tab" data-tab="env">环境 / Env</button>
+        <button class="tab" role="tab" data-tab="help">帮助 / Help</button>
+      </div>
+      <div class="panel" id="panel"></div>
+    </aside>
+  </main>
+
+  <footer>
+    <div class="helpers">
+      <h2 id="ex-title">示例（点击填入） / Examples</h2>
+      <div class="chips" id="examples"></div>
+    </div>
+    <div class="helpers">
+      <h2 id="pre-title">预定义环境（点击插入） / Prelude</h2>
+      <div class="chips" id="chips"></div>
+    </div>
+    <p class="hint" id="foot-hint"></p>
+  </footer>
 </div>
+<div class="toast" id="toast"></div>
 
 <script>
 (function(){
+  "use strict";
+
+  /* ------------------------------------------------------------------ i18n */
+  var I18N = {
+    subline: {zh:"Haskell 解释器 · 归约轨迹 · 语法树 · 类型推断", en:"Haskell interpreter · reduction traces · AST · types"},
+    exTitle: {zh:"示例（点击填入）", en:"Examples (click to insert)"},
+    preTitle:{zh:"预定义环境（点击插入）", en:"Prelude (click to insert)"},
+    foot:    {zh:"提示：\\x.x 或 λx.x 表示抽象；数字自动转 Church 编码；↑↓ 翻历史，Tab 补全，Ctrl+L 清空。", en:"Tip: write \\x.x or λx.x; numbers become Church numerals; ↑↓ history, Tab completes, Ctrl+L clears."},
+    dark:    {zh:"深色", en:"Dark"}, light:{zh:"浅色", en:"Light"},
+    clear:   {zh:"清空", en:"clear"},
+    steps:   {zh:"步", en:"steps"},
+    trace:   {zh:"轨迹", en:"trace"}, ast:{zh:"结构", en:"AST"}, type:{zh:"类型", en:"type"},
+    welcome: {zh:"REPL 就绪。输入表达式后按 Enter 执行；右侧面板会显示归约轨迹、语法树与类型。", en:"REPL ready. Press Enter to run; the panel shows traces, AST and types."},
+    noTrace: {zh:"这个结果没有归约步骤（已经是正规形）。", en:"No reduction steps for this result (already a normal form)."},
+    noSel:   {zh:"执行一个表达式后，这里会显示它的归约轨迹。", en:"Run an expression to see its reduction trace here."},
+    noAst:   {zh:"还没有可显示的语法树。", en:"No syntax tree yet."},
+    noType:  {zh:"无法推断类型（无类型项或尚未执行表达式）。", en:"No type available (untypable term, or nothing run yet)."},
+    envEmpty:{zh:"环境为空。", en:"Environment is empty."},
+    before:  {zh:"归约前", en:"before"}, after:{zh:"归约后", en:"after"},
+    step:    {zh:"第", en:"step"}, of:{zh:"步，共", en:"of"},
+    shareOk: {zh:"链接已复制到地址栏", en:"Link is in the address bar"},
+    copied:  {zh:"已复制链接", en:"Link copied"},
+    importOk:{zh:"已导入", en:"Imported"},
+    del:     {zh:"删除", en:"del"},
+    run:     {zh:"运行", en:"run"},
+    timeout: {zh:"计算超时，已重置会话。", en:"Timed out; session reset."},
+    conn:    {zh:"已连接", en:"connected"}, dead:{zh:"已断开", en:"disconnected"},
+    helpTitle:{zh:"命令", en:"Commands"},
+    helpBody:{zh:"表达式语法：λx.body 或 \\\\x.body；应用 f a 左结合；括号 (expr)；数字自动转 Church 编码。", en:"Syntax: λx.body or \\\\x.body; application f a is left-assoc; grouping (expr); numbers become Church numerals."},
+    typeHint:{zh:"简单类型（Hindley–Milner），自由变量用 t0, t1… 表示。", en:"Simple types (Hindley–Milner); free type variables appear as t0, t1…"},
+    envHint:{zh:"点击变量名插入到输入框；悬停可删除。", en:"Click a name to insert it; hover to delete."}
+  };
+
+  var state = {
+    lang: "both",
+    theme: "light",
+    session: null,
+    codeLines: [],
+    history: [],
+    hIdx: 0,
+    selected: null,      // 当前选中的 result 对象
+    tracePos: 0,
+    tab: "trace",
+    envRows: [],
+    typing: false,
+    acIndex: -1,
+    acItems: []
+  };
+
+  var $ = function(id){ return document.getElementById(id); };
+  var out = $("out"), cmd = $("cmd"), ac = $("ac"), panel = $("panel");
   var root = document.documentElement;
 
-  /* ---- 主题 ---- */
-  var TKEY = 'ui_theme';
-  var tBtn = document.getElementById('theme-toggle');
-  function applyTheme(t){
-    root.setAttribute('data-theme', t);
-    if (tBtn) tBtn.textContent = (t === 'dark') ? '浅色' : '深色';
-    try { localStorage.setItem(TKEY, t); } catch (e) {}
+  function t(key, extra){
+    var e = I18N[key] || {zh:key, en:key};
+    if (state.lang === "zh") return e.zh;
+    if (state.lang === "en") return e.en;
+    return e.zh + " / " + e.en;
   }
-  var sT = null; try { sT = localStorage.getItem(TKEY); } catch (e) {}
-  applyTheme(sT || ((window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'light'));
-  if (tBtn) tBtn.addEventListener('click', function(){
-    applyTheme(root.getAttribute('data-theme') === 'dark' ? 'light' : 'dark');
-  });
 
-  /* ---- REPL ---- */
-  var out = document.getElementById('out');
-  var cmd = document.getElementById('cmd');
-  var clearBtn = document.getElementById('clear');
+  /* --------------------------------------------------------------- storage */
+  var LS = "lambda.ui.v2";
+  function saveLocal(){
+    try {
+      localStorage.setItem(LS, JSON.stringify({
+        lang: state.lang, theme: state.theme, strategy: $("strategy").value,
+        code: state.codeLines
+      }));
+    } catch(e){}
+  }
+  function loadLocal(){
+    try { return JSON.parse(localStorage.getItem(LS) || "null"); } catch(e){ return null; }
+  }
 
-  var codeLines = [];   // 累计所有输入，用于每次重新求值（后端无状态，需重放定义）
-  var shown = 0;        // 已展示的结果条数（用于只显示增量）
-  var hist = [];        // 命令历史
-  var hIdx = 0;
+  /* ----------------------------------------------------------------- theme */
+  function applyTheme(th){
+    state.theme = th;
+    root.setAttribute("data-theme", th);
+    $("theme-toggle").textContent = th === "dark" ? t("light") : t("dark");
+  }
 
+  /* ------------------------------------------------------------- text utils */
+  function esc(s){
+    return String(s == null ? "" : s)
+      .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")
+      .replace(/"/g,"&quot;");
+  }
+  function shorten(s, n){
+    s = String(s == null ? "" : s);
+    return s.length <= n ? s : s.slice(0, n - 1) + "…";
+  }
+  function elem(tag, cls, html){
+    var d = document.createElement(tag);
+    if (cls) d.className = cls;
+    if (html != null) d.innerHTML = html;
+    return d;
+  }
   function scrollDown(){ out.scrollTop = out.scrollHeight; }
 
-  function addLine(cls, text){
-    var d = document.createElement('div');
-    d.className = 'line ' + (cls || '');
-    d.textContent = text;
-    out.appendChild(d);
+  function toast(msg){
+    var el = $("toast");
+    el.textContent = msg;
+    el.classList.add("show");
+    clearTimeout(toast._t);
+    toast._t = setTimeout(function(){ el.classList.remove("show"); }, 1600);
   }
 
+  /* ------------------------------------------------------------- terminal */
   function echoPrompt(line){
-    var d = document.createElement('div');
-    d.className = 'line echo';
-    var p = document.createElement('span');
-    p.className = 'p';
-    p.textContent = 'λ> ';
-    d.appendChild(p);
-    d.appendChild(document.createTextNode(line));
+    var d = elem("div", "line echo");
+    d.innerHTML = '<span class="mark p">λ&gt;</span><span class="body"></span>';
+    d.querySelector(".body").textContent = line;
     out.appendChild(d);
   }
 
-  async function exec(line){
-    echoPrompt(line);
+  function addLine(kind, text, meta, source){
+    var d = elem("div", "line " + kind);
+    var mark = "·";
+    if (kind === "result") mark = "⇒";
+    else if (kind === "define") mark = "⟶";
+    else if (kind === "error" || kind === "fail") mark = "⚠";
+    else if (kind === "warn") mark = "⚠";
+    else if (kind === "step") mark = "→";
+    d.innerHTML = '<span class="mark">' + mark + '</span><span class="body"></span>';
+    d.querySelector(".body").textContent = text;
+    if (meta){
+      var m = elem("span", "meta");
+      m.textContent = meta;
+      d.appendChild(m);
+    }
+    out.appendChild(d);
+    return d;
+  }
+
+  function addActions(lineEl, obj, source){
+    var btn = elem("button", "act", "⚙ " + t("trace"));
+    btn.type = "button";
+    btn.addEventListener("click", function(ev){
+      ev.stopPropagation();
+      selectResult(obj, lineEl, "trace");
+    });
+    lineEl.appendChild(btn);
+    lineEl.addEventListener("click", function(){
+      if (obj.trace || obj.ast || obj.type) selectResult(obj, lineEl, state.tab === "trace" && !obj.trace ? "ast" : "trace");
+    });
+    lineEl._obj = obj;
+  }
+
+  function selectResult(obj, lineEl, tab){
+    state.selected = obj;
+    state.tracePos = (obj.trace && obj.trace.length) ? obj.trace.length - 1 : 0;
+    Array.prototype.forEach.call(out.querySelectorAll(".line.sel"), function(n){ n.classList.remove("sel"); });
+    if (lineEl && lineEl.classList) lineEl.classList.add("sel");
+    switchTab(tab || "trace");
+  }
+
+  function renderOutput(obj, source, silent){
+    if (obj.kind === "env"){
+      state.envRows = obj.rows || [];
+      if (state.tab === "env") renderPanel();
+      return;
+    }
+    if (silent) return;
+
+    if (obj.kind === "result" || obj.kind === "warn"){
+      var meta = [];
+      if (obj.steps) meta.push(obj.steps + " " + t("steps"));
+      if (obj.hint) meta.push(obj.hint.trim());
+      var el = addLine(obj.kind, obj.term || obj.text, meta.join(" · "));
+      addActions(el, obj, source);
+      if (!state.selected) selectResult(obj, el, "trace");
+      if (state.tab !== "env" && el.classList.contains("sel")) renderPanel();
+      return;
+    }
+    if (obj.kind === "error"){
+      var d = addLine("error", obj.text);
+      if (obj.pos && source){
+        var caret = elem("div", "line");
+        caret.innerHTML = '<span class="mark"></span><span class="caret"></span>';
+        caret.querySelector(".caret").textContent = " ".repeat(Math.max(0, obj.pos + 3)) + "^";
+        out.appendChild(caret);
+      }
+      return;
+    }
+    if (obj.kind === "fail" || obj.kind === "info" || obj.kind === "define" || obj.kind === "step" || obj.kind === "term"){
+      var line = addLine(obj.kind, obj.text || obj.term);
+      if (obj.kind === "step" && obj.term) line.querySelector(".body").textContent = obj.term;
+      if (obj.kind === "define") refreshEnv();
+      if (obj.kind === "term" || obj.kind === "step") addActions(line, obj, source);
+      return;
+    }
+    if (obj.kind === "trace"){
+      var o = {term: obj.final, trace: obj.trace || [], steps: obj.steps || 0, type: ""};
+      var el2 = addLine("result", o.term, (o.steps || 0) + " " + t("steps"));
+      addActions(el2, o, source);
+      selectResult(o, el2, "trace");
+      return;
+    }
+    if (obj.kind === "ast"){
+      state.selected = {ast: obj.tree, term: ""};
+      switchTab("ast");
+      return;
+    }
+    if (obj.kind === "type"){
+      addLine("info", "⊢ " + (obj.type || obj.text));
+      state.selected = obj;
+      switchTab("type");
+      return;
+    }
+    if (obj.kind === "help"){
+      addLine("info", obj.text || "");
+      switchTab("help");
+      return;
+    }
+    addLine("info", obj.text || "");
+  }
+
+  /* ------------------------------------------------------------- inspector */
+  function switchTab(tab){
+    state.tab = tab;
+    Array.prototype.forEach.call(document.querySelectorAll(".tab"), function(b){
+      b.setAttribute("aria-selected", b.dataset.tab === tab ? "true" : "false");
+    });
+    renderPanel();
+  }
+
+  function diffParts(a, b){
+    a = String(a || ""); b = String(b || "");
+    var p = 0;
+    while (p < a.length && p < b.length && a[p] === b[p]) p++;
+    var s = 0;
+    while (s < a.length - p && s < b.length - p && a[a.length-1-s] === b[b.length-1-s]) s++;
+    return { pre: a.slice(0, p), aMid: a.slice(p, a.length - s), bMid: b.slice(p, b.length - s), suf: a.slice(a.length - s) };
+  }
+
+  function renderTrace(){
+    var obj = state.selected;
+    if (!obj || (!obj.trace && !obj.term)) return '<p class="empty">' + esc(t("noSel")) + '</p>';
+    var steps = obj.trace || [];
+    if (!steps.length) return '<p class="empty">' + esc(t("noTrace")) + '</p>';
+
+    var i = Math.min(state.tracePos, steps.length - 1);
+    var st = steps[i];
+    var d = diffParts(st.before, st.after);
+    var html = '';
+    html += '<div class="player">';
+    html += '<button type="button" data-nav="prev" aria-label="prev">◀</button>';
+    html += '<input type="range" id="tr-range" min="0" max="' + (steps.length - 1) + '" value="' + i + '">';
+    html += '<button type="button" data-nav="next" aria-label="next">▶</button>';
+    html += '<span class="count">' + (i + 1) + " / " + steps.length + '</span>';
+    html += '</div>';
+    html += '<div class="note">' + esc(st.note || ("β " + (i + 1))) + '</div>';
+    html += '<div class="cmp">';
+    html += '<div class="row"><span class="lab">' + esc(t("before")) + '</span>' + esc(st.before) + '</div>';
+    html += '<div class="row"><span class="lab">' + esc(t("after")) + '</span>' +
+            esc(d.pre) + (d.bMid ? '<ins>' + esc(d.bMid) + '</ins>' : '') + esc(d.suf) + '</div>';
+    html += '</div>';
+    html += '<div class="steps-list">';
+    steps.forEach(function(s, k){
+      html += '<div class="st' + (k === i ? ' active' : '') + '" data-step="' + k + '">' +
+              (k + 1) + '. ' + esc(shorten(s.after, 64)) + '</div>';
+    });
+    html += '</div>';
+    return html;
+  }
+
+  function renderAst(){
+    var obj = state.selected;
+    if (!obj || !obj.ast || !obj.ast.length) return '<p class="empty">' + esc(t("noAst")) + '</p>';
+    var html = '<h3>' + esc(t("ast")) + '</h3><pre>' + obj.ast.map(esc).join("\n") + '</pre>';
+    if (obj.db) html += '<h3 style="margin-top:12px">de Bruijn</h3><pre>' + esc(obj.db) + '</pre>';
+    return html;
+  }
+
+  function renderType(){
+    var obj = state.selected;
+    if (!obj || !obj.type) return '<p class="empty">' + esc(t("noType")) + '</p>';
+    return '<h3>' + esc(t("type")) + '</h3><pre style="color:var(--accent);font-size:14px">' + esc(obj.type) + '</pre>' +
+           '<p class="empty" style="margin-top:10px;font-style:normal">' + esc(t("typeHint")) + '</p>';
+  }
+
+  function renderEnv(){
+    if (!state.envRows.length) return '<p class="empty">' + esc(t("envEmpty")) + '</p>';
+    var html = '<h3>' + esc(t("env")) + ' · ' + state.envRows.length + '</h3>';
+    html += '<p class="empty" style="margin-bottom:8px;font-style:normal">' + esc(t("envHint")) + '</p>';
+    state.envRows.forEach(function(r){
+      html += '<div class="env-row">';
+      html += '<div class="env-head"><span class="env-name" data-insert="' + esc(r.name) + '">' + esc(r.name) + '</span>';
+      if (r.type) html += '<span class="env-ty">' + esc(r.type) + '</span>';
+      html += '<button class="env-del" type="button" data-del="' + esc(r.name) + '">' + esc(t("del")) + '</button></div>';
+      html += '<div class="env-val">' + esc(r.value) + '</div>';
+      html += '</div>';
+    });
+    return html;
+  }
+
+  function renderHelp(){
+    var cmds = [
+      [":help", "显示帮助 / show help"],
+      [":trace <expr>", "归约轨迹 / reduction trace"],
+      [":ast <expr>", "语法树 / syntax tree"],
+      [":db <expr>", "de Bruijn 索引 / de Bruijn indices"],
+      [":type <expr>", "推断类型 / infer type"],
+      [":strategy <s>", "applicative / normal / cbn / cbv"],
+      [":steps <n>", "步数上限 / step limit"],
+      [":begin <expr>", "开始手动归约 / start manual reduction"],
+      [":step / :run / :end", "单步 / 到底 / 结束 / step / finish / end"],
+      [":let name = expr", "定义 / define"],
+      [":env / :del <n> / :reset", "环境 / environment"],
+      [":lang zh|en|both", "语言 / language"],
+      [":q", "退出 / quit"]
+    ];
+    var html = '<h3>' + esc(t("helpTitle")) + '</h3><dl class="help-dl">';
+    cmds.forEach(function(c){
+      html += '<dt>' + esc(c[0]) + '</dt><dd>' + esc(c[1]) + '</dd>';
+    });
+    html += '</dl><h3 style="margin-top:14px">' + esc(t("type")) + '</h3><p class="empty" style="font-style:normal">' + esc(t("helpBody")) + '</p>';
+    return html;
+  }
+
+  function renderPanel(){
+    var html = "";
+    if (state.tab === "trace") html = renderTrace();
+    else if (state.tab === "ast") html = renderAst();
+    else if (state.tab === "type") html = renderType();
+    else if (state.tab === "env") html = renderEnv();
+    else html = renderHelp();
+    panel.innerHTML = html;
+
+    var range = panel.querySelector("#tr-range");
+    if (range){
+      range.addEventListener("input", function(){
+        state.tracePos = parseInt(range.value, 10) || 0;
+        renderPanel();
+      });
+    }
+    Array.prototype.forEach.call(panel.querySelectorAll("[data-nav]"), function(b){
+      b.addEventListener("click", function(){
+        var n = (state.selected && state.selected.trace) ? state.selected.trace.length : 0;
+        if (!n) return;
+        state.tracePos = Math.max(0, Math.min(n - 1, state.tracePos + (b.dataset.nav === "next" ? 1 : -1)));
+        renderPanel();
+      });
+    });
+    Array.prototype.forEach.call(panel.querySelectorAll("[data-step]"), function(el){
+      el.addEventListener("click", function(){
+        state.tracePos = parseInt(el.dataset.step, 10) || 0;
+        renderPanel();
+      });
+    });
+    Array.prototype.forEach.call(panel.querySelectorAll("[data-insert]"), function(el){
+      el.addEventListener("click", function(){ insertText(el.dataset.insert); });
+    });
+    Array.prototype.forEach.call(panel.querySelectorAll("[data-del]"), function(el){
+      el.addEventListener("click", function(){ execSilent(":del " + el.dataset.del).then(refreshEnv); });
+    });
+  }
+
+  /* ---------------------------------------------------------------- session */
+  async function api(path, body, method){
+    var res = await fetch(path, {
+      method: method || "POST",
+      headers: {"Content-Type": "application/json"},
+      body: body ? JSON.stringify(body) : undefined
+    });
+    var data = null;
+    try { data = await res.json(); } catch(e){ data = {ok:false, error:"bad response"}; }
+    return {status: res.status, data: data};
+  }
+
+  async function newSession(){
+    var r = await api("api/session", {lang: state.lang});
+    if (r.data && r.data.session){ state.session = r.data.session; setConn(true); }
+    else { state.session = null; setConn(false); }
+  }
+
+  function setConn(ok){
+    var el = $("st-conn");
+    el.textContent = (ok ? "● " : "○ ") + t(ok ? "conn" : "dead");
+    el.style.color = ok ? "var(--ok)" : "var(--err)";
+  }
+
+  async function evalLine(line, silent){
+    if (!state.session) await newSession();
+    var r = await api("api/eval", {session: state.session, line: line, lang: state.lang});
+    if (r.status === 408 || (r.data && (r.data.timeout || r.data.restart))){
+      state.session = null; setConn(false);
+      if (!silent){
+        addLine("warn", (r.data && r.data.error) || t("timeout"));
+        await rebuild();
+      }
+      return [];
+    }
+    if (!r.data || !r.data.ok){
+      if (!silent) addLine("fail", (r.data && r.data.error) || "request failed");
+      if (r.status >= 500) { state.session = null; setConn(false); }
+      return [];
+    }
+    if (r.data.session) state.session = r.data.session;
+    return r.data.outputs || [];
+  }
+
+  // 会话失效后重建并静默回放已有输入
+  // Rebuild a dead session and silently replay previous lines.
+  async function rebuild(){
+    await newSession();
+    for (var i = 0; i < state.codeLines.length; i++){
+      await evalLine(state.codeLines[i], true);
+    }
+  }
+
+  async function execSilent(line){
+    return evalLine(line, true);
+  }
+
+  async function refreshEnv(){
+    var outs = await evalLine(":env", true);
+    var env = outs.filter(function(o){ return o.kind === "env"; })[0];
+    if (env){
+      state.envRows = env.rows || [];
+      if (state.tab === "env") renderPanel();
+    }
+    return env;
+  }
+
+  /* ------------------------------------------------------------------ exec */
+  async function exec(line, opts){
+    opts = opts || {};
+    if (!opts.silent) echoPrompt(line);
     var trimmed = line.trim();
     if (!trimmed) { scrollDown(); return; }
-    if (trimmed === ':clear' || trimmed === 'clear' || trimmed === ':cls') {
-      out.innerHTML = ''; codeLines = []; shown = 0; scrollDown(); return;
+
+    if (trimmed === ":clear" || trimmed === "clear" || trimmed === ":cls"){
+      clearAll(); return;
     }
-    codeLines.push(line);
-    var code = codeLines.join('\n');
-    try {
-      var resp = await fetch('api/eval', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ code: code })
-      });
-      var data = await resp.json();
-      if (!data.ok) { addLine('error', data.error || '未知错误'); scrollDown(); return; }
-      var results = data.results || [];
-      var fresh = results.slice(shown);
-      shown = results.length;
-      fresh.forEach(function(r){ addLine(r.kind, r.text); });
-    } catch (e) {
-      addLine('error', '请求失败：' + e.message);
+
+    if (opts.record !== false) state.codeLines.push(line);
+
+    var outputs = await evalLine(line, opts.silent);
+    outputs.forEach(function(o){ renderOutput(o, line, opts.silent); });
+
+    var last = outputs.filter(function(o){ return o.kind === "result" || o.kind === "warn"; }).pop();
+    if (last){
+      $("st-type").textContent = last.type || "—";
+      if (last.trace && last.trace.length && !opts.silent){
+        state.selected = last;
+        state.tracePos = last.trace.length - 1;
+        if (state.tab === "trace") renderPanel();
+      }
     }
-    scrollDown();
+    if (!opts.silent) scrollDown();
+    saveLocal();
   }
 
-  cmd.addEventListener('keydown', function(e){
-    if (e.key === 'Enter') {
-      var v = cmd.value;
-      cmd.value = '';
-      if (v.trim()) hist.push(v);
-      hIdx = hist.length;
-      exec(v);
-    } else if (e.key === 'ArrowUp') {
-      if (hist.length) { if (hIdx > 0) hIdx--; cmd.value = hist[hIdx] || ''; }
+  /* ------------------------------------------------------------------- ac */
+  function tokenBeforeCursor(){
+    var pos = cmd.selectionStart || 0;
+    var left = cmd.value.slice(0, pos);
+    var m = left.match(/(:[A-Za-z]+|[A-Za-z_][A-Za-z0-9_']*)$/);
+    return m ? m[1] : "";
+  }
+
+  function candidates(token){
+    var names = state.envRows.map(function(r){ return r.name; });
+    var cmds = [":help",":trace",":ast",":db",":type",":strategy",":steps",":begin",":step",":run",":end",":let",":load",":env",":del",":reset",":lang",":clear",":q"];
+    var pool = token.charAt(0) === ":" ? cmds : names;
+    var lower = token.toLowerCase();
+    var seen = {};
+    return pool.filter(function(x){
+      if (seen[x]) return false;
+      seen[x] = 1;
+      return x.toLowerCase().indexOf(lower) === 0;
+    }).slice(0, 10);
+  }
+
+  function closeAc(){ ac.classList.remove("open"); state.acItems = []; state.acIndex = -1; }
+
+  function openAc(){
+    var token = tokenBeforeCursor();
+    if (!token || token.length < 1) { closeAc(); return; }
+    var items = candidates(token);
+    if (!items.length || (items.length === 1 && items[0] === token)) { closeAc(); return; }
+    state.acItems = items;
+    state.acIndex = 0;
+    ac.innerHTML = items.map(function(x, i){
+      return '<div class="item' + (i === 0 ? ' active' : '') + '" data-i="' + i + '">' +
+             '<span>' + esc(x) + '</span><span class="hint"></span></div>';
+    }).join("");
+    Array.prototype.forEach.call(ac.querySelectorAll(".item"), function(el){
+      el.addEventListener("mousedown", function(ev){ ev.preventDefault(); acceptAc(parseInt(el.dataset.i, 10)); });
+    });
+    ac.classList.add("open");
+  }
+
+  function acceptAc(i){
+    if (i == null) i = state.acIndex;
+    var token = tokenBeforeCursor();
+    var pick = state.acItems[i];
+    if (!pick) { closeAc(); return; }
+    var pos = cmd.selectionStart || 0;
+    var left = cmd.value.slice(0, pos), right = cmd.value.slice(pos);
+    cmd.value = left.slice(0, left.length - token.length) + pick + right;
+    var newPos = pos - token.length + pick.length;
+    cmd.setSelectionRange(newPos, newPos);
+    closeAc();
+    cmd.focus();
+  }
+
+  function insertText(text){
+    var pos = cmd.selectionStart || cmd.value.length;
+    var left = cmd.value.slice(0, pos), right = cmd.value.slice(pos);
+    var pad = left && !/\s$/.test(left) ? " " : "";
+    cmd.value = left + pad + text + right;
+    var p = (left + pad + text).length;
+    cmd.setSelectionRange(p, p);
+    cmd.focus();
+  }
+
+  /* ---------------------------------------------------------------- events */
+  cmd.addEventListener("input", function(){
+    cmd.style.height = "auto";
+    cmd.style.height = Math.min(cmd.scrollHeight, 120) + "px";
+    openAc();
+  });
+
+  cmd.addEventListener("keydown", function(e){
+    if (ac.classList.contains("open")){
+      if (e.key === "ArrowDown"){ e.preventDefault(); state.acIndex = (state.acIndex + 1) % state.acItems.length; paintAc(); return; }
+      if (e.key === "ArrowUp"){ e.preventDefault(); state.acIndex = (state.acIndex - 1 + state.acItems.length) % state.acItems.length; paintAc(); return; }
+      if (e.key === "Tab" || e.key === "Enter"){ e.preventDefault(); acceptAc(); return; }
+      if (e.key === "Escape"){ closeAc(); return; }
+    }
+    if (e.key === "Enter" && !e.shiftKey){
       e.preventDefault();
-    } else if (e.key === 'ArrowDown') {
-      if (hist.length) {
-        if (hIdx < hist.length - 1) { hIdx++; cmd.value = hist[hIdx]; }
-        else { hIdx = hist.length; cmd.value = ''; }
+      var v = cmd.value;
+      cmd.value = "";
+      cmd.style.height = "auto";
+      if (v.trim()) state.history.push(v);
+      state.hIdx = state.history.length;
+      exec(v);
+      return;
+    }
+    if (e.key === "ArrowUp" && !cmd.value.includes("\n")){
+      if (state.history.length){ if (state.hIdx > 0) state.hIdx--; cmd.value = state.history[state.hIdx] || ""; e.preventDefault(); }
+    } else if (e.key === "ArrowDown" && !cmd.value.includes("\n")){
+      if (state.history.length){
+        if (state.hIdx < state.history.length - 1){ state.hIdx++; cmd.value = state.history[state.hIdx]; }
+        else { state.hIdx = state.history.length; cmd.value = ""; }
       }
       e.preventDefault();
+    } else if ((e.ctrlKey || e.metaKey) && (e.key === "l" || e.key === "L")){
+      e.preventDefault(); clearAll();
     }
   });
 
-  if (clearBtn) clearBtn.addEventListener('click', function(){
-    out.innerHTML = ''; codeLines = []; shown = 0; cmd.focus();
-  });
-
-  var termEl = document.querySelector('.term');
-  if (termEl) termEl.addEventListener('click', function(){
-    var sel = window.getSelection ? window.getSelection().toString() : '';
-    if (!sel) cmd.focus();
-  });
-
-  /* ---- 示例 ---- */
-  var examples = [
-    { label: 'PLUS ONE TWO',   code: 'PLUS ONE TWO' },
-    { label: 'AND TRUE FALSE', code: 'AND TRUE FALSE' },
-    { label: 'K 组合子',        code: '(\\x.\\y.x) a b' },
-    { label: '定义 id',         code: 'id = \\x.x' },
-    { label: 'IF 选择',         code: 'IF TRUE ONE TWO' },
-    { label: 'SUCC THREE',      code: 'SUCC THREE' }
-  ];
-  var exBox = document.getElementById('examples');
-  examples.forEach(function(ex){
-    var b = document.createElement('span');
-    b.className = 'chip';
-    b.textContent = ex.label;
-    b.onclick = function(){ cmd.value = ex.code; cmd.focus(); };
-    exBox.appendChild(b);
-  });
-
-  /* ---- 预定义环境 ---- */
-  fetch('api/prelude').then(function(r){ return r.json(); }).then(function(names){
-    var box = document.getElementById('chips');
-    (names || []).forEach(function(n){
-      var c = document.createElement('span');
-      c.className = 'chip';
-      c.textContent = n;
-      c.onclick = function(){ cmd.value = (cmd.value ? cmd.value + ' ' : '') + n; cmd.focus(); };
-      box.appendChild(c);
+  function paintAc(){
+    Array.prototype.forEach.call(ac.querySelectorAll(".item"), function(el, i){
+      el.classList.toggle("active", i === state.acIndex);
     });
-  }).catch(function(){});
+  }
 
-  /* ---- 欢迎语 ---- */
-  addLine('info', 'Lambda 演算计算器 · REPL 就绪。输入表达式后按 Enter 执行；:clear 清空；↑↓ 翻历史。');
-  cmd.focus();
+  function clearAll(){
+    out.innerHTML = "";
+    state.codeLines = [];
+    state.selected = null;
+    state.envRows = [];
+    state.session = null;
+    newSession().then(function(){
+      addLine("info", t("welcome"));
+      renderPanel();
+      saveLocal();
+    });
+    cmd.value = "";
+    cmd.focus();
+  }
+
+  document.addEventListener("click", function(e){
+    if (!ac.contains(e.target) && e.target !== cmd) closeAc();
+  });
+
+  Array.prototype.forEach.call(document.querySelectorAll(".tab"), function(b){
+    b.addEventListener("click", function(){ switchTab(b.dataset.tab); });
+  });
+
+  $("clear").addEventListener("click", clearAll);
+
+  $("theme-toggle").addEventListener("click", function(){
+    applyTheme(state.theme === "dark" ? "light" : "dark");
+    saveLocal();
+  });
+
+  $("lang").addEventListener("change", function(){
+    state.lang = $("lang").value;
+    applyStaticTexts();
+    execSilent(":lang " + state.lang);
+    renderPanel();
+    saveLocal();
+  });
+
+  $("strategy").addEventListener("change", function(){
+    execSilent(":strategy " + $("strategy").value).then(function(outs){
+      outs.forEach(function(o){ if (o.kind === "info") addLine("info", o.text); });
+      $("st-strategy").textContent = $("strategy").value;
+      saveLocal();
+    });
+  });
+
+  $("st-steps").addEventListener("click", function(){
+    var v = prompt("step limit / 步数上限", $("st-steps").textContent);
+    if (v == null) return;
+    execSilent(":steps " + String(v).trim()).then(function(outs){
+      outs.forEach(function(o){
+        if (o.kind === "info"){ addLine("info", o.text); $("st-steps").textContent = String(v).trim(); }
+        else addLine("fail", o.text || "");
+      });
+      saveLocal();
+    });
+  });
+
+  $("share").addEventListener("click", function(){
+    var code = state.codeLines.join("\n");
+    var enc = btoa(unescape(encodeURIComponent(code))).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"");
+    var url = location.origin + location.pathname + "#code=" + enc;
+    try { history.replaceState(null, "", "#code=" + enc); } catch(e){}
+    if (navigator.clipboard) navigator.clipboard.writeText(url).then(function(){ toast(t("copied")); }, function(){ toast(t("shareOk")); });
+    else toast(t("shareOk"));
+  });
+
+  $("export").addEventListener("click", function(){
+    var blob = new Blob([state.codeLines.join("\n") + "\n"], {type:"text/plain;charset=utf-8"});
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "lambda-session.lam";
+    a.click();
+    setTimeout(function(){ URL.revokeObjectURL(a.href); }, 1000);
+  });
+
+  $("import").addEventListener("click", function(){ $("file").click(); });
+  $("file").addEventListener("change", function(){
+    var f = this.files && this.files[0];
+    if (!f) return;
+    var reader = new FileReader();
+    reader.onload = async function(){
+      var lines = String(reader.result || "").split(/\r?\n/).filter(function(l){ return l.trim(); });
+      for (var i = 0; i < lines.length; i++) await exec(lines[i]);
+      toast(t("importOk") + " · " + lines.length);
+      refreshEnv();
+    };
+    reader.readAsText(f, "utf-8");
+    this.value = "";
+  });
+
+  /* --------------------------------------------------------------- examples */
+  var EXAMPLES = [
+    ["PLUS ONE TWO", "3"],
+    ["MULT TWO THREE", "6"],
+    ["IF TRUE ONE TWO", "1"],
+    ["NOT FALSE", "TRUE"],
+    ["AND TRUE FALSE", "FALSE"],
+    ["SUCC THREE", "4"],
+    ["(\\x.\\y.x) a b", "K"],
+    ["(\\x.x x)(\\x.x)", "self-apply"],
+    ["\\x.\\y.x y", "λ"],
+    ["id = \\x.x", "define"],
+    [":type \\f.\\x.f (f x)", "type"],
+    [":trace (\\x.x) a", "trace"]
+  ];
+
+  function renderExamples(){
+    var box = $("examples");
+    box.innerHTML = "";
+    EXAMPLES.forEach(function(ex){
+      var b = elem("span", "chip");
+      b.innerHTML = esc(ex[0]) + ' <span style="color:var(--faint)">· ' + esc(ex[1]) + '</span>';
+      b.addEventListener("click", function(){ cmd.value = ex[0]; cmd.focus(); cmd.setSelectionRange(cmd.value.length, cmd.value.length); });
+      box.appendChild(b);
+    });
+  }
+
+  function loadPrelude(){
+    fetch("api/prelude").then(function(r){ return r.json(); }).then(function(names){
+      var box = $("chips");
+      box.innerHTML = "";
+      (names || []).forEach(function(n){
+        var c = elem("span", "chip", esc(n));
+        c.addEventListener("click", function(){ insertText(n); });
+        box.appendChild(c);
+      });
+    }).catch(function(){});
+  }
+
+  function applyStaticTexts(){
+    $("subline").textContent = t("subline");
+    $("ex-title").textContent = t("exTitle");
+    $("pre-title").textContent = t("preTitle");
+    $("foot-hint").textContent = t("foot");
+    $("clear").textContent = t("clear");
+    $("theme-toggle").textContent = state.theme === "dark" ? t("light") : t("dark");
+    $("st-steps-label").textContent = t("steps");
+    renderExamples();
+  }
+
+  /* ------------------------------------------------------------------ boot */
+  async function boot(){
+    var saved = loadLocal();
+    if (saved){
+      state.lang = saved.lang || "both";
+      state.theme = saved.theme || "light";
+      $("strategy").value = saved.strategy || "applicative";
+      if (Array.isArray(saved.code)) state.codeLines = saved.code;
+    }
+    if (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches && !saved){
+      state.theme = "dark";
+    }
+    applyTheme(state.theme);
+    $("lang").value = state.lang;
+    $("st-strategy").textContent = $("strategy").value;
+    applyStaticTexts();
+    loadPrelude();
+
+    // URL 分享链接优先
+    var hash = location.hash.slice(1);
+    if (hash.indexOf("code=") === 0){
+      try {
+        var b64 = hash.slice(5).replace(/-/g,"+").replace(/_/g,"/");
+        while (b64.length % 4) b64 += "=";
+        var text = decodeURIComponent(escape(atob(b64)));
+        state.codeLines = text.split("\n").filter(function(l){ return l.trim(); });
+      } catch(e){}
+    }
+
+    await newSession();
+    addLine("info", t("welcome"));
+
+    if (state.codeLines.length){
+      for (var j = 0; j < state.codeLines.length; j++){
+        await exec(state.codeLines[j], {record: false});
+      }
+    }
+
+    await refreshEnv();
+    if ($("strategy").value !== "applicative") execSilent(":strategy " + $("strategy").value);
+    renderPanel();
+    cmd.focus();
+  }
+
+  boot();
 })();
 </script>
 </body>
