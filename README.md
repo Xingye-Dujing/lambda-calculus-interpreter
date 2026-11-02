@@ -23,6 +23,10 @@ around the same compiled `extension` binary.
 - **Four strategies** — applicative, normal, call-by-name, call-by-value
   (weak strategies stop at weak head normal form).
 - **Eta reduction** — `:eta on|off` adds `λx. f x → f` when `x` is not free in `f`.
+- **Fast mode** — `:fast on|off` (also a web toggle) evaluates with shared
+  environments instead of rebuilding the whole term each step, which makes large
+  Church arithmetic dramatically faster. It returns a normal form only: no
+  trace and no exact step count, and `:steps` becomes a β fuel budget.
 - **Normal forms** — `:nf` reduces to a full normal form, `:whnf` stops at the
   weak head normal form.
 - **Redex picking** — `:begin` lists every β-redex; `:step <n>` contracts a
@@ -40,7 +44,8 @@ around the same compiled `extension` binary.
 - **Definitions** — `name = expr`, recursive `rec name = expr`, `:let`, `:load`,
   `:save`, `:env`, `:del`, `:reset`.
 - **Definition files** — comments (`--` or `#`), indented/parenthesised
-  continuation lines, and `:strategy` / `:steps` / `:lang` commands in `.lam`.
+  continuation lines, and `:strategy` / `:steps` / `:lang` / `:fast` commands
+  in `.lam`.
 - **Integer bridge** — `:int <expr>` decodes a Church numeral, `:church <n>`
   encodes 0–9999.
 - **Views** — pretty syntax tree (`:ast`), structured/collapsible AST in the web
@@ -118,6 +123,7 @@ intentionally malformed so load-error reporting is exercised.
 | `:strategy applicative\|normal\|cbn\|cbv` | switch evaluation strategy |
 | `:steps <n>` | set the reduction step limit |
 | `:eta on\|off` | enable/disable eta reduction |
+| `:fast on\|off` | shared fast normalization (normal form only, uses `:steps` as fuel) |
 | `:trace <expr>` | print the full reduction trace |
 | `:ast <expr>` / `:db <expr>` | syntax tree / de Bruijn indices |
 | `:type <expr>` | infer the simple type |
@@ -257,12 +263,12 @@ test.bat           # Windows
 python tests/run_tests.py --bin ./extension
 ```
 
-30 groups cover parsing positions, β-reduction results, capture avoidance,
+31 groups cover parsing positions, β-reduction results, capture avoidance,
 traces, all four strategies, step limits, Church/combinator hints, type
 inference, environment commands, file loading (comments, continuations,
 commands, line numbers, save/reload, recursion, multiple files), manual
-reduction and redex picking, normal forms and eta, α/β equivalence, integer
-encoding, AST/de Bruijn, bilingual output, JSON protocol, determinism,
+reduction and redex picking, normal forms, eta and fast mode, α/β equivalence,
+integer encoding, AST/de Bruijn, bilingual output, JSON protocol, determinism,
 cross-strategy agreement, trace capping, CLI options, web API sessions,
 expiry/language switching/health checks, short share links, bilingual protocol
 fields, wall-clock timeout, randomized properties, and a `main`/`extension`
@@ -282,6 +288,9 @@ differential test.
   shares subtrees that do not contain the substituted variable, and reports
   whether any α-renaming happened. α-equivalence walks both binding
   environments in lockstep, with no intermediate de Bruijn tree.
+- Fast mode converts the expanded term to de Bruijn form and normalizes it with
+  an environment/closure evaluator (`FastM`); shared arguments are evaluated
+  once. `:steps` is read as a β fuel budget, so divergent terms still stop.
 - Pretty printers build `ShowS` functions, and `shorten` forces only the first
   characters of a lazy string, so clipping a huge term does not print it first.
 - Types are inferred with Hindley–Milner and let-generalisation.
@@ -300,8 +309,11 @@ differential test.
 ## Limitations
 
 - Substitution copies terms; terms with heavy duplication (for example `rec
-  fact` under applicative order) can grow exponentially. Use a smaller
-  `:steps`, normal order, or accept the cost.
+  fact` under applicative order) can grow exponentially. Use fast mode, a
+  smaller `:steps`, normal order, or accept the cost.
+- Fast mode always computes a normal form: it ignores the selected strategy and
+  η, records no trace, and reports no exact step count. `:trace`, `:whnf` and
+  manual stepping always use the step-by-step engine.
 - The CLI REPL has no wall-clock limit by default; pass `--timeout <s>` to set
   one, or use `Ctrl+C`. The web backend enforces its own timeout by killing the
   session.

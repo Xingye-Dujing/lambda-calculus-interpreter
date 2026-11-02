@@ -635,7 +635,7 @@ def test_cli_options(b: Path) -> None:
     out = p.stdout.decode("utf-8", "replace")
     check("--lang= form", "用法" in out, out[:80])
     check("help lists new commands",
-          ":eq" in out and ":whnf" in out and "--version" in out and "--timeout" in out, out[:200])
+          ":eq" in out and ":whnf" in out and ":fast" in out and "--version" in out and "--timeout" in out, out[:200])
     p = subprocess.run([str(b), "--nope"], capture_output=True, timeout=30)
     check("unknown option fails", p.returncode != 0, str(p.returncode))
     p = subprocess.run([str(b), "--lang"], capture_output=True, timeout=30)
@@ -722,6 +722,14 @@ def test_web_extras(b: Path) -> None:
         check("web save disabled", r.status_code == 400 and "disabled" in r.get_json().get("error", ""),
               str(r.get_json()))
 
+        out = client.post("/api/eval", json={"session": sid, "line": ":fast on"}).get_json()["outputs"][0]
+        check("web fast ack", out.get("fast") is True, str(out)[:160])
+        out = client.post("/api/eval", json={"session": sid, "line": "MULT 3 3"}).get_json()["outputs"][0]
+        check("web fast result",
+              out.get("fast") is True and "steps" not in out
+              and "Church numeral 9" in out.get("hint", ""), str(out)[:200])
+        client.post("/api/eval", json={"session": sid, "line": ":fast off"})
+
         r = client.post(f"/api/session/{sid}/lang", json={"lang": "zh"})
         check("web lang route", r.status_code == 200 and r.get_json().get("ok") is True, str(r.get_json()))
         out = client.post("/api/eval", json={"session": sid, "line": "\\x"}).get_json()["outputs"]
@@ -775,6 +783,17 @@ def test_properties(b: Path) -> None:
         n = outs[i * 4 + 3][0].get("term")
         check(f"strategy agreement {t}", a == n, f"{a!r} vs {n!r}")
 
+    # 快速模式与逐步模式给出同一正规形
+    # Fast mode and the step engine agree on the normal form.
+    cmds = []
+    for t in terms:
+        cmds.extend([":fast on", t, ":fast off", t])
+    outs = run(cmds, b)
+    for i, t in enumerate(terms):
+        f = outs[i * 4 + 1][0].get("term")
+        s = outs[i * 4 + 3][0].get("term")
+        check(f"fast agreement {t}", f == s, f"{f!r} vs {s!r}")
+
 
 # ---------------------------------------------------------------------------
 # main 与 extension 的差分测试 / differential test
@@ -812,6 +831,60 @@ def test_differential_main(b: Path) -> None:
               f"{main_terms!r} vs {ext.get('term')!r}")
 
 
+def test_fast_mode(b: Path) -> None:
+    info = one([":fast on"], b)
+    check("fast ack", info.get("fast") is True and "Fast mode" in info.get("text", ""),
+          str(info)[:160])
+
+    fast = one([":fast on", "MULT 12 12"], b)
+    check("fast result", fast.get("kind") == "result" and fast.get("fast") is True,
+          str(fast)[:200])
+    check("fast has no steps", "steps" not in fast, str(fast)[:200])
+    check("fast church hint", "Church numeral 144" in fast.get("hint", ""), fast.get("hint", ""))
+    check("fast text marks mode", "fast mode" in fast.get("text", ""), fast.get("text", "")[:120])
+
+    slow = one(["MULT 12 12"], b)
+    check("fast matches step term", fast.get("term") == slow.get("term"),
+          f"{fast.get('term')!r} vs {slow.get('term')!r}")
+
+    for term in ["\\x.\\y.x", "(\\x.\\y.y) a b", "\\f.\\x.f (f x)"]:
+        f = one([":fast on", term], b)
+        s = one([term], b)
+        check(f"fast term {term}", f.get("term") == s.get("term"),
+              f"{f.get('term')!r} vs {s.get('term')!r}")
+
+    i = one([":fast on", ":int MULT 12 12"], b)
+    check("fast int", i.get("value") == 144 and i.get("fast") is True, str(i)[:200])
+
+    c = one([":fast on", ":conv MULT 12 12 , 144"], b)
+    check("fast conv", c.get("equal") is True and c.get("limitHit") is False, str(c)[:200])
+
+    # 步进类命令保持逐步语义 / stepping commands keep their exact semantics
+    t = one([":fast on", ":trace (\\x.x) a"], b)
+    check("fast keeps trace", t.get("kind") == "trace" and len(t.get("trace", [])) == 1,
+          str(t)[:200])
+
+    # 燃料：Ω 在低预算下中止 / low fuel stops Ω
+    w = one([":steps 20", ":fast on", "((\\x.x x)(\\x.x x))"], b)
+    check("fast fuel warning",
+          w.get("kind") == "warn" and w.get("limitHit") is True and "fuel" in w.get("text", ""),
+          str(w)[:200])
+
+    off = one([":fast on", ":fast off", "MULT 3 3"], b)
+    check("fast off restores steps", "steps" in off and "fast" not in off, str(off)[:160])
+
+    # .lam 内的 :fast 也会生效 / a :fast directive inside a .lam file applies too
+    f = ROOT / "fast_mode_tmp.lam"
+    try:
+        f.write_text(":fast on\nid = \\x.x\n", encoding="utf-8")
+        outs = run([f":load {f}", "id z"], b)
+        check("fast file directive",
+              outs[1][0].get("fast") is True and "steps" not in outs[1][0],
+              str(outs[1][0])[:160])
+    finally:
+        f.unlink(missing_ok=True)
+
+
 # ---------------------------------------------------------------------------
 # 运行器 / Runner
 # ---------------------------------------------------------------------------
@@ -839,6 +912,7 @@ TESTS = [
     test_alpha_and_equivalence,
     test_extended_prelude,
     test_normal_forms_and_eta,
+    test_fast_mode,
     test_redex_selection,
     test_file_features,
     test_cli_options,

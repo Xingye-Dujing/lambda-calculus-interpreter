@@ -15,15 +15,15 @@ Chinese/English**.
   directory`; keep those flags if adding Windows build steps.
 - **Tests:** `.\test.bat` / `./test.sh`, or
   `python tests/run_tests.py [--bin path]`. The suite drives the compiled
-  `extension --batch --json` binary end-to-end (30 groups), including a
+  `extension --batch --json` binary end-to-end (31 groups), including a
   `main`/`extension` differential test. Run it after any core change; it is the
   regression net for `main.hs` and `extension.hs`.
 - `./main` — minimal REPL (`:q` to quit).
 - `./extension [file...] [-h|--help] [-v|--version] [--lang zh|en|both] [--lang=zh]
   [--timeout 秒] [--batch] [--json]` — full REPL with definitions. REPL commands: `:help`, `:load`, `:save`, `:let`,
-  `:env`, `:del`, `:reset`, `:strategy`, `:steps`, `:eta`, `:trace`, `:ast`,
-  `:db`, `:type`, `:eq`, `:conv`, `:nf`, `:whnf`, `:int`, `:church`, `:begin`,
-  `:step [n]`, `:run`, `:end`, `:lang`, `:q`.
+  `:env`, `:del`, `:reset`, `:strategy`, `:steps`, `:eta`, `:fast`, `:trace`,
+  `:ast`, `:db`, `:type`, `:eq`, `:conv`, `:nf`, `:whnf`, `:int`, `:church`,
+  `:begin`, `:step [n]`, `:run`, `:end`, `:lang`, `:q`.
 - `test.lam` is a sample definitions file. Its `ERR` and `ERROR` lines are
   intentionally malformed to exercise load-error reporting; do not "fix" them.
 
@@ -83,6 +83,9 @@ Chinese/English**.
 - Switching language calls the lang route and re-renders the transcript locally
   from `textZh`/`textEn`; it must not replay `codeLines` or rebuild the session.
   Result meta uses `hintZh`/`hintEn`, types use `typeZh`/`typeEn`.
+- Fast mode has two UI entries: the header `#fast-toggle` button and the Tools
+  tab button. Both call `toggleFast`, which sends `:fast on|off`; the state is
+  saved locally, carried in share links, and re-sent when a session is rebuilt.
 - Share links use a server-side short `#s=<id>` (state stored via `/api/share`);
   the full `#state=` payload and legacy `#code=` forms are still accepted.
 - `:q` is intercepted client-side; the web session must not quit the
@@ -114,6 +117,11 @@ Chinese/English**.
   predicate and keeps at most `traceLimit` (500) steps during evaluation.
   `traceTruncated` also covers terms clipped to 300 characters. `:nf` uses
   normal order; `:whnf` stops at `isWHNF` (a lambda or a neutral application).
+- `:fast on` switches `Eval`/`:nf`/`:conv`/`:int` to `fastNormalForm`:
+  de Bruijn terms, environment-based closures and shared thunks (`FastM`). It
+  yields only a normal form, uses `:steps` as a β fuel budget, ignores the
+  selected strategy and falls back to the step engine while `:eta` is on.
+  `:trace` and manual stepping always use the step engine.
 - Rendering is bounded: `shorten` forces only the requested prefix of a lazy
   string, so clipping a huge term does not pretty-print it first. `ast`, `db`
   and `astTree` are capped at 400 nodes; huge terms get `astOmitted`,
@@ -126,8 +134,8 @@ Chinese/English**.
   the `rec` form for display and saving.
 - `.lam` loading: `logicalLines` skips `--`/`#` comments and blanks, joins
   continuation lines while parentheses are open or the next line is indented;
-  original file line numbers are preserved in errors. `:strategy`, `:steps` and
-  `:lang` inside a file are applied by `LoadOutcome`.
+  original file line numbers are preserved in errors. `:strategy`, `:steps`,
+  `:lang` and `:fast` inside a file are applied by `LoadOutcome`.
 - Types are inferred with Hindley–Milner and let-generalisation. Prelude types
   are inferred from expanded terms and hidden in `:env` to keep the table short;
   user definitions show their scheme.

@@ -330,6 +330,92 @@ evalWHNF :: Bool -> Int -> Strategy -> Expr -> EvalResult
 evalWHNF eta limit strat = evalUntil eta True limit strat isWHNF
 
 -- ---------------------------------------------------------------------------
+-- 共享正规化（NBE 快速模式）/ Shared normalization (NBE fast mode)
+-- ---------------------------------------------------------------------------
+-- 小步引擎每一步都要重建整项；Church 算术里这会让每步代价随项增长。快速
+-- 模式改用环境 + 闭包：绑定存进环境，参数作为共享 thunk 传递，同一次求值
+-- 只算一次。它只给正规形，不产生轨迹或精确步数；燃料只用于挡住发散项。
+-- The small-step engine rebuilds the whole term every step, which grows with
+-- Church arithmetic. Fast mode uses environments and closures instead: bindings
+-- live in the environment and arguments are shared thunks, so each is evaluated
+-- once. It yields a normal form only, with no trace or exact step count; the
+-- fuel budget exists solely to stop divergent terms.
+data DB = DVar Int | DFree String | DLam String DB | DApp DB DB
+
+data FastVal
+  = FastLam String (FastVal -> FastM FastVal)
+  | FastGen Int
+  | FastFree String
+  | FastApp FastVal FastVal
+
+newtype FastM a = FastM { runFastM :: Int -> Either () (a, Int) }
+
+instance Functor FastM where
+  fmap f (FastM m) = FastM $ \n -> case m n of
+    Left ()       -> Left ()
+    Right (a, n') -> Right (f a, n')
+
+instance Applicative FastM where
+  pure a = FastM $ \n -> Right (a, n)
+  FastM mf <*> FastM ma = FastM $ \n -> case mf n of
+    Left ()       -> Left ()
+    Right (f, n1) -> case ma n1 of
+      Left ()       -> Left ()
+      Right (a, n2) -> Right (f a, n2)
+
+instance Monad FastM where
+  FastM m >>= k = FastM $ \n -> case m n of
+    Left ()       -> Left ()
+    Right (a, n1) -> case k a of FastM m' -> m' n1
+
+-- 每发生一次 β 归约消耗一格燃料
+-- One tick per β-contraction.
+tick :: FastM ()
+tick = FastM $ \n -> if n <= 0 then Left () else Right ((), n - 1)
+
+toDB :: [String] -> Expr -> DB
+toDB bound (Var x)   = maybe (DFree x) DVar (elemIndex x bound)
+toDB bound (Lam x b) = DLam x (toDB (x : bound) b)
+toDB bound (App f a) = DApp (toDB bound f) (toDB bound a)
+
+evalDB :: [FastVal] -> DB -> FastM FastVal
+evalDB env (DVar i) =
+  case drop i env of
+    (v : _) -> pure v
+    []      -> pure (FastFree "?")   -- 不可达 / unreachable
+evalDB _   (DFree x)  = pure (FastFree x)
+evalDB env (DLam x b) = pure (FastLam x (\v -> evalDB (v : env) b))
+evalDB env (DApp f a) = do
+  vf <- evalDB env f
+  va <- evalDB env a
+  applyFast vf va
+
+applyFast :: FastVal -> FastVal -> FastM FastVal
+applyFast (FastLam _ f) v = tick >> f v
+applyFast f a             = pure (FastApp f a)
+
+quoteFast :: Set.Set String -> [String] -> FastVal -> FastM Expr
+quoteFast _ bound (FastGen i) =
+  let n = length bound
+  in if i < n
+       then pure (Var (bound !! (n - 1 - i)))
+       else pure (Var ("#" ++ show i))
+quoteFast _ _ (FastFree x) = pure (Var x)
+quoteFast avoid bound (FastApp f a) =
+  App <$> quoteFast avoid bound f <*> quoteFast avoid bound a
+quoteFast avoid bound (FastLam hint f) =
+  let name  = freshVar hint avoid
+      avoid' = Set.insert name avoid
+  in Lam name <$> (f (FastGen (length bound))
+                    >>= quoteFast avoid' (name : bound))
+
+fastNormalForm :: Int -> Expr -> Maybe Expr
+fastNormalForm fuel e =
+  case runFastM (evalDB [] (toDB [] e) >>= quoteFast (freeVars e) []) fuel of
+    Left ()      -> Nothing
+    Right (nf, _) -> Just nf
+
+-- ---------------------------------------------------------------------------
 -- 归约位置 Redex positions：列出项中所有 β-redex，并可按序号归约
 -- All β-redexes with paths, so the user can pick which one to contract.
 -- ---------------------------------------------------------------------------
@@ -353,14 +439,19 @@ data Redex = Redex Path Expr String
 redexInfos :: Expr -> [Redex]
 redexInfos = go []
   where
-    go p e = here ++ children
+    -- 路径按反向累积，只有真的遇到 redex 时才 reverse；正规形里没有 redex，
+    -- 因此不会为每个节点分配一条路径。
+    -- Paths accumulate reversed and are reversed only at a redex, so a normal
+    -- form allocates no path per node.
+    go rev e = here ++ children
       where
         here = case e of
-          App (Lam x b) a -> [Redex p e (if alphaNeeded x b a then "β+α" else "β")]
-          _               -> []
+          App (Lam x b) a ->
+            [Redex (reverse rev) e (if alphaNeeded x b a then "β+α" else "β")]
+          _ -> []
         children = case e of
-          App f a -> go (p ++ [0]) f ++ go (p ++ [1]) a
-          Lam _ b -> go (p ++ [0]) b
+          App f a -> go (0 : rev) f ++ go (1 : rev) a
+          Lam _ b -> go (0 : rev) b
           _       -> []
 
 stepAt :: Path -> Expr -> Maybe StepOut
@@ -716,6 +807,7 @@ data Command
   | SetStrategy Strategy
   | SetSteps Int
   | SetEta Bool
+  | SetFast Bool
   | Trace Expr
   | Ast Expr
   | DbView Expr
@@ -744,8 +836,9 @@ knownCommands =
   , (":del", ("删除一个定义", "delete a definition"))
   , (":reset", ("重置为预定义环境", "reset to the prelude"))
   , (":strategy", ("切换求值策略", "switch evaluation strategy"))
-  , (":steps", ("设置归约步数上限", "set the reduction step limit"))
+  , (":steps", ("设置归约步数上限（快速模式下为 β 燃料）", "set the reduction step limit (β fuel in fast mode)"))
   , (":eta", ("开启/关闭 η 归约", "turn eta reduction on/off"))
+  , (":fast", ("开启/关闭共享快速正规化", "turn shared fast normalization on/off"))
   , (":trace", ("显示完整归约轨迹", "show the full reduction trace"))
   , (":ast", ("显示语法树", "show the syntax tree"))
   , (":db", ("de Bruijn 索引视图", "de Bruijn index view"))
@@ -790,6 +883,11 @@ parseCommand raw
       maybe (Left (ParseError 1
               ("用法：:eta on|off", "Usage: :eta on|off")))
             (Right . SetEta) (parseOnOff rest)
+  | s == ":fast" = Right (SetFast True)
+  | Just rest <- stripPrefix ":fast " s =
+      maybe (Left (ParseError 1
+              ("用法：:fast on|off", "Usage: :fast on|off")))
+            (Right . SetFast) (parseOnOff rest)
   | Just rest <- stripPrefix ":lang " s =
       maybe (Left (ParseError 1
               ("未知语言，可用：zh / en / both", "Unknown language; use zh / en / both")))
@@ -1120,6 +1218,7 @@ data ReplState = ReplState
   , rsLimit   :: Int
   , rsTimeout :: Int
   , rsEta     :: Bool
+  , rsFast    :: Bool
   , rsJson    :: Bool
   , rsLang    :: Lang
   , rsCurrent :: Maybe Expr
@@ -1219,9 +1318,12 @@ astBudget :: Int
 astBudget = 400
 
 astField :: Expr -> (String, J)
-astField e
-  | exprSize e <= astBudget = "ast" .= JArr (map JStr (treeLines e))
-  | otherwise               = "astOmitted" .= JBool True
+astField e = astFieldSized (exprSize e) e
+
+astFieldSized :: Int -> Expr -> (String, J)
+astFieldSized n e
+  | n <= astBudget = "ast" .= JArr (map JStr (treeLines e))
+  | otherwise      = "astOmitted" .= JBool True
 
 treeField :: Expr -> (String, J)
 treeField e = "tree" .= JArr (map JStr (treeLines e))
@@ -1249,17 +1351,17 @@ exprSize (App f a) = 1 + exprSize f + exprSize a
 
 -- 结构化 AST 只对较小的项输出，避免深层 Church 数把 JSON 撑大
 -- Emit the structured AST only for small terms; deep Church numerals would bloat JSON.
-astTreeFields :: Expr -> [(String, J)]
-astTreeFields e
-  | exprSize e <= astBudget = [astTreeField e]
-  | otherwise               = [ "astTreeOmitted" .= JBool True ]
+astTreeFieldsSized :: Int -> Expr -> [(String, J)]
+astTreeFieldsSized n e
+  | n <= astBudget = [astTreeField e]
+  | otherwise      = [ "astTreeOmitted" .= JBool True ]
 
 -- de Bruijn 视图对大项截断，避免单行串无限增长
 -- Bound the de Bruijn view for large terms so one line cannot grow unbounded.
-dbField :: Expr -> (String, J)
-dbField e
-  | exprSize e <= astBudget = "db" .= JStr view
-  | otherwise               = "db" .= JStr (shorten 1000 view)
+dbFieldSized :: Int -> Expr -> (String, J)
+dbFieldSized n e
+  | n <= astBudget = "db" .= JStr view
+  | otherwise      = "db" .= JStr (shorten 1000 view)
   where view = deBruijnView e
 
 -- 归约位置列表 / list of β-redexes (capped so huge terms stay bounded)
@@ -1341,6 +1443,7 @@ data LoadOutcome = LoadOutcome
   , loStrategy :: Maybe Strategy
   , loLimit    :: Maybe Int
   , loLang     :: Maybe Lang
+  , loFast     :: Maybe Bool
   }
 
 -- 注释行：`--` 或 `#` 开头 / comment lines start with `--` or `#`
@@ -1386,7 +1489,7 @@ loadDefinitionsFromFile env0 tenv0 path = do
   case contentOrErr of
     Left err -> return (Left err)
     Right content -> do
-      let start = LoadOutcome env0 tenv0 [] [] Nothing Nothing Nothing
+      let start = LoadOutcome env0 tenv0 [] [] Nothing Nothing Nothing Nothing
       return (Right (foldl' processLine start (logicalLines content)))
   where
     processLine acc (n, line) =
@@ -1406,6 +1509,7 @@ loadDefinitionsFromFile env0 tenv0 path = do
         Right (SetStrategy s) -> acc { loStrategy = Just s }
         Right (SetSteps k)    -> acc { loLimit = Just k }
         Right (SetLang l)     -> acc { loLang = Just l }
+        Right (SetFast b)     -> acc { loFast = Just b }
         _ -> acc { loFail = (n, line) : loFail acc }
 
 applyLoadOutcome :: ReplState -> LoadOutcome -> ReplState
@@ -1415,6 +1519,7 @@ applyLoadOutcome st out = st
   , rsStrategy = fromMaybe (rsStrategy st) (loStrategy out)
   , rsLimit    = fromMaybe (rsLimit st) (loLimit out)
   , rsLang     = fromMaybe (rsLang st) (loLang out)
+  , rsFast     = fromMaybe (rsFast st) (loFast out)
   }
 
 -- 可被解析器重新读取的源语法（与 pretty 的 → 不同）
@@ -1473,6 +1578,7 @@ emitEvalResult st res mExpr = do
                            (inferScheme (rsTypeEnv st) expr)
         Nothing   -> ("", "")
       trail   = erSteps res
+      size    = exprSize final
       fields  = [ "steps"    .= JNum steps
                 , "term"     .= JStr termTxt
                 , "limitHit" .= JBool (erLimitHit res)
@@ -1481,11 +1587,11 @@ emitEvalResult st res mExpr = do
                 , "hintEn"   .= JStr (snd hintMsg)
                 , "strategy" .= JStr (strategyId (rsStrategy st))
                 , "eta"      .= JBool (rsEta st)
-                , astField final
-                , dbField final
+                , astFieldSized size final
+                , dbFieldSized size final
                 ]
                 ++ redexFields final
-                ++ astTreeFields final
+                ++ astTreeFieldsSized size final
                 ++ (if mtyMsg == ("", "") then []
                       else [ "type"   .= JStr (renderMsg (rsLang st) mtyMsg)
                            , "typeZh" .= JStr (fst mtyMsg)
@@ -1498,12 +1604,83 @@ emitEvalResult st res mExpr = do
           fields
     else emitL st "result" textZh textEn fields
 
+-- 快速模式：只有正规形，没有轨迹与精确步数
+-- Fast mode: normal form only, with neither a trace nor an exact step count.
+fastActive :: ReplState -> Bool
+fastActive st = rsFast st && not (rsEta st)
+
+emitFastResult :: ReplState -> Expr -> Maybe Expr -> IO ()
+emitFastResult st final mExpr = do
+  let termTxt = pretty final
+      hintMsg = valueHintMsg final
+      size    = exprSize final
+      mtyMsg  = case mExpr of
+        Just expr -> either (const ("", "")) prettySchemeMsg
+                           (inferScheme (rsTypeEnv st) expr)
+        Nothing   -> ("", "")
+      fields  = [ "term"     .= JStr termTxt
+                , "fast"     .= JBool True
+                , "limitHit" .= JBool False
+                , "hint"     .= JStr (renderMsg (rsLang st) hintMsg)
+                , "hintZh"   .= JStr (fst hintMsg)
+                , "hintEn"   .= JStr (snd hintMsg)
+                , "strategy" .= JStr (strategyId (rsStrategy st))
+                , "eta"      .= JBool False
+                , astFieldSized size final
+                , dbFieldSized size final
+                , "redexes"     .= JArr []
+                , "redexCount"  .= JNum 0
+                ]
+                ++ astTreeFieldsSized size final
+                ++ (if mtyMsg == ("", "") then []
+                      else [ "type"   .= JStr (renderMsg (rsLang st) mtyMsg)
+                           , "typeZh" .= JStr (fst mtyMsg)
+                           , "typeEn" .= JStr (snd mtyMsg) ])
+  emitL st "result"
+    (termTxt ++ "  （快速模式，未记录步数）" ++ fst hintMsg)
+    (termTxt ++ "  (fast mode, steps not recorded)" ++ snd hintMsg)
+    fields
+
+emitFastBudget :: ReplState -> IO ()
+emitFastBudget st = emitL st "warn"
+  ("快速模式燃料用尽（" ++ show (rsLimit st) ++ " 次 β），已中止；可提高 :steps 或关闭 :fast")
+  ("Fast-mode fuel exhausted (" ++ show (rsLimit st) ++ " β); raise :steps or turn :fast off")
+  [ "fast" .= JBool True, "limitHit" .= JBool True ]
+
+-- 共享正规化 + 统一的结果输出；Nothing 表示燃料用尽
+-- Shared normalization with the shared result reporter; Nothing = out of fuel.
+runFastEval :: ReplState -> Expr -> Maybe Expr -> IO ()
+runFastEval st e' mExpr =
+  case fastNormalForm (rsLimit st) e' of
+    Nothing -> emitFastBudget st
+    Just nf -> emitFastResult st nf mExpr
+
+-- β 等价结果的统一输出，步进与快速模式共用
+-- Shared β-convertibility reporter for the step and fast modes.
+emitConv :: ReplState -> Bool -> Bool -> String -> String -> IO ()
+emitConv st hit ok la lb = do
+  let zh = if hit then "无法判定（达到步数上限）：" ++ la ++ "  ,  " ++ lb
+           else if ok then "β 等价：" ++ la ++ "  ,  " ++ lb
+           else "不 β 等价：" ++ la ++ "  ,  " ++ lb
+      en = if hit then "inconclusive (step limit): " ++ la ++ "  ,  " ++ lb
+           else if ok then "beta-equivalent: " ++ la ++ "  ,  " ++ lb
+           else "not beta-equivalent: " ++ la ++ "  ,  " ++ lb
+  emitL st "conv" zh en
+    [ "equal"    .= JBool ok
+    , "limitHit" .= JBool hit
+    , "left"     .= JStr la
+    , "right"    .= JStr lb ]
+
 runCommand :: ReplState -> Command -> IO (Maybe ReplState)
-runCommand st (Eval expr) = do
-  let e'  = expandTop (rsEnv st) expr
-      res = evalWith (rsEta st) (rsJson st) (rsLimit st) (rsStrategy st) e'
-  emitEvalResult st res (Just expr)
-  return (Just st)
+runCommand st (Eval expr)
+  | fastActive st = do
+      runFastEval st (expandTop (rsEnv st) expr) (Just expr)
+      return (Just st)
+  | otherwise = do
+      let e'  = expandTop (rsEnv st) expr
+          res = evalWith (rsEta st) (rsJson st) (rsLimit st) (rsStrategy st) e'
+      emitEvalResult st res (Just expr)
+      return (Just st)
 runCommand st (Define var expr) = do
   let expr' = expandTop (rsEnv st) expr
       env'  = Map.insert var expr' (rsEnv st)
@@ -1562,6 +1739,10 @@ runCommand st (LoadFile path) = do
         [ "limit" .= JNum n ]
       forM_ (loLang out) $ \_ -> emitL st' "info"
         "语言已切换。" "Language switched." []
+      forM_ (loFast out) $ \on -> emitL st' "info"
+        (if on then "快速模式：开启" else "快速模式：关闭")
+        (if on then "Fast mode: on" else "Fast mode: off")
+        [ "fast" .= JBool on ]
       return (Just st')
 runCommand st (SaveFile path) = do
   let userDefs n e = Map.lookup n initEnv /= Just e
@@ -1622,6 +1803,16 @@ runCommand st (SetEta on) = do
     ("Eta reduction: " ++ if on then "on" else "off")
     [ "eta" .= JBool on ]
   return $ Just st { rsEta = on }
+runCommand st (SetFast on) = do
+  emitL st "info"
+    (if on
+       then "快速模式：开启（共享正规化；不记录步数与轨迹，η 开启时自动回退）"
+       else "快速模式：关闭（逐步归约）")
+    (if on
+       then "Fast mode: on (shared normalization; no steps or trace, falls back while eta is on)"
+       else "Fast mode: off (step-by-step reduction)")
+    [ "fast" .= JBool on ]
+  return $ Just st { rsFast = on }
 runCommand st (Trace expr) = do
   let e'  = expandTop (rsEnv st) expr
       res = evalTraceWith (rsEta st) (rsLimit st) (rsStrategy st) e'
@@ -1691,53 +1882,67 @@ runCommand st (EqExpr a b) = do
     , "left"  .= JStr (pretty a')
     , "right" .= JStr (pretty b') ]
   return (Just st)
-runCommand st (ConvExpr a b) = do
-  let a' = expandTop (rsEnv st) a
-      b' = expandTop (rsEnv st) b
-      ra = evalWith (rsEta st) False (rsLimit st) Normal a'
-      rb = evalWith (rsEta st) False (rsLimit st) Normal b'
-      hit = erLimitHit ra || erLimitHit rb
-      ok = not hit && alphaEq (erFinal ra) (erFinal rb)
-      la = pretty (erFinal ra)
-      lb = pretty (erFinal rb)
-      zh = if hit then "无法判定（达到步数上限）：" ++ la ++ "  ,  " ++ lb
-           else if ok then "β 等价：" ++ la ++ "  ,  " ++ lb
-           else "不 β 等价：" ++ la ++ "  ,  " ++ lb
-      en = if hit then "inconclusive (step limit): " ++ la ++ "  ,  " ++ lb
-           else if ok then "beta-equivalent: " ++ la ++ "  ,  " ++ lb
-           else "not beta-equivalent: " ++ la ++ "  ,  " ++ lb
-  emitL st "conv" zh en
-    [ "equal"    .= JBool ok
-    , "limitHit" .= JBool hit
-    , "left"     .= JStr la
-    , "right"    .= JStr lb ]
-  return (Just st)
-runCommand st (Nf expr) = do
-  let e'  = expandTop (rsEnv st) expr
-      res = evalTraceWith (rsEta st) (rsLimit st) Normal e'
-  emitEvalResult st res (Just expr)
-  return (Just st)
+runCommand st (ConvExpr a b)
+  | fastActive st = do
+      let a' = expandTop (rsEnv st) a
+          b' = expandTop (rsEnv st) b
+      case (fastNormalForm (rsLimit st) a', fastNormalForm (rsLimit st) b') of
+        (Just na, Just nb) ->
+          emitConv st False (alphaEq na nb) (pretty na) (pretty nb)
+        _ -> emitConv st True False (pretty a') (pretty b')
+      return (Just st)
+  | otherwise = do
+      let a' = expandTop (rsEnv st) a
+          b' = expandTop (rsEnv st) b
+          ra = evalWith (rsEta st) False (rsLimit st) Normal a'
+          rb = evalWith (rsEta st) False (rsLimit st) Normal b'
+          hit = erLimitHit ra || erLimitHit rb
+          ok = not hit && alphaEq (erFinal ra) (erFinal rb)
+      emitConv st hit ok (pretty (erFinal ra)) (pretty (erFinal rb))
+      return (Just st)
+runCommand st (Nf expr)
+  | fastActive st = do
+      runFastEval st (expandTop (rsEnv st) expr) (Just expr)
+      return (Just st)
+  | otherwise = do
+      let e'  = expandTop (rsEnv st) expr
+          res = evalTraceWith (rsEta st) (rsLimit st) Normal e'
+      emitEvalResult st res (Just expr)
+      return (Just st)
 runCommand st (Whnf expr) = do
   let e'  = expandTop (rsEnv st) expr
       res = evalWHNF (rsEta st) (rsLimit st) (rsStrategy st) e'
   emitEvalResult st res (Just expr)
   return (Just st)
-runCommand st (IntOf expr) = do
-  let e'  = expandTop (rsEnv st) expr
-      res = evalWith (rsEta st) False (rsLimit st) (rsStrategy st) e'
-      final = erFinal res
-  case isChurchNumeral final of
-    Just n | not (erLimitHit res) ->
-      emit st "int" (show n)
-        [ "value" .= JNum (fromIntegral n)
-        , "term"  .= JStr (pretty final) ]
-    Just _ -> emitL st "fail"
-      "归约达到步数上限，无法确认邱奇数"
-      "Step limit reached; cannot confirm a Church numeral" []
-    Nothing -> emitL st "fail"
-      ("不是邱奇数：" ++ pretty final)
-      ("Not a Church numeral: " ++ pretty final) []
-  return (Just st)
+runCommand st (IntOf expr)
+  | fastActive st = do
+      case fastNormalForm (rsLimit st) (expandTop (rsEnv st) expr) of
+        Nothing -> emitFastBudget st
+        Just final -> case isChurchNumeral final of
+          Just n -> emit st "int" (show n)
+            [ "value" .= JNum (fromIntegral n)
+            , "term"  .= JStr (pretty final)
+            , "fast"  .= JBool True ]
+          Nothing -> emitL st "fail"
+            ("不是邱奇数：" ++ pretty final)
+            ("Not a Church numeral: " ++ pretty final) []
+      return (Just st)
+  | otherwise = do
+      let e'  = expandTop (rsEnv st) expr
+          res = evalWith (rsEta st) False (rsLimit st) (rsStrategy st) e'
+          final = erFinal res
+      case isChurchNumeral final of
+        Just n | not (erLimitHit res) ->
+          emit st "int" (show n)
+            [ "value" .= JNum (fromIntegral n)
+            , "term"  .= JStr (pretty final) ]
+        Just _ -> emitL st "fail"
+          "归约达到步数上限，无法确认邱奇数"
+          "Step limit reached; cannot confirm a Church numeral" []
+        Nothing -> emitL st "fail"
+          ("不是邱奇数：" ++ pretty final)
+          ("Not a Church numeral: " ++ pretty final) []
+      return (Just st)
 runCommand st (ChurchOf n) = do
   let e' = churchNumeral n
       ty = either (const ("", "")) prettySchemeMsg (inferScheme (rsTypeEnv st) e')
@@ -1866,8 +2071,8 @@ helpMessage lang = unlines $ map (renderMsg lang) helpLines
       , ("  文件              启动时按顺序加载多个文件", "  files             loaded in order at startup")
       , ("                    每行 `name = expr`；支持 -- 注释、括号未闭合时续行"
         , "                    one `name = expr` per line; -- comments; open parens continue the line")
-      , ("                    也可包含 :strategy / :steps / :lang 命令"
-        , "                    :strategy / :steps / :lang commands are accepted too")
+      , ("                    也可包含 :strategy / :steps / :lang / :fast 命令"
+        , "                    :strategy / :steps / :lang / :fast commands are accepted too")
       , ("", "")
       , ("REPL 内建命令:", "REPL commands:")
       ]
@@ -2053,6 +2258,10 @@ loadStartupFile st path = do
         [ "limit" .= JNum n ]
       forM_ (loLang out) $ \_ -> emitL st' "info"
         "语言已切换。" "Language switched." []
+      forM_ (loFast out) $ \on -> emitL st' "info"
+        (if on then "快速模式：开启" else "快速模式：关闭")
+        (if on then "Fast mode: on" else "Fast mode: off")
+        [ "fast" .= JBool on ]
       return st'
 
 main :: IO ()
@@ -2081,7 +2290,7 @@ main = do
               hSetEncoding stderr utf8
             when batch $ hSetBuffering stdout LineBuffering
             let st0 = ReplState initEnv initTypeEnv Applicative defaultLimit
-                                (optTimeout opts) False json lang Nothing
+                                (optTimeout opts) False False json lang Nothing
             st1 <- foldM loadStartupFile st0 (optFiles opts)
             if batch
               then batchLoop st1

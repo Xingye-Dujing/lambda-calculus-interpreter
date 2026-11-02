@@ -29,9 +29,14 @@
 - `--timeout <s>` for a per-command wall-clock limit and `Ctrl+C` handling in the
   interactive REPL.
 - `:eq`/`:conv` report errors from both sides when both expressions fail.
+- `:fast on|off` (also a header toggle and a Tools button in the web UI):
+  de Bruijn terms plus an environment/closure evaluator that shares arguments.
+  It returns a normal form only, so there is no trace or exact step count, and
+  `:steps` becomes a β fuel budget. `:trace`, `:whnf` and manual stepping stay
+  on the step engine.
 - Persistent Haskeline history in `~/.lambda_history`.
 - A Cabal package that builds both standalone executables.
-- MIT license, changelog, GitHub Actions CI, and 10 new test groups (30 total),
+- MIT license, changelog, GitHub Actions CI, and 11 new test groups (31 total),
   including randomized properties and a `main`/`extension` differential test.
 
 ### Fixed
@@ -51,6 +56,11 @@
 - The favicon 404 is gone.
 
 ### Performance
+
+- Fast mode shares arguments instead of rebuilding the whole term per step:
+  `MULT 400 400` goes from about 0.65 s and 1.2 GB (text mode) to about 0.06 s
+  and 140 MB here, and `MULT 800 800` from about 12 s to about 0.2 s. The JSON
+  path is still bounded by printing the resulting term.
 
 - `shorten` is now lazy: it uses `splitAt` and forces only the requested
   prefix, and the trace's long-term test does the same. Clipping a huge term no

@@ -57,6 +57,7 @@
   button.ctl,.sel-btn{font-family:var(--mono);font-size:11.5px;color:var(--dim);background:transparent;border:1px solid var(--border);border-radius:var(--radius);padding:6px 10px;cursor:pointer;transition:color .15s,border-color .15s;}
   button.ctl:hover,.sel-btn:hover{color:var(--text);border-color:var(--border-strong);}
   button.ctl:focus-visible,.sel-btn:focus-visible{outline:1px solid var(--accent);outline-offset:2px;}
+  #fast-toggle[aria-pressed="true"]{color:var(--accent);border-color:var(--accent);}
   .sel{position:relative;display:inline-flex;}
   .sel > select{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none;border:0;}
   .sel-btn{display:inline-flex;align-items:center;gap:9px;white-space:nowrap;}
@@ -266,6 +267,7 @@
         </button>
         <div class="sel-menu" role="listbox"></div>
       </div>
+      <button class="ctl" id="fast-toggle" type="button" aria-pressed="false">快速 / Fast</button>
       <button class="ctl" id="share" type="button">分享 / Share</button>
       <button class="ctl" id="export" type="button">导出 / Export</button>
       <button class="ctl" id="import" type="button">导入 / Import</button>
@@ -429,6 +431,7 @@
     redexes: [],
     astView: "tree",
     eta: false,
+    fast: false,
     limit: 10000,
     replaying: false,
     typing: false,
@@ -600,7 +603,7 @@
     try {
       localStorage.setItem(LS, JSON.stringify({
         lang: state.lang, theme: state.theme, strategy: $("strategy").value,
-        limit: state.limit, eta: state.eta, code: state.codeLines
+        limit: state.limit, eta: state.eta, fast: state.fast, code: state.codeLines
       }));
     } catch(e){}
   }
@@ -613,6 +616,23 @@
     state.theme = th;
     root.setAttribute("data-theme", th);
     $("theme-toggle").textContent = th === "dark" ? t("light") : t("dark");
+  }
+
+  // 快速模式开关：服务端用共享正规化，页面同步按钮状态
+  // Fast-mode toggle: the server switches to shared normalization; keep the UI in sync.
+  function applyFastButton(){
+    var b = $("fast-toggle");
+    if (!b) return;
+    b.textContent = state.fast ? dual("快速：开", "fast: on") : dual("快速：关", "fast: off");
+    b.setAttribute("aria-pressed", state.fast ? "true" : "false");
+    b.title = dual("共享正规化：不记录步数与轨迹", "shared normalization: no steps or trace");
+  }
+
+  function toggleFast(){
+    state.fast = !state.fast;
+    applyFastButton();
+    exec(":fast " + (state.fast ? "on" : "off"));
+    saveLocal();
   }
 
   /* ------------------------------------------------------------- text utils / 文本工具 */
@@ -773,7 +793,7 @@
       el._metaObj = obj;
       addActions(el, obj, source);
       if (obj.redexes) { state.redexes = obj.redexes; renderRedexes(); }
-      if (!state.selected) selectResult(obj, el, "trace");
+      if (!state.selected) selectResult(obj, el, (obj.trace && obj.trace.length) ? "trace" : "ast");
       if (state.tab !== "env" && el.classList.contains("sel")) renderPanel();
       return;
     }
@@ -1089,8 +1109,11 @@
        b: ["用 :eq / :conv 判断等价，:int 解码邱奇数；结果行可复制、插入或直接定义为新名字。",
            "Use :eq / :conv for equivalence and :int to decode; output rows can be copied, inserted or saved as a definition."]},
       {h: ["6 · 小贴士", "6 · Tips"],
-       b: ["数字自动转 Church 编码；预定义含 PRED/SUB/PAIR/列表/Y；分享链接会带上策略、步数与主题。",
-           "Numbers become Church numerals; the prelude includes PRED/SUB/PAIR/lists/Y; share links keep strategy, limit and theme."]}
+       b: ["数字自动转 Church 编码；预定义含 PRED/SUB/PAIR/列表/Y；分享链接会带上策略、步数、快速模式与主题。",
+           "Numbers become Church numerals; the prelude includes PRED/SUB/PAIR/lists/Y; share links keep strategy, limit, fast mode and theme."]},
+      {h: ["7 · 快速模式", "7 · Fast mode"],
+       b: ["顶部“快速”开关使用共享正规化，适合 Church 算术；它不记录步数与轨迹，需要逐步归约时请关掉。",
+           "The Fast toggle uses shared normalization, ideal for Church arithmetic; it records no steps or trace, so turn it off to step through."]}
     ];
     var html = '<h3>' + esc(t("guideTitle")) + '</h3>';
     rows.forEach(function(r){
@@ -1123,6 +1146,8 @@
     btn("rec",   "递归定义 · rec",     "recursive definition · rec");
     btn("eta",   (state.eta ? "η 归约：开" : "η 归约：关") + " · :eta",
                  (state.eta ? "eta: on" : "eta: off") + " · :eta");
+    btn("fast",  (state.fast ? "快速模式：开" : "快速模式：关") + " · :fast",
+                 (state.fast ? "fast mode: on" : "fast mode: off") + " · :fast");
     btn("save",  "保存定义 · :save",   "save definitions · :save");
     html += '</div>';
     html += '<p class="empty" style="font-style:normal;margin-top:12px">' +
@@ -1152,6 +1177,9 @@
       state.eta = !state.eta;
       exec(":eta " + (state.eta ? "on" : "off"));
       renderPanel();
+    } else if (tool === "fast"){
+      toggleFast();
+      renderPanel();
     } else if (tool === "rec"){
       var name = await ask("rec", dual("名字", "name"));
       if (!name) return;
@@ -1178,6 +1206,7 @@
       [":strategy <s>", "applicative / normal / cbn / cbv"],
       [":steps <n>", "步数上限 / step limit"],
       [":eta on|off", "η 归约 / eta reduction"],
+      [":fast on|off", "共享快速正规化 / shared fast normalization"],
       [":begin <expr>", "开始手动归约 / start manual reduction"],
       [":step [n] / :run / :end", "单步或任选 redex / step or pick a redex"],
       [":let name = expr / rec name = expr", "定义 / 递归定义 / define, recursive definition"],
@@ -1336,6 +1365,11 @@
   // Rebuild a dead session and silently replay previous lines.
   async function rebuild(){
     await newSession();
+    await evalLine(":lang " + state.lang, true);
+    await evalLine(":strategy " + $("strategy").value, true);
+    await evalLine(":steps " + state.limit, true);
+    await evalLine(":eta " + (state.eta ? "on" : "off"), true);
+    await evalLine(":fast " + (state.fast ? "on" : "off"), true);
     for (var i = 0; i < state.codeLines.length; i++){
       await evalLine(state.codeLines[i], true);
     }
@@ -1410,6 +1444,12 @@
       state.eta = /^(on|true|1)$/i.test(etaMatch[1]);
       if (state.tab === "tools") renderPanel();
     }
+    var fastMatch = trimmed.match(/^:fast\s+(on|off|true|false|1|0)\b/i);
+    if (fastMatch){
+      state.fast = /^(on|true|1)$/i.test(fastMatch[1]);
+      applyFastButton();
+      if (state.tab === "tools") renderPanel();
+    }
 
     var last = outputs.filter(function(o){ return o.kind === "result" || o.kind === "warn"; }).pop();
     if (last){
@@ -1435,7 +1475,7 @@
 
   function candidates(token){
     var names = state.envRows.map(function(r){ return r.name; });
-    var cmds = [":help",":trace",":ast",":db",":type",":strategy",":steps",":begin",":step",":run",":end",":let",":load",":env",":del",":reset",":lang",":clear",":q"];
+    var cmds = [":help",":trace",":ast",":db",":type",":eq",":conv",":nf",":whnf",":int",":church",":strategy",":steps",":eta",":fast",":begin",":step",":run",":end",":let",":load",":save",":env",":del",":reset",":lang",":clear",":q"];
     var pool = token.charAt(0) === ":" ? cmds : names;
     var lower = token.toLowerCase();
     var seen = {};
@@ -1550,6 +1590,7 @@
       await evalLine(":strategy " + $("strategy").value, true);
       await evalLine(":steps " + state.limit, true);
       await evalLine(":eta " + (state.eta ? "on" : "off"), true);
+      await evalLine(":fast " + (state.fast ? "on" : "off"), true);
       await refreshEnv();
     } finally {
       state.replaying = false;
@@ -1567,6 +1608,7 @@
       await evalLine(":strategy " + $("strategy").value, true);
       await evalLine(":steps " + state.limit, true);
       await evalLine(":eta " + (state.eta ? "on" : "off"), true);
+      await evalLine(":fast " + (state.fast ? "on" : "off"), true);
       addLine("info", t("welcome"), null, null, I18N.welcome.zh, I18N.welcome.en);
       await refreshEnv();
       renderPanel();
@@ -1605,6 +1647,8 @@
     applyTheme(state.theme === "dark" ? "light" : "dark");
     saveLocal();
   });
+
+  $("fast-toggle").addEventListener("click", toggleFast);
 
   $("lang").addEventListener("change", async function(){
     var lang = $("lang").value;
@@ -1681,7 +1725,8 @@
       limit: state.limit,
       theme: state.theme,
       lang: state.lang,
-      eta: state.eta
+      eta: state.eta,
+      fast: state.fast
     };
   }
 
@@ -1698,6 +1743,8 @@
     if (payload.theme) state.theme = payload.theme;
     if (payload.lang) state.lang = payload.lang;
     if (payload.eta != null) state.eta = !!payload.eta;
+    if (payload.fast != null) state.fast = !!payload.fast;
+    applyFastButton();
   }
 
   async function copyShareUrl(url){
@@ -1830,6 +1877,7 @@
       if (STRATEGY_LABELS[o.value]) o.textContent = strategyText(o.value);
     });
     $("st-strategy").textContent = strategyText($("strategy").value);
+    applyFastButton();
     selects.forEach(function(s){ s.sync(); });
     renderExamples();
   }
@@ -1842,6 +1890,7 @@
       state.theme = saved.theme || "light";
       state.limit = saved.limit || 10000;
       state.eta = !!saved.eta;
+      state.fast = !!saved.fast;
       $("strategy").value = saved.strategy || "applicative";
       if (Array.isArray(saved.code)) state.codeLines = saved.code;
     }
