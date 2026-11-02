@@ -75,35 +75,61 @@ freshVar base avoid
 -- ---------------------------------------------------------------------------
 -- 无捕获替换 Capture-Avoiding Substitution
 -- ---------------------------------------------------------------------------
-subst :: String -> Expr -> Expr -> Expr
-subst x v (Var y)
-  | x == y    = v
-  | otherwise = Var y
-subst x v (App e1 e2) = App (subst x v e1) (subst x v e2)
-subst x v (Lam y body)
-  | x == y    = Lam y body
-  | y `Set.notMember` fvV = Lam y (subst x v body)
-  | otherwise = Lam y' (subst x v body')
+-- 参数的自由的变量只算一次，向下贯穿整次替换；同时把“是否发生过
+-- α-重命名”作为返回值带出来，这样 β 步不需要再单独扫一遍项来判定规则。
+-- 返回 Nothing 表示该子树不含 x，调用方直接复用原树（共享而非复制）。
+-- Free variables of the argument are computed once and threaded through the
+-- whole substitution; the same pass reports whether any α-renaming was needed,
+-- so a β step no longer scans the term twice. Nothing means the subtree does
+-- not contain x, so the caller reuses it instead of copying.
+substRename :: String -> Expr -> Set.Set String -> Expr -> (Expr, Bool)
+substRename x v fvV body =
+  case go body of
+    Just (e, renamed) -> (e, renamed)
+    Nothing           -> (body, False)
   where
-    fvV      = freeVars v
-    y'       = freshVar y (freeVars body `Set.union` fvV)
-    body'    = subst y (Var y') body
+    go :: Expr -> Maybe (Expr, Bool)
+    go (Var y)
+      | x == y    = Just (v, False)
+      | otherwise = Nothing
+    go (App f a) = case (go f, go a) of
+      (Nothing, Nothing) -> Nothing
+      (mf, ma) ->
+        let f'      = maybe f fst mf
+            a'      = maybe a fst ma
+            renamed = maybe False snd mf || maybe False snd ma
+        in Just (App f' a', renamed)
+    go (Lam y inner)
+      | x == y                = Nothing
+      | y `Set.notMember` fvV =
+          fmap (\(b, r) -> (Lam y b, r)) (go inner)
+      | otherwise             =
+          let y'      = freshVar y (freeVars inner `Set.union` fvV)
+              (b1, _) = substRename y (Var y') (Set.singleton y') inner
+              b2      = case go b1 of
+                          Just (b, _) -> b
+                          Nothing     -> b1
+          in Just (Lam y' b2, True)
 
 -- ---------------------------------------------------------------------------
--- α 等价（de Bruijn 化后比较）Alpha Equivalence
+-- α 等价 Alpha Equivalence
 -- ---------------------------------------------------------------------------
-data DB = DVar Int | DFree String | DLam DB | DApp DB DB
-  deriving (Eq)
-
--- 绑定变量转成索引，绑定名本身不参与比较，因此 α 等价就是结构相等
--- Bound variables become indices and binder names are dropped, so α-equivalence is structural equality.
-toDB :: [String] -> Expr -> DB
-toDB bound (Var x) = maybe (DFree x) DVar (elemIndex x bound)
-toDB bound (Lam x b) = DLam (toDB (x : bound) b)
-toDB bound (App f a) = DApp (toDB bound f) (toDB bound a)
-
+-- 不构造 de Bruijn 中间树，直接在两个绑定环境上同步下降：融合掉
+-- toDB 的两棵树分配，等价判断变成一次结构比较。
+-- No intermediate de Bruijn tree: both binding environments are walked in
+-- lockstep, so α-equivalence fuses the old toDB allocation away.
 alphaEq :: Expr -> Expr -> Bool
-alphaEq a b = toDB [] a == toDB [] b
+alphaEq = go [] []
+  where
+    go env1 env2 (Var x) (Var y) =
+      case (elemIndex x env1, elemIndex y env2) of
+        (Nothing, Nothing) -> x == y
+        (Just i, Just j)   -> i == j
+        _                  -> False
+    go env1 env2 (Lam x b1) (Lam y b2) = go (x : env1) (y : env2) b1 b2
+    go env1 env2 (App f1 a1) (App f2 a2) =
+      go env1 env2 f1 f2 && go env1 env2 a1 a2
+    go _ _ _ _ = False
 
 -- ---------------------------------------------------------------------------
 -- 求值策略 Evaluation Strategies
@@ -134,7 +160,7 @@ parseStrategy s = lookup (map lower s)
 
 -- ---------------------------------------------------------------------------
 -- 单步归约 One-Step Reduction
--- 每一步都返回「整个项」的新形态，方便前端做前后对比
+-- 每一步都返回“整个项”的新形态，方便前端做前后对比
 -- Each step rewrites the whole term, so the frontend can diff before/after.
 -- ---------------------------------------------------------------------------
 data Reduction = Reduction
@@ -158,11 +184,10 @@ alphaNeeded x body arg = go body
 
 betaStep :: String -> Expr -> Expr -> Reduction
 betaStep x body arg =
-  let needs  = alphaNeeded x body arg
-      after  = subst x arg body
-      rule   = if needs then "β+α" else "β"
+  let (after, renamed) = substRename x arg (freeVars arg) body
+      rule   = if renamed then "β+α" else "β"
       note   = "β 归约 β-reduction: (λ" ++ x ++ ". …) " ++ shorten 42 (pretty arg)
-               ++ (if needs then "  （先 α-重命名 α-rename 避免变量捕获 capture）" else "")
+               ++ (if renamed then "  （先 α-重命名 α-rename 避免变量捕获 capture）" else "")
   in Reduction rule note after
 
 -- 求值策略只影响四件事 / a strategy is four booleans:
@@ -463,10 +488,22 @@ pretty e = go 0 e ""
     go p (App f a)    = showParen (p > 1)
       (go 1 f . showChar ' ' . go 2 a)
 
+-- 字符串是惰性流：只强制前 n 个字符，截断巨型项时不再先把它整个打印出来
+-- Strings are lazy streams: force only the first n characters. Truncating a
+-- huge term no longer pretty-prints the whole thing first.
 shorten :: Int -> String -> String
 shorten n s
-  | length s <= n = s
-  | otherwise     = take (max 0 (n - 1)) s ++ "…"
+  | n <= 0    = ""
+  | otherwise = case splitAt n s of
+      (pre, []) -> pre
+      (pre, _)  -> take (n - 1) pre ++ "…"
+
+-- 惰性判断长度是否超过 n，同样不看完整串
+-- Lazy length test: never touch more than n characters.
+exceeds :: Int -> String -> Bool
+exceeds n s = case splitAt (n + 1) s of
+  (_, [])    -> False
+  (_, _ : _) -> True
 
 -- ---------------------------------------------------------------------------
 -- 语法树渲染 Render Syntax Tree
@@ -1150,7 +1187,7 @@ traceLimit = 500
 traceClipped :: [TraceStep] -> Bool
 traceClipped steps = any longStep steps
   where
-    longStep s = max (length (pretty (tsBefore s))) (length (pretty (tsAfter s))) > 300
+    longStep s = exceeds 300 (pretty (tsBefore s)) || exceeds 300 (pretty (tsAfter s))
 
 -- 一次遍历同时生成轨迹 JSON 与截断标记，避免重复 pretty
 -- Build the trace JSON and its clipped flag in one pass (pretty is expensive).
@@ -1167,7 +1204,7 @@ traceFields total steps
     one s =
       let before = pretty (tsBefore s)
           after  = pretty (tsAfter s)
-          long   = max (length before) (length after) > 300
+          long   = exceeds 300 before || exceeds 300 after
       in ( JObj
              [ "n"      .= JNum (tsIndex s)
              , "rule"   .= JStr (tsRule s)
@@ -1176,8 +1213,15 @@ traceFields total steps
              , "after"  .= JStr (shorten 300 after) ]
          , long )
 
+-- 树形视图的缩进随深度线性增长，大项会变成几十 MB，只在尺寸允许时输出
+-- Tree indentation grows with depth, so huge terms would explode; bound it.
+astBudget :: Int
+astBudget = 400
+
 astField :: Expr -> (String, J)
-astField e = "ast" .= JArr (map JStr (treeLines e))
+astField e
+  | exprSize e <= astBudget = "ast" .= JArr (map JStr (treeLines e))
+  | otherwise               = "astOmitted" .= JBool True
 
 treeField :: Expr -> (String, J)
 treeField e = "tree" .= JArr (map JStr (treeLines e))
@@ -1207,8 +1251,16 @@ exprSize (App f a) = 1 + exprSize f + exprSize a
 -- Emit the structured AST only for small terms; deep Church numerals would bloat JSON.
 astTreeFields :: Expr -> [(String, J)]
 astTreeFields e
-  | exprSize e <= 400 = [astTreeField e]
-  | otherwise         = [ "astTreeOmitted" .= JBool True ]
+  | exprSize e <= astBudget = [astTreeField e]
+  | otherwise               = [ "astTreeOmitted" .= JBool True ]
+
+-- de Bruijn 视图对大项截断，避免单行串无限增长
+-- Bound the de Bruijn view for large terms so one line cannot grow unbounded.
+dbField :: Expr -> (String, J)
+dbField e
+  | exprSize e <= astBudget = "db" .= JStr view
+  | otherwise               = "db" .= JStr (shorten 1000 view)
+  where view = deBruijnView e
 
 -- 归约位置列表 / list of β-redexes (capped so huge terms stay bounded)
 redexFields :: Expr -> [(String, J)]
@@ -1429,8 +1481,8 @@ emitEvalResult st res mExpr = do
                 , "hintEn"   .= JStr (snd hintMsg)
                 , "strategy" .= JStr (strategyId (rsStrategy st))
                 , "eta"      .= JBool (rsEta st)
-                , "ast"      .= JArr (map JStr (treeLines final))
-                , "db"       .= JStr (deBruijnView final)
+                , astField final
+                , dbField final
                 ]
                 ++ redexFields final
                 ++ astTreeFields final

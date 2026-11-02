@@ -64,19 +64,38 @@ freshVar base avoid
   | base `Set.notMember` avoid = base
   | otherwise                  = freshVar (base ++ "'") avoid
 
-subst :: String -> Expr -> Expr -> Expr
-subst x v (Var y)
-  | x == y    = v
-  | otherwise = Var y
-subst x v (App e1 e2) = App (subst x v e1) (subst x v e2)
-subst x v (Lam y body)
-  | x == y    = Lam y body
-  | y `Set.notMember` fvV = Lam y (subst x v body)
-  | otherwise = Lam y' (subst x v body')
+-- 参数的自由的变量只算一次；不含 x 的子树直接共享，不作复制
+-- The argument's free variables are computed once; subtrees without x are shared.
+substRename :: String -> Expr -> Set.Set String -> Expr -> (Expr, Bool)
+substRename x v fvV body =
+  case go body of
+    Just (e, renamed) -> (e, renamed)
+    Nothing           -> (body, False)
   where
-    fvV   = freeVars v
-    y'    = freshVar y (freeVars body `Set.union` fvV)
-    body' = subst y (Var y') body
+    go :: Expr -> Maybe (Expr, Bool)
+    go (Var y)
+      | x == y    = Just (v, False)
+      | otherwise = Nothing
+    go (App f a) = case (go f, go a) of
+      (Nothing, Nothing) -> Nothing
+      (mf, ma) ->
+        let f'      = maybe f fst mf
+            a'      = maybe a fst ma
+            renamed = maybe False snd mf || maybe False snd ma
+        in Just (App f' a', renamed)
+    go (Lam y inner)
+      | x == y                = Nothing
+      | y `Set.notMember` fvV = fmap (\(b, r) -> (Lam y b, r)) (go inner)
+      | otherwise             =
+          let y'      = freshVar y (freeVars inner `Set.union` fvV)
+              (b1, _) = substRename y (Var y') (Set.singleton y') inner
+              b2      = case go b1 of
+                          Just (b, _) -> b
+                          Nothing     -> b1
+          in Just (Lam y' b2, True)
+
+subst :: String -> Expr -> Expr -> Expr
+subst x v = fst . substRename x v (freeVars v)
 
 -- ---------------------------------------------------------------------------
 -- 求值策略 Evaluation strategies
@@ -277,10 +296,14 @@ pretty e = go 0 e ""
     go p (App f a) = showParen (p > 1)
       (go 1 f . showChar ' ' . go 2 a)
 
+-- 惰性截断：只强制前 n 个字符，巨型项不会先被完整打印
+-- Lazy truncation: force only the first n characters.
 shorten :: Int -> String -> String
 shorten n s
-  | length s <= n = s
-  | otherwise     = take (max 0 (n - 1)) s ++ "…"
+  | n <= 0    = ""
+  | otherwise = case splitAt n s of
+      (pre, []) -> pre
+      (pre, _)  -> take (n - 1) pre ++ "…"
 
 treeLines :: Expr -> [String]
 treeLines (Var x)   = ["• " ++ x]

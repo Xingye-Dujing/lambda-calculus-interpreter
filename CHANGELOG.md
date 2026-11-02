@@ -52,6 +52,17 @@
 
 ### Performance
 
+- `shorten` is now lazy: it uses `splitAt` and forces only the requested
+  prefix, and the trace's long-term test does the same. Clipping a huge term no
+  longer pretty-prints it in full first. `MULT 20 (MULT 20 20)` JSON dropped from
+  about 5.4 s and a 122 MB payload to roughly 0.04 s and a few hundred KB.
+- The text `ast` and `db` views are bounded like `astTree` (400 nodes), so an
+  8,000-node Church numeral can no longer produce a multi-megabyte tree.
+- Substitution computes the argument's free variables once, shares subtrees that
+  do not contain the substituted variable, and reports α-renaming in the same
+  pass; a β step no longer scans the body twice.
+- α-equivalence walks both binding environments in lockstep instead of
+  allocating de Bruijn trees.
 - Pretty printers (`pretty`, `sourceExpr`, `deBruijnView`, `prettyTy`) now build
   `ShowS` functions, removing the quadratic string concatenation on deep terms.
   A 1,200-step identity chain dropped from ~26 s to under a second locally.
@@ -67,8 +78,10 @@
 
 ### Changed
 
-- The web language switch replays history in the same interpreter process
-  instead of creating a new session.
+- The web language switch re-renders existing output from `textZh`/`textEn` in
+  the same interpreter process; it no longer replays or rebuilds the session.
+- Text convention: Chinese uses the full-width quotes `“ ”`, English uses ASCII
+  `"` and `'`, and the corner brackets U+300C/U+300D are no longer used anywhere.
 - `:save` is disabled over the web unless `LAMBDA_ALLOW_SAVE=1`.
 - Prelude schemes are hidden in `:env` to keep the table readable.
 

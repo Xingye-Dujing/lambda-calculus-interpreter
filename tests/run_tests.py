@@ -66,7 +66,7 @@ def find_binary(explicit: str | None = None) -> Path:
 
 
 def run(lines: list[str], binary: Path, lang: str = "en", timeout: float = 30.0) -> list[list[dict]]:
-    """运行一组命令，返回「每条命令的输出对象列表」
+    """运行一组命令，返回“每条命令的输出对象列表”
 
     Run a batch of commands and return one list of JSON objects per command.
     """

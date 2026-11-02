@@ -270,21 +270,32 @@ differential test.
 
 ## Implementation
 
-- A small-step evaluator (`stepOnce`) rewrites the whole term, so every trace
-  step is a real before/after pair; strategies are described by four flags.
+- A small-step evaluator contracts one β-redex per step and rewrites the whole
+  term, so each recorded trace step is a real before/after pair. Strategies are
+  described by four flags.
 - Eta is a second rule tried after β; weak strategies do not reduce under
   lambdas. `:nf` uses normal order, `:whnf` stops as soon as a head normal form
   is reached.
 - Redexes are enumerated by path (`[Int]`), so any β-redex can be contracted by
   index without changing the evaluator.
-- Capture-avoiding substitution uses fresh variables; α-equivalence is computed
-  by de Bruijn conversion that drops binder names.
+- Capture-avoiding substitution computes the argument's free variables once,
+  shares subtrees that do not contain the substituted variable, and reports
+  whether any α-renaming happened. α-equivalence walks both binding
+  environments in lockstep, with no intermediate de Bruijn tree.
+- Pretty printers build `ShowS` functions, and `shorten` forces only the first
+  characters of a lazy string, so clipping a huge term does not print it first.
 - Types are inferred with Hindley–Milner and let-generalisation.
 - Definitions are stored already expanded; recursive definitions are encoded as
   `Y (λname. body)` and printed/saved as `rec name = body`.
 - The web backend keeps one interpreter process per session; expired sessions
   return 410 so the client replays its history rather than silently losing the
   environment.
+
+## Conventions
+
+- Chinese text uses the full-width Chinese quotes `“ ”`; English text uses ASCII
+  `"` and `'`. The corner brackets U+300C and U+300D are never used, here or in
+  code, comments, or UI strings.
 
 ## Limitations
 

@@ -1077,13 +1077,13 @@
        b: ["输入表达式后按 Enter。Tab 补全、↑↓ 历史、Ctrl+L 清空。",
            "Press Enter to run. Tab completes, ↑↓ history, Ctrl+L clears."]},
       {h: ["2 · 看懂结果", "2 · Read the result"],
-       b: ["⇒ 是结果；「轨迹」看每一步前后差异，「结构」看语法树，「类型」看推断。",
+       b: ["⇒ 是结果；“轨迹”看每一步前后差异，“结构”看语法树，“类型”看推断。",
            "⇒ marks a result. Trace shows each step, AST the tree, Type the inference."]},
       {h: ["3 · 手动归约", "3 · Step through"],
-       b: ["写好表达式后点「开始」，下方会列出全部可归约位置：点任意一项按该 redex 归约，或用「单步」按策略走。",
+       b: ["写好表达式后点“开始”，下方会列出全部可归约位置：点任意一项按该 redex 归约，或用“单步”按策略走。",
            "Press Start; every redex is listed. Click one to contract it, or use Step to follow the strategy."]},
       {h: ["4 · 定义与环境", "4 · Definitions"],
-       b: ["用 id = \\x.x 定义；「环境」可插入、删除、加载 .lam、重置。",
+       b: ["用 id = \\x.x 定义；“环境”可插入、删除、加载 .lam、重置。",
            "Define with id = \\x.x; Env inserts, deletes, loads .lam and resets."]},
       {h: ["5 · 检查与导出", "5 · Check and export"],
        b: ["用 :eq / :conv 判断等价，:int 解码邱奇数；结果行可复制、插入或直接定义为新名字。",
@@ -1268,7 +1268,7 @@
           exec("PLUS TWO THREE").then(function(){ switchTab("trace"); });
         } else if (action === "manual"){
           insertText("(\\x.x) ((\\y.y) z)");
-          toast(dual("点终端下方的「开始」", "press Start below the terminal"));
+          toast(dual("点终端下方的“开始”", "press Start below the terminal"));
         } else {
           switchTab("trace");
           cmd.focus();
@@ -1380,7 +1380,7 @@
       clearAll(); return [];
     }
     if (trimmed === ":q" || trimmed === ":quit"){
-      addLine("info", dual("Web 会话不会退出；用「清空」重建会话。",
+      addLine("info", dual("Web 会话不会退出；用“清空”重建会话。",
                            "The web session does not quit; use clear to reset it."));
       return [];
     }

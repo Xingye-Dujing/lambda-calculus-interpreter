@@ -34,6 +34,10 @@ Chinese/English**.
   Chinese-only or English-only string.
 - Comment lines must not end with a Chinese full stop `。`: end with nothing or
   an English period instead.
+- Quotation marks: Chinese text uses the full-width Chinese quotes `“ ”`;
+  English text uses ASCII `"` and `'`. Never use the corner brackets U+300C and
+  U+300D (the ones that look like square double quotes) anywhere: code, comments,
+  Markdown, or UI strings.
 - Default output language is `both`; `--lang` / `:lang` switch to `zh` or `en`.
   The web UI has its own `I18N` dictionary and sends `:lang` to the session.
 - Keep `λ`/`→`/`⇒`/box-drawing characters and the terminal-style formatting.
@@ -94,7 +98,7 @@ Chinese/English**.
 ## Architecture
 
 - `main.hs` and `extension.hs` are deliberately standalone. The core (`Expr`,
-  `freeVars`, `freshVar`, `subst`, `stepOnce`, `eval`, parser) is duplicated:
+  `freeVars`, `freshVar`, substitution, `stepOnce`, `eval`, parser) is duplicated:
   apply core/reduction fixes to both files.
 - `extension.hs` adds `Env` (`Data.Map`), macro expansion (`expand`/`expandTop`,
   with an expansion fuel), definitions, file loading/saving, `:env`, numeric
@@ -106,13 +110,16 @@ Chinese/English**.
   The default is **applicative**, matching the historical `nf`.
 - Eta is a separate rule (`etaRoot`/`etaStep`) tried after β via `stepFor`; it is
   off by default and only traverses under lambdas for strong strategies.
-- `evalUntil` stops on a step limit or a predicate. `:nf` uses normal order;
-  `:whnf` stops at `isWHNF` (a lambda or a neutral application).
-- Redexes are enumerated by path (`[Int]`): `allRedexPaths`, `stepAt`,
+- `evalUntil` is the single evaluation loop; it stops on a step limit or a
+  predicate and keeps at most `traceLimit` (500) steps during evaluation.
+  `traceTruncated` also covers terms clipped to 300 characters. `:nf` uses
+  normal order; `:whnf` stops at `isWHNF` (a lambda or a neutral application).
+- Rendering is bounded: `shorten` forces only the requested prefix of a lazy
+  string, so clipping a huge term does not pretty-print it first. `ast`, `db`
+  and `astTree` are capped at 400 nodes; huge terms get `astOmitted`,
+  `astTreeOmitted`, or a shortened `db`.
+- Redexes are enumerated by path (`[Int]`): `redexInfos`, `stepAt`,
   `stepAtIndex`. JSON emits `redexes` (≤200) and exact `redexCount`.
-- Traces keep at most 500 steps (`traceLimit`) **during evaluation**, not just
-  at output time; `traceTruncated` also covers terms clipped to 300 characters.
-  `astTree` is capped at 400 nodes; larger terms get `astTreeOmitted`.
 - Definitions are stored already expanded (`expandTop` at definition time), so
   a later redefinition does not retroactively change earlier definitions.
   Recursive definitions are `Y (λname. body)`; `prettyDef`/`sourceDef` restore
@@ -138,7 +145,8 @@ Chinese/English**.
 - Parsing uses `ReadP`; `parseCommand` returns `Either ParseError Command` with
   a 1-based column. `extension` requires exactly one full parse.
 - Church-numeral/boolean/pair/list and combinator hints use α-equivalence
-  (`toDB`, which drops binder names), not textual matching.
+  (`alphaEq`, which walks both binding environments in lockstep), not textual
+  matching.
 
 ## Repo hygiene
 
