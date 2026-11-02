@@ -11,7 +11,7 @@ import Control.Applicative ((<|>))
 import Control.Monad (void, when, unless, forM_)
 import Control.Monad.IO.Class (liftIO)
 import Data.Char (isAlpha, isDigit, isSpace)
-import Data.List (isPrefixOf)
+import Data.List (elemIndex, stripPrefix, isPrefixOf)
 import System.Environment (getArgs)
 import System.IO (hSetEncoding, utf8, hIsTerminalDevice, stdout, stdin, stderr)
 import System.Console.Haskeline
@@ -76,12 +76,6 @@ subst x v (Lam y body)
 data Strategy = Applicative | Normal | CallByName | CallByValue
   deriving (Eq, Show)
 
-strategyId :: Strategy -> String
-strategyId Applicative = "applicative"
-strategyId Normal      = "normal"
-strategyId CallByName  = "cbn"
-strategyId CallByValue = "cbv"
-
 strategyLabel :: Strategy -> String
 strategyLabel Applicative = "应用序（最左最内） applicative (leftmost-innermost)"
 strategyLabel Normal      = "正规序（最左最外） normal (leftmost-outermost)"
@@ -100,26 +94,14 @@ parseStrategy s = lookup (map lower s)
 -- ---------------------------------------------------------------------------
 -- 单步归约 One-step reduction
 -- ---------------------------------------------------------------------------
-data Reduction = Reduction { redRule :: String, redNote :: String, redTerm :: Expr }
+data Reduction = Reduction { redNote :: String, redTerm :: Expr }
 data StepOut   = StepOut { soWhole :: Expr, soRed :: Reduction }
-
-alphaNeeded :: String -> Expr -> Expr -> Bool
-alphaNeeded x body arg = go body
-  where
-    fvA = freeVars arg
-    go (Lam y b)
-      | y /= x && y `Set.member` fvA && x `Set.member` freeVars b = True
-      | otherwise = go b
-    go (App f a) = go f || go a
-    go _         = False
 
 betaStep :: String -> Expr -> Expr -> Reduction
 betaStep x body arg =
-  let needs = alphaNeeded x body arg
-      after = subst x arg body
-      rule  = if needs then "β+α" else "β"
+  let after = subst x arg body
       note  = "β 归约 β-reduction: (λ" ++ x ++ ". …) " ++ shorten 42 (pretty arg)
-  in Reduction rule note after
+  in Reduction note after
 
 stepOnce :: Strategy -> Expr -> Maybe StepOut
 stepOnce Applicative = go
@@ -164,7 +146,7 @@ stepOnce CallByValue = go
     isValue _         = False
 
 data TraceStep = TraceStep
-  { tsIndex :: Int, tsBefore :: Expr, tsAfter :: Expr, tsRule :: String, tsNote :: String }
+  { tsIndex :: Int, tsAfter :: Expr, tsNote :: String }
 
 data EvalResult = EvalResult
   { erFinal :: Expr, erSteps :: [TraceStep], erCount :: Int, erLimitHit :: Bool }
@@ -172,27 +154,27 @@ data EvalResult = EvalResult
 defaultLimit :: Int
 defaultLimit = 10000
 
-evalTrace :: Int -> Strategy -> Expr -> EvalResult
-evalTrace limit strat e0 = loop 1 e0 []
+-- 求值循环：keepTrace 为 False 时不保留轨迹（省内存）。
+-- Evaluation loop; with keepTrace=False the trace is dropped (saves memory).
+eval :: Bool -> Int -> Strategy -> Expr -> EvalResult
+eval keepTrace limit strat e0 = loop 1 e0 []
   where
     loop n e acc
       | n > limit = EvalResult e (reverse acc) (n - 1) True
       | otherwise = case stepOnce strat e of
-          Just (StepOut whole red) ->
-            loop (n + 1) whole (TraceStep n e whole (redRule red) (redNote red) : acc)
+          Just s ->
+            let red  = soRed s
+                acc' = if keepTrace
+                         then TraceStep n (soWhole s) (redNote red) : acc
+                         else acc
+            in loop (n + 1) (soWhole s) acc'
           Nothing -> EvalResult e (reverse acc) (n - 1) False
 
-evalFinal :: Int -> Strategy -> Expr -> EvalResult
-evalFinal limit strat e0 = loop 1 e0
-  where
-    loop n e
-      | n > limit = EvalResult e [] (n - 1) True
-      | otherwise = case stepOnce strat e of
-          Just (StepOut whole _) -> loop (n + 1) whole
-          Nothing -> EvalResult e [] (n - 1) False
+evalTrace :: Int -> Strategy -> Expr -> EvalResult
+evalTrace = eval True
 
-nf :: Expr -> Expr
-nf = erFinal . evalFinal defaultLimit Applicative
+evalFinal :: Int -> Strategy -> Expr -> EvalResult
+evalFinal = eval False
 
 -- ---------------------------------------------------------------------------
 -- 语义提示 Semantic hints
@@ -206,8 +188,8 @@ isChurchNumeral (Lam f (Lam x body)) = go 0 body
 isChurchNumeral _ = Nothing
 
 isChurchBoolean :: Expr -> Maybe Bool
-isChurchBoolean (Lam t (Lam f (Var t'))) | t == t' = Just True
-isChurchBoolean (Lam t (Lam f (Var f'))) | t == f' = Just False
+isChurchBoolean (Lam t (Lam _ (Var t'))) | t == t' = Just True
+isChurchBoolean (Lam _ (Lam f (Var f'))) | f == f' = Just False
 isChurchBoolean _ = Nothing
 
 valueHint :: Expr -> String
@@ -224,6 +206,7 @@ valueHint e = case (isChurchNumeral e, isChurchBoolean e) of
 pretty :: Expr -> String
 pretty = go 0
   where
+    go :: Int -> Expr -> String
     go _ (Var x) = x
     go p (Lam x b) = let s = "λ" ++ x ++ " → " ++ go 0 b
                      in if p > 0 then "(" ++ s ++ ")" else s
@@ -247,22 +230,15 @@ fork first rest (l:ls) = (first ++ l) : map (rest ++) ls
 deBruijnView :: Expr -> String
 deBruijnView = go []
   where
-    go bound (Var x) = case lookupIndex x bound of
-      Just i  -> "#" ++ show i
-      Nothing -> x
+    go bound (Var x) = maybe x (('#' :) . show) (elemIndex x bound)
     go bound (Lam x b) = "λ." ++ go (x : bound) b
     go bound (App f a) = "(" ++ go bound f ++ " " ++ go bound a ++ ")"
-
-lookupIndex :: String -> [String] -> Maybe Int
-lookupIndex _ [] = Nothing
-lookupIndex x (y:ys) | x == y    = Just 0
-                     | otherwise = (+ 1) <$> lookupIndex x ys
 
 -- ---------------------------------------------------------------------------
 -- 解析器 Parser
 -- ---------------------------------------------------------------------------
 spaces :: ReadP ()
-spaces = void $ many $ satisfy isSpace
+spaces = skipMany (satisfy isSpace)
 
 ident :: ReadP String
 ident = do
@@ -366,27 +342,25 @@ knownCommands =
 parseCommand :: String -> Either ParseError Command
 parseCommand raw
   | null s = Left (ParseError 1 ("空输入", "Empty input"))
-  | s == ":help" || s == ":h" || s == ":?" = Right Help
-  | s == ":q" || s == ":quit" = Right Quit
-  | ":lang " `isPrefixOf` s =
-      case parseLang (trim (drop 6 s)) of
-        Just l  -> Right (SetLang l)
-        Nothing -> Left (ParseError 1
-          ("未知语言，可用：zh / en / both", "Unknown language; use zh / en / both"))
-  | ":strategy " `isPrefixOf` s =
-      case parseStrategy (trim (drop 10 s)) of
-        Just st -> Right (SetStrategy st)
-        Nothing -> Left (ParseError 1
-          ("未知策略，可用：applicative / normal / cbn / cbv"
-          , "Unknown strategy; use applicative / normal / cbn / cbv"))
-  | ":steps " `isPrefixOf` s =
-      case reads (trim (drop 7 s)) :: [(Int, String)] of
+  | s `elem` [":help", ":h", ":?"] = Right Help
+  | s `elem` [":q", ":quit"] = Right Quit
+  | Just rest <- stripPrefix ":lang " s =
+      maybe (Left (ParseError 1
+              ("未知语言，可用：zh / en / both", "Unknown language; use zh / en / both")))
+            (Right . SetLang) (parseLang (trim rest))
+  | Just rest <- stripPrefix ":strategy " s =
+      maybe (Left (ParseError 1
+              ("未知策略，可用：applicative / normal / cbn / cbv"
+              , "Unknown strategy; use applicative / normal / cbn / cbv")))
+            (Right . SetStrategy) (parseStrategy (trim rest))
+  | Just rest <- stripPrefix ":steps " s =
+      case reads (trim rest) :: [(Int, String)] of
         [(n, "")] | n > 0 -> Right (SetSteps n)
         _ -> Left (ParseError 1 ("用法：:steps <正整数>", "Usage: :steps <positive integer>"))
-  | ":trace " `isPrefixOf` s = Trace <$> parseExpr' (drop 7 s)
-  | ":ast " `isPrefixOf` s = Ast <$> parseExpr' (drop 5 s)
-  | ":db " `isPrefixOf` s = DbView <$> parseExpr' (drop 4 s)
-  | ":" `isPrefixOf` s = Left (ParseError 1
+  | Just rest <- stripPrefix ":trace " s = Trace <$> parseExpr' rest
+  | Just rest <- stripPrefix ":ast " s = Ast <$> parseExpr' rest
+  | Just rest <- stripPrefix ":db " s = DbView <$> parseExpr' rest
+  | Just _ <- stripPrefix ":" s = Left (ParseError 1
       ( "未知命令 " ++ takeWhile (not . isSpace) s ++ "，输入 :help 查看全部命令"
       , "Unknown command " ++ takeWhile (not . isSpace) s ++ "; type :help for the full list" ))
   | otherwise = Eval <$> runParserFull parseExpr s
@@ -405,11 +379,11 @@ data ReplState = ReplState
   , rsLang     :: Lang
   }
 
-t :: ReplState -> String -> String -> String
-t st zh en = renderMsg (rsLang st) (zh, en)
+say :: ReplState -> String -> String -> String
+say st zh en = renderMsg (rsLang st) (zh, en)
 
-emit :: ReplState -> String -> String -> String -> IO ()
-emit st kind text extra = putStrLn (decorate kind ++ text)
+emit :: String -> String -> IO ()
+emit kind text = putStrLn (decorate kind ++ text)
   where
     decorate "result" = "⇒ "
     decorate "step"   = "  → "
@@ -419,40 +393,40 @@ emit st kind text extra = putStrLn (decorate kind ++ text)
 
 runCommand :: ReplState -> Command -> IO (Maybe ReplState)
 runCommand st (Eval expr) = do
-  let res   = evalTrace (rsLimit st) (rsStrategy st) expr
+  let res   = evalFinal (rsLimit st) (rsStrategy st) expr
       final = erFinal res
       steps = erCount res
       stepTxt = if steps > 0 then "  (" ++ show steps ++ " 步 steps)" else ""
   if erLimitHit res
-    then emit st "warn" (pretty final ++ stepTxt ++ t st
+    then emit "warn" (pretty final ++ stepTxt ++ say st
            (" —— 已达到 " ++ show (rsLimit st) ++ " 步上限，归约未完成")
-           (" -- step limit " ++ show (rsLimit st) ++ " reached, reduction incomplete")) ""
-    else emit st "result" (pretty final ++ stepTxt ++ valueHint final) ""
+           (" -- step limit " ++ show (rsLimit st) ++ " reached, reduction incomplete"))
+    else emit "result" (pretty final ++ stepTxt ++ valueHint final)
   return (Just st)
 runCommand st (Trace expr) = do
   let res = evalTrace (rsLimit st) (rsStrategy st) expr
-  putStrLn $ t st
+  putStrLn $ say st
     ("归约轨迹（" ++ strategyLabel (rsStrategy st) ++ "，共 " ++ show (erCount res) ++ " 步）")
     ("Reduction trace (" ++ strategyLabel (rsStrategy st) ++ ", " ++ show (erCount res) ++ " steps)")
   putStrLn $ "  0. " ++ pretty expr
   forM_ (erSteps res) $ \s -> do
     putStrLn $ "  " ++ show (tsIndex s) ++ ". " ++ tsNote s
     putStrLn $ "       " ++ pretty (tsAfter s)
-  when (erLimitHit res) $ putStrLn (t st
+  when (erLimitHit res) $ putStrLn (say st
     "  ⚠ 已达到步数上限，归约未完成" "  ⚠ Step limit reached, reduction incomplete")
   return (Just st)
 runCommand st (Ast expr) = putStrLn (unlines (treeLines expr)) >> return (Just st)
 runCommand st (DbView expr) = putStrLn (deBruijnView expr) >> return (Just st)
 runCommand st (SetStrategy s) = do
-  emit st "info" (t st
+  emit "info" (say st
     ("求值策略：" ++ strategyLabel s)
-    ("Strategy: " ++ strategyLabel s)) ""
+    ("Strategy: " ++ strategyLabel s))
   return (Just st { rsStrategy = s })
 runCommand st (SetSteps n) = do
-  emit st "info" (t st ("归约步数上限：" ++ show n) ("Reduction step limit: " ++ show n)) ""
+  emit "info" (say st ("归约步数上限：" ++ show n) ("Reduction step limit: " ++ show n))
   return (Just st { rsLimit = n })
 runCommand st (SetLang l) = do
-  emit st "info" (tr l "语言已切换为中文。" "Language switched to English.") ""
+  emit "info" (tr l "语言已切换为中文。" "Language switched to English.")
   return (Just st { rsLang = l })
 runCommand st Help = putStrLn (helpMessage (rsLang st)) >> return (Just st)
 runCommand _ Quit = return Nothing
