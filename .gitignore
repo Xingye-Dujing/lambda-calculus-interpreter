@@ -1,13 +1,67 @@
-*
+# ---------------------------------------------------------------------------
+# 构建产物 / Build artifacts
+# ---------------------------------------------------------------------------
+*.o
+*.hi
+*.dyn_o
+*.dyn_hi
+*.p_o
+*.p_hi
+*.hie
+*.hp
+*.prof
+*.aux
+*.eventlog
+*.tix
+.hpc/
+.ghc.environment.*
 
-!.gitignore
-!*.hs
-!*.lam
-!*.sh
-!*.md
-!*.bat
-!web/
-!web/**
+# 可执行文件 / Executables (built at the repository root)
+/main
+/main.exe
+/extension
+/extension.exe
 
+# ---------------------------------------------------------------------------
+# Python
+# ---------------------------------------------------------------------------
 __pycache__/
-*.pyc
+*.py[cod]
+*.pyo
+*.egg-info/
+.venv/
+venv/
+env/
+instance/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# ---------------------------------------------------------------------------
+# 编辑器与操作系统 / Editors and operating systems
+# ---------------------------------------------------------------------------
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/
+*.swp
+*.swo
+*.iml
+*~
+
+# ---------------------------------------------------------------------------
+# 本地临时文件 / Local temporary files
+# ---------------------------------------------------------------------------
+*.log
+*.bak
+*.orig
+*.rej
+.env
+.env.*
+!.env.example
+
+# 截图与本地工具数据 / Screenshots and local tool state
+.openchamber/
