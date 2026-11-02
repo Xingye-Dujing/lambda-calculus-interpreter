@@ -101,9 +101,13 @@
   /* 右侧面板 / inspector */
   .side{background:transparent;border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;}
   .tabs{display:flex;border-bottom:1px solid var(--border);overflow-x:auto;}
-  .tab{flex:1;min-width:60px;font-family:var(--mono);font-size:11px;color:var(--dim);background:transparent;border:0;border-bottom:1px solid transparent;padding:9px 6px;cursor:pointer;white-space:nowrap;letter-spacing:.02em;}
+  .tab{flex:0 0 auto;min-width:62px;display:flex;flex-direction:column;align-items:center;gap:1px;font-family:var(--mono);font-size:11.5px;color:var(--dim);background:transparent;border:0;border-bottom:1px solid transparent;padding:8px 10px 7px;cursor:pointer;white-space:nowrap;}
+  .tab .en{font-size:9px;color:var(--faint);letter-spacing:.08em;text-transform:uppercase;}
   .tab:hover{color:var(--text);}
   .tab[aria-selected="true"]{color:var(--text);border-bottom-color:var(--accent);}
+  .tab[aria-selected="true"] .en{color:var(--dim);}
+  body[data-lang="zh"] .tab .en{display:none;}
+  body[data-lang="en"] .tab .zh{display:none;}
   .panel{padding:12px 14px;min-height:280px;max-height:56vh;overflow:auto;}
   .panel h3{font-size:11px;font-weight:400;color:var(--dim);margin:0 0 8px;letter-spacing:.05em;font-family:var(--mono);text-transform:uppercase;}
   .panel pre{font-family:var(--mono);font-size:12.5px;line-height:1.7;margin:0;white-space:pre-wrap;word-break:break-word;}
@@ -111,7 +115,13 @@
   .player{display:flex;align-items:center;gap:8px;margin-bottom:10px;}
   .player button{font-family:var(--mono);font-size:12px;background:transparent;border:1px solid var(--border);border-radius:var(--radius);color:var(--dim);width:28px;height:26px;cursor:pointer;}
   .player button:hover{color:var(--text);border-color:var(--border-strong);}
-  .player input[type=range]{flex:1;accent-color:var(--accent);}
+  .player input[type=range]{flex:1;height:16px;margin:0;background:transparent;-webkit-appearance:none;appearance:none;cursor:pointer;--p:0%;}
+  .player input[type=range]::-webkit-slider-runnable-track{height:2px;border-radius:0;background:linear-gradient(to right,var(--text) 0 var(--p),var(--border) var(--p) 100%);}
+  .player input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:9px;height:9px;margin-top:-3.5px;border-radius:50%;background:var(--text);border:0;}
+  .player input[type=range]::-moz-range-track{height:2px;border-radius:0;background:var(--border);}
+  .player input[type=range]::-moz-range-progress{height:2px;background:var(--text);}
+  .player input[type=range]::-moz-range-thumb{width:9px;height:9px;border:0;border-radius:50%;background:var(--text);}
+  .player input[type=range]:focus-visible{outline:1px solid var(--accent);outline-offset:3px;}
   .player .count{font-family:var(--mono);font-size:11px;color:var(--faint);white-space:nowrap;}
   .cmp{border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;margin-bottom:10px;}
   .cmp .row{padding:8px 10px;font-family:var(--mono);font-size:12.5px;white-space:pre-wrap;word-break:break-word;}
@@ -204,11 +214,11 @@
 
     <aside class="side" aria-label="inspector">
       <div class="tabs" role="tablist">
-        <button class="tab" role="tab" data-tab="trace" aria-selected="true">轨迹 / Trace</button>
-        <button class="tab" role="tab" data-tab="ast">结构 / AST</button>
-        <button class="tab" role="tab" data-tab="type">类型 / Type</button>
-        <button class="tab" role="tab" data-tab="env">环境 / Env</button>
-        <button class="tab" role="tab" data-tab="help">帮助 / Help</button>
+        <button class="tab" role="tab" data-tab="trace" aria-selected="true"><span class="zh">轨迹</span><span class="en">Trace</span></button>
+        <button class="tab" role="tab" data-tab="ast"><span class="zh">结构</span><span class="en">AST</span></button>
+        <button class="tab" role="tab" data-tab="type"><span class="zh">类型</span><span class="en">Type</span></button>
+        <button class="tab" role="tab" data-tab="env"><span class="zh">环境</span><span class="en">Env</span></button>
+        <button class="tab" role="tab" data-tab="help"><span class="zh">帮助</span><span class="en">Help</span></button>
       </div>
       <div class="panel" id="panel"></div>
     </aside>
@@ -477,7 +487,8 @@
     var html = '';
     html += '<div class="player">';
     html += '<button type="button" data-nav="prev" aria-label="prev">◀</button>';
-    html += '<input type="range" id="tr-range" min="0" max="' + (steps.length - 1) + '" value="' + i + '">';
+    var pct = steps.length > 1 ? (i / (steps.length - 1) * 100) : 0;
+    html += '<input type="range" id="tr-range" min="0" max="' + (steps.length - 1) + '" value="' + i + '" style="--p:' + pct + '%">';
     html += '<button type="button" data-nav="next" aria-label="next">▶</button>';
     html += '<span class="count">' + (i + 1) + " / " + steps.length + '</span>';
     html += '</div>';
@@ -563,6 +574,8 @@
     if (range){
       range.addEventListener("input", function(){
         state.tracePos = parseInt(range.value, 10) || 0;
+        var n = (state.selected && state.selected.trace) ? state.selected.trace.length : 1;
+        range.style.setProperty("--p", (n > 1 ? state.tracePos / (n - 1) * 100 : 0) + "%");
         renderPanel();
       });
     }
@@ -922,6 +935,7 @@
   }
 
   function applyStaticTexts(){
+    document.body.dataset.lang = state.lang;
     $("subline").textContent = t("subline");
     $("ex-title").textContent = t("exTitle");
     $("pre-title").textContent = t("preTitle");
