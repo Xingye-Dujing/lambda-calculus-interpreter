@@ -24,6 +24,31 @@ interpreters are provided:
 - **Bilingual** — every user-facing message has a Chinese and an English form;
   `--lang zh|en|both` or `:lang` selects them (default `both`).
 
+## Screenshots
+
+Light theme, captured from the web UI.
+
+![REPL with a reduction trace](docs/screenshots/main.png)
+
+*Reduction trace: every β-step with a before/after diff, a step player, and the
+result annotated with its β-step count and Church-numeral value.*
+
+![Syntax tree and de Bruijn view](docs/screenshots/ast.png)
+
+*Syntax tree of the result, plus the de Bruijn index view for bound variables.*
+
+![Environment inspector](docs/screenshots/env.png)
+
+*Environment panel: definitions are listed with their terms; click a name to
+insert it, hover to delete it.*
+
+Regenerate them while the web UI is running:
+
+```bash
+pip install -r tools/requirements.txt
+python tools/screenshot.py            # or: tools\screenshot.bat
+```
+
 ## Building
 
 ```bash
