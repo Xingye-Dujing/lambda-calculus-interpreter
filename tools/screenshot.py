@@ -222,7 +222,7 @@ def capture(url: str, out: Path, only: str | None,
             shooter.run(":type \\f.\\x.f (f x)")
             shooter.click_result()
             shooter.step(4)
-            shooter.shot("main.png", 1010)
+            shooter.shot("main.png")
 
         if only in (None, "ast"):
             # 语法树 + de Bruijn
@@ -232,7 +232,7 @@ def capture(url: str, out: Path, only: str | None,
             shooter.run(":type PLUS TWO TWO")
             shooter.click_result()
             shooter.tab("ast")
-            shooter.shot("ast.png", 1010)
+            shooter.shot("ast.png")
 
         if only in (None, "env"):
             # 环境面板
@@ -241,14 +241,14 @@ def capture(url: str, out: Path, only: str | None,
             shooter.run("compose = \\f.\\g.\\x.f (g x)")
             shooter.run("twice = \\f.\\x.f (f x)")
             shooter.tab("env")
-            shooter.shot("env.png", 1127)
+            shooter.shot("env.png")
 
         if only in (None, "guide"):
             # 使用指引（首次访问默认打开）
             shooter.clear()
             shooter.run("PLUS TWO THREE")
             shooter.tab("guide")
-            shooter.shot("guide.png", 1010)
+            shooter.shot("guide.png")
     finally:
         proc.terminate()
         try:
