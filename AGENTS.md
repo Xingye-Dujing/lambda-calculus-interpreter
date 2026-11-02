@@ -28,6 +28,8 @@ Chinese/English**.
 - All comments, help text, errors, and UI strings carry both Chinese and
   English. Use the `tr`/`renderMsg` helpers and the `Msg` type; do not add a
   Chinese-only or English-only string.
+- Comment lines must not end with a Chinese full stop `。`: end with nothing or
+  an English period instead.
 - Default output language is `both`; `--lang` / `:lang` switch to `zh` or `en`.
   The web UI has its own `I18N` dictionary and sends `:lang` to the session.
 - Keep `λ`/`→`/`⇒`/box-drawing characters and the terminal-style formatting.
