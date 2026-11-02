@@ -5,6 +5,10 @@
 - `main`: 最小核心解释器，仅支持 lambda 演算与正规序归约。
 - `extension`: 增强版，支持变量定义、文件加载、环境查看、扩展变量名语法（允许特定运算符）、自动数字转换等。
 
+## 在线使用
+
+增强版解释器已提供网页界面：**<http://47.116.114.77/lambda/>**。页面代码位于 `web/`，由一层轻量 Flask 封装调用同一个编译好的 `extension` 二进制。
+
 ## 功能特点
 
 1. 纯 lambda 演算，支持 alpha 等价与无捕获替换。
@@ -19,6 +23,8 @@
 - 直接输入十进制数字自动转换为邱奇数。
 - 预定义环境：`TRUE`, `FALSE`, `NOT`, `AND`, `OR`, `IF`, `ZERO`, `ONE`, `TWO`, `THREE`, `SUCC`, `PLUS`, `MULT`.
 
+5. 网页界面（`web/`）：终端风格 REPL、命令历史、深色模式，以及可点击的预定义/示例标签。
+
 ## Building
 
 使用提供的 `build.sh` 脚本：
@@ -28,7 +34,9 @@ chmod +x build.sh
 ./build.sh
 ```
 
-脚本会以优化选项 (`-O2`, `-split-sections`, `-optlc-O3`, `-threaded`, etc.) 编译两个解释器，生成可执行文件`main` and `extension`。
+脚本会以优化选项 (`-O2`, `-split-sections`, `-optlc-O3`, `-threaded`, etc.) 编译两个解释器，生成可执行文件`main` and `extension`（Windows 下为 `main.exe` / `extension.exe`）。Windows 请使用等价的 `build.bat`，它额外传入 `-package containers -package haskeline`。
+
+网页界面使用独立的 Python 依赖，直接调用编译好的 `extension`，不需要随 Haskell 源码一起重新编译。
 
 ## 使用方法
 
@@ -169,6 +177,32 @@ defined FOUR = λf → λx → f (f (f (f x)))
 λ> :q
 ```
 
+## 网页界面（`web/`）
+
+`web/` 是增强版的浏览器界面：Flask 服务（`app.py`）、终端风格页面（`index.html`）、Python 依赖（`requirements.txt`）以及 APL385 等宽字体。
+
+- **在线使用：** <http://47.116.114.77/lambda/>
+- **本地运行：**
+
+  ```bash
+  python -m venv .venv
+  # Windows
+  .venv\Scripts\pip install -r web\requirements.txt
+  .venv\Scripts\python web\app.py
+  # Linux / macOS
+  .venv/bin/pip install -r web/requirements.txt
+  .venv/bin/python web/app.py
+  ```
+
+  然后打开 <http://127.0.0.1:8081/>。需先编译出 `extension`，页面依赖该解释器。
+
+- `HOST`、`PORT` 可覆盖默认的 `127.0.0.1:8081`。
+- 解释器查找顺序：`$LAMBDA_INTERP_BIN` → `$LAMBDA_INTERP_DIR/extension[.exe]` → `<仓库根目录>/extension[.exe]` → `/opt/lambda-calculus-interpreter/extension`。
+- 接口：`GET /`（页面）、`GET /fonts/APL385.ttf`、`GET /api/prelude`、`POST /api/eval`，请求体如 `{"code": "PLUS ONE TWO\nid = \\x.x\nid 3"}`；返回 `{"ok": true, "results": [{"kind": "result|define|error|info", "text": "..."}], "raw": [...]}`。
+- 后端无状态，前端通过重放此前的所有输入来保留定义；`:clear` 会同时清空历史。
+- 页面使用 `<base href="./">`，因此既能在本地根路径 `/` 使用，也能放在线上 `/lambda/` 反向代理之后（Caddy 的 `handle_path /lambda/*` 会剥掉前缀再转发给 Flask）。
+- Windows 下后端会先把控制台切到 UTF-8，并在调用解释器前把 `λ` 改写为 `\`，以规避 GHC 按本地代码页编码导致的 `⇒` 输出崩溃。
+
 ## 技术简述
 
 1. 两个解释器均实现：
@@ -183,6 +217,7 @@ defined FOUR = λf → λx → f (f (f (f x)))
 - 解析器：支持自定义变量名规则和自动数字转邱奇数。
 - 文件加载：按行解析，统计成功/失败，输出友好表格。
 - 动态表格打印：自动调整列宽，适应最长的变量名和表达式字符串。
+- 网页层（`web/`）：Flask 通过 stdin 把代码喂给 `extension`，限制 10 秒超时，并把 REPL 输出分类为 `result` / `define` / `error` / `info`。
 
 ## 许可证
 

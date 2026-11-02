@@ -6,3 +6,8 @@
 !*.sh
 !*.md
 !*.bat
+!web/
+!web/**
+
+__pycache__/
+*.pyc

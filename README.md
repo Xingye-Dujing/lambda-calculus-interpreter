@@ -5,6 +5,10 @@ A Haskell-based interpreter for pure lambda calculus, supporting Church numerals
 - `main`: Minimal interpreter with basic lambda calculus and normal-order reduction.
 - `extension`: Enhanced interpreter with definitions, file loading, environment inspection, and extended syntax (operator symbols in variable names, automatic numeral conversion, etc.).
 
+## Online Demo
+
+The enhanced interpreter runs in the browser at **<http://47.116.114.77/lambda/>**. The page in `web/` is a thin Flask wrapper around the same compiled `extension` binary.
+
 ## Features
 
 1. Pure lambda calculus with alpha-equivalence and capture-avoiding substitution.
@@ -19,6 +23,8 @@ A Haskell-based interpreter for pure lambda calculus, supporting Church numerals
 - Automatic conversion of decimal numbers to Church numerals.
 - Built-in predefined environment: `TRUE`, `FALSE`, `NOT`, `AND`, `OR`, `IF`, `ZERO`, `ONE`, `TWO`, `THREE`, `SUCC`, `PLUS`, `MULT`.
 
+5. Web UI (`web/`) for the enhanced interpreter, with a terminal-style REPL, command history, dark mode, and clickable prelude/example chips.
+
 ## Building
 
 Use the provided `build.sh` script:
@@ -28,7 +34,9 @@ chmod +x build.sh
 ./build.sh
 ```
 
-This compiles both interpreters with optimizations (`-O2`, `-split-sections`, `-optlc-O3`, `-threaded`, etc.). The executables `main` and `extension` will be created.
+This compiles both interpreters with optimizations (`-O2`, `-split-sections`, `-optlc-O3`, `-threaded`, etc.). The executables `main` and `extension` will be created (`main.exe` / `extension.exe` on Windows). On Windows, use the equivalent `build.bat`, which also passes `-package containers -package haskeline`.
+
+The web interface has separate Python dependencies; it uses the compiled `extension` binary and does not need to be rebuilt with the Haskell sources.
 
 ## Usage
 
@@ -169,6 +177,32 @@ defined FOUR = λf → λx → f (f (f (f x)))
 λ> :q
 ```
 
+## Web UI (`web/`)
+
+`web/` contains the browser interface for the enhanced interpreter: a small Flask server (`app.py`), the terminal-style page (`index.html`), its Python dependencies (`requirements.txt`), and the APL385 monospace font.
+
+- **Online:** <http://47.116.114.77/lambda/>
+- **Local:**
+
+  ```bash
+  python -m venv .venv
+  # Windows
+  .venv\Scripts\pip install -r web\requirements.txt
+  .venv\Scripts\python web\app.py
+  # Linux / macOS
+  .venv/bin/pip install -r web/requirements.txt
+  .venv/bin/python web/app.py
+  ```
+
+  Open <http://127.0.0.1:8081/>. Build `extension` first; the page needs the compiled interpreter.
+
+- `HOST` and `PORT` override the default `127.0.0.1:8081`.
+- Interpreter lookup order: `$LAMBDA_INTERP_BIN`, then `$LAMBDA_INTERP_DIR/extension[.exe]`, then `<repo>/extension[.exe]`, then `/opt/lambda-calculus-interpreter/extension`.
+- Endpoints: `GET /` (page), `GET /fonts/APL385.ttf`, `GET /api/prelude`, and `POST /api/eval` with `{"code": "PLUS ONE TWO\nid = \\x.x\nid 3"}`. Responses are `{"ok": true, "results": [{"kind": "result|define|error|info", "text": "..."}], "raw": [...]}`.
+- The frontend keeps the session state by replaying all previous lines to the stateless backend, so definitions remain available to later lines. `:clear` resets that history.
+- The page uses `<base href="./">`, so it works at `/` locally and behind the production reverse proxy at `/lambda/`, where Caddy's `handle_path /lambda/*` strips the prefix before forwarding to Flask.
+- On Windows the backend switches the console to UTF-8 and rewrites `λ` to `\` before calling the interpreter, working around GHC's locale encoding (otherwise `⇒` fails with `commitBuffer`).
+
 ## Technical Overview
 
 1. Both interpreters implement:
@@ -183,6 +217,7 @@ defined FOUR = λf → λx → f (f (f (f x)))
 - Parser with custom identifier rules and automatic number‑to‑Church conversion.
 - File loading with error reporting and a fold‑based line processor.
 - Dynamic table printing that adjusts column widths to the longest variable name and expression.
+- A Flask web layer (`web/`) that pipes code to `extension` over stdin, enforces a 10-second timeout, and classifies REPL output into `result` / `define` / `error` / `info` lines.
 
 ## License
 

@@ -1,0 +1,264 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<base href="./">
+<link rel="icon" href="/icon.ico" type="image/x-icon">
+<title>Lambda 演算计算器</title>
+<style>
+  @font-face{
+    font-family:'APL385 Unicode';
+    src:url(fonts/APL385.ttf) format('truetype');
+    font-display:swap;
+  }
+  .lam{font-family:'APL385 Unicode',monospace;}
+  :root{
+    color-scheme: light;
+    --bg:#f5f4ef; --paper:#ffffff; --term-bg:#fbfaf6;
+    --text:#1a1a1a; --dim:rgba(26,26,26,.55); --faint:rgba(26,26,26,.32);
+    --border:rgba(26,26,26,.16); --border-strong:rgba(26,26,26,.42);
+    --hover:rgba(26,26,26,.05);
+    --accent:#b0701f; --prompt:#b0701f;
+    --ok:#2f8f52; --err:#c0392b; --info:rgba(26,26,26,.55);
+    --sel:rgba(176,112,31,.26);
+    --scroll:#cfcabf; --scroll-hover:#b7b1a4;
+    --mono:'APL385 Unicode','SFMono-Regular','Cascadia Mono',Consolas,'Liberation Mono',Menlo,'Courier New',monospace;
+    --serif:"Georgia","Times New Roman","Songti SC","SimSun","宋体",serif;
+    --radius:6px;
+  }
+  html[data-theme="dark"]{
+    color-scheme: dark;
+    --bg:#2a2a28; --paper:#32322e; --term-bg:#242422;
+    --text:#e9e7e2; --dim:rgba(233,231,226,.6); --faint:rgba(233,231,226,.28);
+    --border:rgba(233,231,226,.16); --border-strong:rgba(233,231,226,.4);
+    --hover:rgba(233,231,226,.07);
+    --accent:#e0a83c; --prompt:#e0a83c;
+    --ok:#6fbf7f; --err:#e0715f; --info:rgba(233,231,226,.6);
+    --sel:rgba(224,168,60,.30);
+    --scroll:#54534f; --scroll-hover:#6a6964;
+  }
+  *{box-sizing:border-box;}
+  ::selection{background:var(--sel);color:inherit;}
+  *{scrollbar-width:thin;scrollbar-color:var(--scroll) transparent;}
+  ::-webkit-scrollbar{width:11px;height:11px;}
+  ::-webkit-scrollbar-track{background:transparent;}
+  ::-webkit-scrollbar-thumb{background:var(--scroll);border-radius:8px;border:3px solid transparent;background-clip:padding-box;}
+  ::-webkit-scrollbar-thumb:hover{background:var(--scroll-hover);}
+  body{margin:0;background:var(--bg);color:var(--text);font-family:var(--serif);font-size:14px;line-height:1.7;transition:background .2s ease,color .2s ease;}
+  .wrap{max-width:840px;margin:0 auto;padding:40px 24px 40px;}
+  header{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;border-bottom:1px solid var(--border);padding-bottom:14px;margin-bottom:20px;}
+  h1{font-size:19px;font-weight:400;margin:0 0 3px;letter-spacing:.02em;font-family:var(--mono);}
+  .sub{color:var(--dim);font-size:12px;margin:0;}
+  .theme-btn{flex:none;font-family:var(--mono);font-size:11.5px;color:var(--dim);background:var(--paper);border:1px solid var(--border);border-radius:var(--radius);padding:6px 12px;cursor:pointer;transition:background .15s,color .15s;}
+  .theme-btn:hover{background:var(--hover);color:var(--text);}
+  .theme-btn:focus-visible{outline:2px solid var(--accent);outline-offset:2px;}
+  .term{background:var(--term-bg);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;box-shadow:0 2px 12px rgba(0,0,0,.07);}
+  .term-bar{display:flex;align-items:center;gap:7px;padding:9px 13px;border-bottom:1px solid var(--border);}
+  .dot{width:10px;height:10px;border-radius:50%;display:inline-block;}
+  .dot.r{background:#d97a6c;} .dot.y{background:#e0b23c;} .dot.g{background:#7bbf8a;}
+  .term-title{margin-left:6px;font-family:var(--mono);font-size:11.5px;color:var(--faint);letter-spacing:.05em;}
+  .term-clear{margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--dim);background:transparent;border:1px solid var(--border);border-radius:var(--radius);padding:3px 9px;cursor:pointer;}
+  .term-clear:hover{background:var(--hover);color:var(--text);}
+  .term-body{padding:14px 16px 12px;}
+  .term-out{min-height:230px;max-height:52vh;overflow-y:auto;font-family:var(--mono);font-size:13.5px;line-height:1.8;white-space:pre-wrap;word-break:break-word;padding-right:6px;}
+  .term-out .line{margin:1px 0;}
+  .term-out .echo{color:var(--faint);}
+  .term-out .echo .p{color:var(--prompt);font-weight:600;}
+  .term-out .result{color:var(--text);}
+  .term-out .result::before{content:"⇒ ";color:var(--ok);}
+  .term-out .define{color:var(--dim);}
+  .term-out .define::before{content:"⟶ ";color:var(--faint);}
+  .term-out .error{color:var(--err);}
+  .term-out .error::before{content:"⚠ ";color:var(--err);}
+  .term-out .info{color:var(--info);}
+  .term-line{display:flex;align-items:center;gap:9px;margin-top:10px;font-family:var(--mono);font-size:13.5px;border-top:1px dashed var(--border);padding-top:11px;}
+  .prompt{color:var(--prompt);flex:none;user-select:none;font-weight:600;}
+  #cmd{flex:1;min-width:0;background:transparent;border:0;outline:none;color:var(--text);font-family:var(--mono);font-size:13.5px;caret-color:var(--accent);padding:2px 0;}
+  #cmd::placeholder{color:var(--faint);}
+  .helpers{margin-top:22px;}
+  .helpers h2{font-size:12px;font-weight:400;color:var(--dim);margin:0 0 9px;letter-spacing:.05em;font-family:var(--mono);}
+  .chips{display:flex;flex-wrap:wrap;gap:7px;}
+  .chip{font-family:var(--mono);font-size:12px;padding:4px 10px;border:1px solid var(--border);border-radius:999px;color:var(--dim);cursor:pointer;background:var(--paper);transition:color .12s,border-color .12s,background .12s;}
+  .chip:hover{color:var(--text);border-color:var(--border-strong);background:var(--hover);}
+  .hint{color:var(--faint);font-size:11.5px;margin-top:9px;font-family:var(--mono);}
+  kbd{font-family:var(--mono);font-size:11px;border:1px solid var(--border);border-bottom-width:2px;border-radius:4px;padding:0 5px;color:var(--dim);}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>Lambda 演算计算器</h1>
+      <p class="sub">Haskell 解释器 · 输入后按 <kbd>Enter</kbd> 执行 · 支持 <span class="lam">λ</span> 抽象 / 应用 / Church 编码 / 组合子</p>
+    </div>
+    <button class="theme-btn" id="theme-toggle" type="button">深色</button>
+  </header>
+
+  <div class="term">
+    <div class="term-bar">
+      <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+      <span class="term-title">lambda-repl</span>
+      <button class="term-clear" id="clear" type="button">清空</button>
+    </div>
+    <div class="term-body">
+      <div class="term-out" id="out"></div>
+      <div class="term-line">
+        <span class="prompt">λ&gt;</span>
+        <input id="cmd" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="输入表达式，回车执行（↑↓ 翻历史，:clear 清屏）">
+      </div>
+    </div>
+  </div>
+
+  <div class="helpers">
+    <h2>示例（点击填到输入框，回车执行）</h2>
+    <div class="chips" id="examples"></div>
+  </div>
+  <div class="helpers">
+    <h2>预定义环境（点击插入）</h2>
+    <div class="chips" id="chips"></div>
+  </div>
+  <p class="hint">提示：用 \x.x 或 <span class="lam">λ</span>x.x 写抽象；数字自动转 Church 编码；先输入 <b>id = \x.x</b> 定义，后续行即可使用 id。</p>
+</div>
+
+<script>
+(function(){
+  var root = document.documentElement;
+
+  /* ---- 主题 ---- */
+  var TKEY = 'ui_theme';
+  var tBtn = document.getElementById('theme-toggle');
+  function applyTheme(t){
+    root.setAttribute('data-theme', t);
+    if (tBtn) tBtn.textContent = (t === 'dark') ? '浅色' : '深色';
+    try { localStorage.setItem(TKEY, t); } catch (e) {}
+  }
+  var sT = null; try { sT = localStorage.getItem(TKEY); } catch (e) {}
+  applyTheme(sT || ((window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'light'));
+  if (tBtn) tBtn.addEventListener('click', function(){
+    applyTheme(root.getAttribute('data-theme') === 'dark' ? 'light' : 'dark');
+  });
+
+  /* ---- REPL ---- */
+  var out = document.getElementById('out');
+  var cmd = document.getElementById('cmd');
+  var clearBtn = document.getElementById('clear');
+
+  var codeLines = [];   // 累计所有输入，用于每次重新求值（后端无状态，需重放定义）
+  var shown = 0;        // 已展示的结果条数（用于只显示增量）
+  var hist = [];        // 命令历史
+  var hIdx = 0;
+
+  function scrollDown(){ out.scrollTop = out.scrollHeight; }
+
+  function addLine(cls, text){
+    var d = document.createElement('div');
+    d.className = 'line ' + (cls || '');
+    d.textContent = text;
+    out.appendChild(d);
+  }
+
+  function echoPrompt(line){
+    var d = document.createElement('div');
+    d.className = 'line echo';
+    var p = document.createElement('span');
+    p.className = 'p';
+    p.textContent = 'λ> ';
+    d.appendChild(p);
+    d.appendChild(document.createTextNode(line));
+    out.appendChild(d);
+  }
+
+  async function exec(line){
+    echoPrompt(line);
+    var trimmed = line.trim();
+    if (!trimmed) { scrollDown(); return; }
+    if (trimmed === ':clear' || trimmed === 'clear' || trimmed === ':cls') {
+      out.innerHTML = ''; codeLines = []; shown = 0; scrollDown(); return;
+    }
+    codeLines.push(line);
+    var code = codeLines.join('\n');
+    try {
+      var resp = await fetch('api/eval', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: code })
+      });
+      var data = await resp.json();
+      if (!data.ok) { addLine('error', data.error || '未知错误'); scrollDown(); return; }
+      var results = data.results || [];
+      var fresh = results.slice(shown);
+      shown = results.length;
+      fresh.forEach(function(r){ addLine(r.kind, r.text); });
+    } catch (e) {
+      addLine('error', '请求失败：' + e.message);
+    }
+    scrollDown();
+  }
+
+  cmd.addEventListener('keydown', function(e){
+    if (e.key === 'Enter') {
+      var v = cmd.value;
+      cmd.value = '';
+      if (v.trim()) hist.push(v);
+      hIdx = hist.length;
+      exec(v);
+    } else if (e.key === 'ArrowUp') {
+      if (hist.length) { if (hIdx > 0) hIdx--; cmd.value = hist[hIdx] || ''; }
+      e.preventDefault();
+    } else if (e.key === 'ArrowDown') {
+      if (hist.length) {
+        if (hIdx < hist.length - 1) { hIdx++; cmd.value = hist[hIdx]; }
+        else { hIdx = hist.length; cmd.value = ''; }
+      }
+      e.preventDefault();
+    }
+  });
+
+  if (clearBtn) clearBtn.addEventListener('click', function(){
+    out.innerHTML = ''; codeLines = []; shown = 0; cmd.focus();
+  });
+
+  var termEl = document.querySelector('.term');
+  if (termEl) termEl.addEventListener('click', function(){
+    var sel = window.getSelection ? window.getSelection().toString() : '';
+    if (!sel) cmd.focus();
+  });
+
+  /* ---- 示例 ---- */
+  var examples = [
+    { label: 'PLUS ONE TWO',   code: 'PLUS ONE TWO' },
+    { label: 'AND TRUE FALSE', code: 'AND TRUE FALSE' },
+    { label: 'K 组合子',        code: '(\\x.\\y.x) a b' },
+    { label: '定义 id',         code: 'id = \\x.x' },
+    { label: 'IF 选择',         code: 'IF TRUE ONE TWO' },
+    { label: 'SUCC THREE',      code: 'SUCC THREE' }
+  ];
+  var exBox = document.getElementById('examples');
+  examples.forEach(function(ex){
+    var b = document.createElement('span');
+    b.className = 'chip';
+    b.textContent = ex.label;
+    b.onclick = function(){ cmd.value = ex.code; cmd.focus(); };
+    exBox.appendChild(b);
+  });
+
+  /* ---- 预定义环境 ---- */
+  fetch('api/prelude').then(function(r){ return r.json(); }).then(function(names){
+    var box = document.getElementById('chips');
+    (names || []).forEach(function(n){
+      var c = document.createElement('span');
+      c.className = 'chip';
+      c.textContent = n;
+      c.onclick = function(){ cmd.value = (cmd.value ? cmd.value + ' ' : '') + n; cmd.focus(); };
+      box.appendChild(c);
+    });
+  }).catch(function(){});
+
+  /* ---- 欢迎语 ---- */
+  addLine('info', 'Lambda 演算计算器 · REPL 就绪。输入表达式后按 Enter 执行；:clear 清空；↑↓ 翻历史。');
+  cmd.focus();
+})();
+</script>
+</body>
+</html>
