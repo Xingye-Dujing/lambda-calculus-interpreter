@@ -146,6 +146,14 @@ class Shooter:
                   "document.getElementById('theme-toggle').textContent='深色 / Dark';")
         time.sleep(0.3)
 
+    def resize(self, width: int, height: int) -> None:
+        self.width = width
+        self.height = height
+        self.c.call("Emulation.setDeviceMetricsOverride",
+                    width=width, height=height,
+                    deviceScaleFactor=self.scale, mobile=False)
+        time.sleep(0.3)
+
     def _lines(self) -> int:
         return self.c.js("document.querySelectorAll('#out .line').length") or 0
 
@@ -180,13 +188,19 @@ class Shooter:
                   f"if(s.length>{index}) s[{index}].click(); }})()")
         time.sleep(0.3)
 
+    def panel_bottom(self) -> None:
+        """把右侧面板滚到底，展示靠后的指引步骤 / scroll the inspector to the end."""
+        self.c.js("(() => { const p=document.getElementById('panel');"
+                  "if(p) p.scrollTop = p.scrollHeight; })()")
+        time.sleep(0.3)
+
     def shot(self, name: str, clip_height: int | None = None) -> None:
         metrics = self.c.call("Page.getLayoutMetrics")
         height = metrics["cssContentSize"]["height"]
         if clip_height:
             height = min(height, clip_height)
         data = self.c.call("Page.captureScreenshot", format="png",
-                           captureBeyondViewport=True,
+                           captureBeyondViewport=False,
                            clip={"x": 0, "y": 0, "width": self.width,
                                  "height": height, "scale": 1})
         self.out.mkdir(parents=True, exist_ok=True)
@@ -244,10 +258,15 @@ def capture(url: str, out: Path, only: str | None,
             shooter.shot("env.png")
 
         if only in (None, "guide"):
-            # 使用指引（首次访问默认打开） / guide tab
+            # 使用指引（首次访问默认打开）；用更高的视口让 7 个步骤完整显示
+            # guide tab; a taller viewport fits all seven steps
+            shooter.resize(shooter.width, 1500)
             shooter.clear()
             shooter.run("PLUS TWO THREE")
             shooter.tab("guide")
+            time.sleep(0.6)
+            shooter.panel_bottom()
+            shooter.panel_bottom()
             shooter.shot("guide.png")
     finally:
         proc.terminate()
