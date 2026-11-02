@@ -42,6 +42,11 @@ result annotated with its β-step count and Church-numeral value.*
 *Environment panel: definitions are listed with their terms; click a name to
 insert it, hover to delete it.*
 
+![Usage guide](docs/screenshots/guide.png)
+
+*The built-in quick guide opens on the first visit and is always available from
+the Guide tab.*
+
 Regenerate them while the web UI is running:
 
 ```bash
@@ -124,6 +129,8 @@ replayed on every keystroke.
 - Terminal REPL with history, Tab completion, `Ctrl+L`, and error carets.
 - Live panels for **reduction trace** (step player + diff), **AST**, **type**
   and **environment** (click to insert, hover to delete).
+- A **Guide** tab (opened on the first visit) explains typing, panels, manual
+  reduction and definitions.
 - Strategy selector, step-limit control, share link, `.lam` import/export,
   light/dark theme, and a Chinese/English/bilingual switch.
 - `GET /api/prelude`, `POST /api/session`, `POST /api/eval` with

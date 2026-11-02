@@ -52,6 +52,8 @@ Chinese/English**.
   **reset** (`:reset`). Keep it that way when adding commands.
 - Do not use native `select`, `prompt`, `confirm` or `alert`: use the custom
   `.sel` menus and the `dialog()` helper so popups match the wireframe theme.
+- The **Guide** tab (`renderGuide`) opens when there is no saved state; keep its
+  steps in sync with UI changes.
 - `:load` is confined to `INTERP_DIR` by default (`LAMBDA_LOAD_ROOT=*` disables
   the check); `web/app.py` rejects escaping paths with 400.
 - `--batch` sets stdin/stdout/stderr to UTF-8, which removes the old Windows
