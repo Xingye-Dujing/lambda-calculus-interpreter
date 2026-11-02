@@ -242,6 +242,13 @@ def capture(url: str, out: Path, only: str | None,
             shooter.run("twice = \\f.\\x.f (f x)")
             shooter.tab("env")
             shooter.shot("env.png", 1127)
+
+        if only in (None, "guide"):
+            # 使用指引（首次访问默认打开）
+            shooter.clear()
+            shooter.run("PLUS TWO THREE")
+            shooter.tab("guide")
+            shooter.shot("guide.png", 1010)
     finally:
         proc.terminate()
         try:
@@ -256,7 +263,7 @@ def main() -> int:
         description="Capture light-mode screenshots of the web UI")
     parser.add_argument("--url", default=os.environ.get("LAMBDA_URL", DEFAULT_URL))
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT)
-    parser.add_argument("--only", choices=["main", "ast", "env"], default=None)
+    parser.add_argument("--only", choices=["main", "ast", "env", "guide"], default=None)
     parser.add_argument("--width", type=int, default=1440)
     parser.add_argument("--height", type=int, default=1100)
     parser.add_argument("--scale", type=float, default=2.0)
