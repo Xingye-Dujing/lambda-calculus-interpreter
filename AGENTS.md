@@ -55,6 +55,8 @@ Chinese/English**.
 - The desktop layout is a fixed `100vh` flex column: terminal and inspector share
   one row height, both scroll internally, and the page never scrolls. The AST
   view uses `white-space:pre` plus horizontal scrolling so trees never wrap.
+- The first visit defaults to the light theme; the toggle persists the choice in
+  `localStorage` (the OS `prefers-color-scheme` is intentionally not consulted).
 - The **Guide** tab (`renderGuide`) opens when there is no saved state; keep its
   steps in sync with UI changes. The inspector uses the mono font so code and λ
   render like the terminal.
