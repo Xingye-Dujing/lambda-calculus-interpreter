@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Lambda 演算 Web 计算器 — 后端 (Flask)。
+"""Lambda 演算 Web 计算器 — 后端 (Flask)
 Lambda calculus web calculator — backend (Flask).
 
 计算引擎是本仓库的 Haskell 解释器 `extension.hs`（编译产物 `extension` /
@@ -15,7 +15,7 @@ separator `\\x1e`, so:
   definitions, strategy and step limits persist inside the session (no replay);
 * 输出是结构化的 JSON，前端可直接渲染轨迹、语法树、类型；
   output is structured JSON, so the UI can render traces, ASTs and types;
-* 超时会杀掉该会话并返回 408。
+* 超时会杀掉该会话并返回 408
   a timeout kills the session and returns HTTP 408.
 
 路由 / Routes:
@@ -50,14 +50,14 @@ from pathlib import Path
 from flask import Flask, jsonify, request, send_from_directory
 
 APP_DIR = Path(__file__).resolve().parent
-RS = "\x1e"                     # 与前端的记录分隔符保持一致
+RS = "\x1e"                     # 与前端的记录分隔符保持一致 / keep in sync with the frontend
 EVAL_TIMEOUT = float(os.environ.get("LAMBDA_EVAL_TIMEOUT", "10"))
 SESSION_IDLE = float(os.environ.get("LAMBDA_SESSION_IDLE", "1800"))
 MAX_SESSIONS = int(os.environ.get("LAMBDA_MAX_SESSIONS", "32"))
 ALLOWED_LANGS = {"zh", "en", "both"}
 
 # `:load` 默认只允许解释器目录内的文件，防止 Web 用户读取服务器任意路径；
-# 设为 `*` 可关闭限制（仅建议在本地使用）。
+# 设为 `*` 可关闭限制（仅建议在本地使用）
 # `:load` is restricted to the interpreter directory by default so web users
 # cannot read arbitrary server files; set LAMBDA_LOAD_ROOT=* to disable.
 LOAD_RE = re.compile(r"^:load\s+(.+)$")
@@ -125,7 +125,7 @@ app = Flask(__name__, static_folder=None, static_url_path=None)
 # 常驻解释器 / persistent interpreter
 # ---------------------------------------------------------------------------
 class Interpreter:
-    """一个 `extension --batch --json` 子进程 + 一个读线程。"""
+    """一个 `extension --batch --json` 子进程 + 一个读线程"""
 
     def __init__(self, lang: str = "both"):
         self.alive = True
@@ -229,7 +229,7 @@ def get_session(sid: str | None, lang: str = "both") -> tuple[str, Interpreter]:
 # 一次性执行（旧接口 / 批量回放）/ one-shot legacy execution
 # ---------------------------------------------------------------------------
 def run_interpreter(code: str, lang: str = "both", timeout: float = EVAL_TIMEOUT):
-    """把整段 code 喂给批处理解释器，返回全部输出对象。"""
+    """把整段 code 喂给批处理解释器，返回全部输出对象"""
     if not code.endswith("\n"):
         code += "\n"
     proc = subprocess.run(
@@ -341,7 +341,7 @@ def api_eval():
             "timeout": True,
         }), 408
     except RuntimeError as exc:
-        # 解释器进程已退出，前端应重建会话并回放历史。
+        # 解释器进程已退出，前端应重建会话并回放历史
         # The interpreter process is gone; the client should rebuild + replay.
         return jsonify({"ok": False, "error": str(exc), "restart": True}), 410
     except Exception as exc:  # noqa: BLE001

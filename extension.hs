@@ -87,7 +87,7 @@ subst x v (Lam y body)
 data DB = DVar Int | DFree String | DLam String DB | DApp DB DB
   deriving (Eq)
 
--- 绑定变量转成索引，自由变量保留名字，因此可以直接判断 α 等价。
+-- 绑定变量转成索引，自由变量保留名字，因此可以直接判断 α 等价
 -- Bound variables become indices; free variables keep their names, so α-equivalence is structural equality.
 toDB :: [String] -> Expr -> DB
 toDB bound (Var x) = maybe (DFree x) DVar (elemIndex x bound)
@@ -126,7 +126,7 @@ parseStrategy s = lookup (map lower s)
 
 -- ---------------------------------------------------------------------------
 -- 单步归约 One-Step Reduction
--- 每一步都返回「整个项」的新形态，方便前端做前后对比。
+-- 每一步都返回「整个项」的新形态，方便前端做前后对比
 -- Each step rewrites the whole term, so the frontend can diff before/after.
 -- ---------------------------------------------------------------------------
 data Reduction = Reduction
@@ -222,7 +222,7 @@ data EvalResult = EvalResult
 defaultLimit :: Int
 defaultLimit = 10000
 
--- 求值循环：keepTrace 为 False 时不保留轨迹（省内存）。
+-- 求值循环：keepTrace 为 False 时不保留轨迹（省内存）
 -- Evaluation loop; with keepTrace=False the trace is dropped (saves memory).
 eval :: Bool -> Int -> Strategy -> Expr -> EvalResult
 eval keepTrace limit strat e0 = loop 1 e0 []
@@ -635,7 +635,7 @@ freeTyVars :: Ty -> Set.Set String
 freeTyVars (TVar v)   = Set.singleton v
 freeTyVars (TArr a b) = freeTyVars a `Set.union` freeTyVars b
 
--- 把内部类型变量名（_seed_n）改写为 t0/t1，方便阅读。
+-- 把内部类型变量名（_seed_n）改写为 t0/t1，方便阅读
 -- Rewrite internal type variable names (_seed_n) to t0/t1 for readability.
 scrubTyNames :: String -> String
 scrubTyNames = go Map.empty 0

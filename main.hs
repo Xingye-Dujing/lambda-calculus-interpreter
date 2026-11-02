@@ -2,7 +2,7 @@
 
 -- ---------------------------------------------------------------------------
 -- 最小 λ 演算解释器 / Minimal lambda calculus interpreter
--- 核心与 extension.hs 保持一致；不含定义与环境。
+-- 核心与 extension.hs 保持一致；不含定义与环境
 -- The core mirrors extension.hs; it has no definitions or environment.
 -- ---------------------------------------------------------------------------
 
@@ -154,7 +154,7 @@ data EvalResult = EvalResult
 defaultLimit :: Int
 defaultLimit = 10000
 
--- 求值循环：keepTrace 为 False 时不保留轨迹（省内存）。
+-- 求值循环：keepTrace 为 False 时不保留轨迹（省内存）
 -- Evaluation loop; with keepTrace=False the trace is dropped (saves memory).
 eval :: Bool -> Int -> Strategy -> Expr -> EvalResult
 eval keepTrace limit strat e0 = loop 1 e0 []
@@ -490,7 +490,7 @@ main = do
   if any (`elem` ["-h", "--help"]) args
     then putStrLn (helpMessage lang)
     else do
-      -- 管道 / 重定向时统一用 UTF-8，避免 Windows 代码页问题。
+      -- 管道 / 重定向时统一用 UTF-8，避免 Windows 代码页问题
       -- Use UTF-8 when piped or redirected, avoiding Windows code-page issues.
       term <- hIsTerminalDevice stdout
       unless term $ do

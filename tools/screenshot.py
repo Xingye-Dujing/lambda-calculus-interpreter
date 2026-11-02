@@ -4,8 +4,8 @@
 
 用法 / Usage
 ------------
-    python tools/screenshot.py                 # 截三张：主界面、AST、环境
-    python tools/screenshot.py --only main     # 只截一张
+    python tools/screenshot.py                 # 截三张：主界面、AST、环境 / all three
+    python tools/screenshot.py --only main     # 只截一张 / one shot
     python tools/screenshot.py --url http://127.0.0.1:8081/ --out docs/screenshots
 
 依赖 / Requirements
@@ -19,7 +19,7 @@
 用 Chrome DevTools Protocol 驱动无头浏览器：真实执行命令、切换面板、
 拖动轨迹进度，然后以 2x 像素密度截取整页 PNG。脚本不依赖页面暴露的
 内部函数，只模拟点击与键盘输入，因此不要改动页面的 DOM id 约定
-（`#cmd`、`#out`、`.tab`、`.steps-list`、`#clear`、`#theme-toggle`）。
+（`#cmd`、`#out`、`.tab`、`.steps-list`、`#clear`、`#theme-toggle`）
 
 It drives headless Chrome over CDP: it runs real commands, switches panels and
 moves the trace slider, then captures a full-page PNG at 2x. It only simulates
@@ -215,7 +215,7 @@ def capture(url: str, out: Path, only: str | None,
         shooter.prepare(url)
 
         if only in (None, "main"):
-            # 主界面：定义 + 结果 + 类型 + 归约轨迹
+            # 主界面：定义 + 结果 + 类型 + 归约轨迹 / main view
             shooter.clear()
             shooter.run("id = \\x.x")
             shooter.run("PLUS TWO THREE")
@@ -235,7 +235,7 @@ def capture(url: str, out: Path, only: str | None,
             shooter.shot("ast.png")
 
         if only in (None, "env"):
-            # 环境面板
+            # 环境面板 / environment panel
             shooter.clear()
             shooter.run("id = \\x.x")
             shooter.run("compose = \\f.\\g.\\x.f (g x)")
@@ -244,7 +244,7 @@ def capture(url: str, out: Path, only: str | None,
             shooter.shot("env.png")
 
         if only in (None, "guide"):
-            # 使用指引（首次访问默认打开）
+            # 使用指引（首次访问默认打开） / guide tab
             shooter.clear()
             shooter.run("PLUS TWO THREE")
             shooter.tab("guide")

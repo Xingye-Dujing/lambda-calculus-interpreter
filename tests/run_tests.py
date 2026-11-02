@@ -4,13 +4,13 @@
 
 设计目标 / Design goals
 -----------------------
-* 只依赖 Python 标准库，无需 Cabal / Stack / pytest。
+* 只依赖 Python 标准库，无需 Cabal / Stack / pytest
   Only the Python standard library is required (no Cabal, Stack or pytest).
-* 直接驱动编译好的 `extension --batch --json`，因此测的是最终产物本身。
+* 直接驱动编译好的 `extension --batch --json`，因此测的是最终产物本身
   It drives the compiled `extension --batch --json` binary, so the shipped
   artifact is what gets tested.
 * 覆盖：解析错误位置、β 归约结果、求值策略、步数上限、Church 编码提示、
-  类型推断、环境操作、手动归约、语法树、de Bruijn、双语输出、JSON 协议。
+  类型推断、环境操作、手动归约、语法树、de Bruijn、双语输出、JSON 协议
   Covers parse positions, β-reduction results, strategies, step limits,
   Church hints, type inference, environment commands, manual reduction,
   syntax trees, de Bruijn view, bilingual output and the JSON protocol.
@@ -61,7 +61,7 @@ def find_binary(explicit: str | None = None) -> Path:
 
 
 def run(lines: list[str], binary: Path, lang: str = "en", timeout: float = 30.0) -> list[list[dict]]:
-    """运行一组命令，返回「每条命令的输出对象列表」。
+    """运行一组命令，返回「每条命令的输出对象列表」
 
     Run a batch of commands and return one list of JSON objects per command.
     """
@@ -85,7 +85,7 @@ def run(lines: list[str], binary: Path, lang: str = "en", timeout: float = 30.0)
 
 
 def one(lines: list[str], binary: Path, lang: str = "en", index: int = -1) -> dict:
-    """取最后一条命令的第一个输出对象（常用于单命令断言）。
+    """取最后一条命令的第一个输出对象（常用于单命令断言）
 
     First output object of one command (usually the last command).
     """
@@ -133,7 +133,7 @@ def test_combinators_and_alpha(b: Path) -> None:
     check("I combinator", r.get("term") == "λx → x" and "I combinator" in r.get("hint", ""), str(r))
     r = one(["\\x.\\y.x"], b)
     check("K is also TRUE", "K combinator" in r.get("hint", ""), r.get("hint", ""))
-    # 自由变量 y 不能被 λy 捕获：必须先 α-重命名。
+    # 自由变量 y 不能被 λy 捕获：必须先 α-重命名
     # The free y must not be captured by λy, so an α-rename is required.
     r = one(["(\\x.\\y.x) y"], b)
     check("capture avoidance term", r.get("term") == "λy' → y", repr(r.get("term")))
@@ -160,7 +160,7 @@ def test_no_step_is_identity(b: Path) -> None:
 
 def test_strategies(b: Path) -> None:
     omega = "((\\x.x x)(\\x.x x))"
-    # 正规序 / 按名调用会先消去 K，永不触及 Ω；应用序 / 按值调用会先归约参数，从而发散。
+    # 正规序 / 按名调用会先消去 K，永不触及 Ω；应用序 / 按值调用会先归约参数，从而发散
     # Normal order and call-by-name discard Ω; applicative order and call-by-value diverge.
     r = one([":strategy normal", f"(\\x.y) {omega}"], b)
     check("normal order terminates on K Ω", r.get("term") == "y", repr(r.get("term")))
@@ -178,7 +178,7 @@ def test_strategies(b: Path) -> None:
     r = results[-1][0]
     check("call-by-value diverges on K Ω", r.get("limitHit") is True, str(r.get("limitHit")))
 
-    # 强归约策略（应用序 / 正规序）对终止项应给出完整正规形。
+    # 强归约策略（应用序 / 正规序）对终止项应给出完整正规形
     # The strong strategies yield full normal forms on terminating terms.
     for strat in ("applicative", "normal"):
         r = one([f":strategy {strat}", "SUCC (PLUS ONE TWO)"], b)
@@ -250,7 +250,7 @@ def test_types(b: Path) -> None:
     r = one([":type \\x.x x"], b)
     check("occurs check", "infinite type" in r.get("text", ""), str(r))
 
-    # 多态定义可以在两种类型下使用。
+    # 多态定义可以在两种类型下使用
     # A polymorphic definition may be used at two different types.
     r = one(["id = \\x.x", ":type (\\f.f) id"], b)
     check("polymorphism usable", r.get("kind") == "type", str(r))
@@ -375,7 +375,7 @@ def test_protocol(b: Path) -> None:
                 except json.JSONDecodeError as exc:
                     check("json line", False, f"{line!r}: {exc}")
 
-    # --lang 的参数不能被当成文件名。
+    # --lang 的参数不能被当成文件名
     # The value of --lang must not be treated as a file name.
     proc = subprocess.run(
         [str(b), "--batch", "--json", "--lang", "en"],

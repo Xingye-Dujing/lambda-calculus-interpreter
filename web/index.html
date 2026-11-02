@@ -323,7 +323,7 @@
 (function(){
   "use strict";
 
-  /* ------------------------------------------------------------------ i18n */
+  /* ------------------------------------------------------------------ i18n / 双语 */
   var I18N = {
     subline: {zh:"Haskell 解释器 · 归约轨迹 · 语法树 · 类型推断", en:"Haskell interpreter · reduction traces · AST · types"},
     exTitle: {zh:"示例（点击填入）", en:"Examples (click to insert)"},
@@ -526,7 +526,7 @@
 
   var selects = [];
 
-  /* --------------------------------------------------------------- storage */
+  /* --------------------------------------------------------------- storage / 存储 */
   var LS = "lambda.ui.v2";
   function saveLocal(){
     try {
@@ -540,14 +540,14 @@
     try { return JSON.parse(localStorage.getItem(LS) || "null"); } catch(e){ return null; }
   }
 
-  /* ----------------------------------------------------------------- theme */
+  /* ----------------------------------------------------------------- theme / 主题 */
   function applyTheme(th){
     state.theme = th;
     root.setAttribute("data-theme", th);
     $("theme-toggle").textContent = th === "dark" ? t("light") : t("dark");
   }
 
-  /* ------------------------------------------------------------- text utils */
+  /* ------------------------------------------------------------- text utils / 文本工具 */
   function esc(s){
     return String(s == null ? "" : s)
       .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")
@@ -573,7 +573,7 @@
     toast._t = setTimeout(function(){ el.classList.remove("show"); }, 1600);
   }
 
-  /* ------------------------------------------------------------- terminal */
+  /* ------------------------------------------------------------- terminal / 终端 */
   function echoPrompt(line){
     var d = elem("div", "line echo");
     d.innerHTML = '<span class="mark p">λ&gt;</span><span class="body"></span>';
@@ -702,7 +702,7 @@
     addLine("info", obj.text || "");
   }
 
-  /* ------------------------------------------------------------- inspector */
+  /* ------------------------------------------------------------- inspector / 检查器 */
   function switchTab(tab){
     state.tab = tab;
     Array.prototype.forEach.call(document.querySelectorAll(".tab"), function(b){
@@ -916,7 +916,7 @@
     });
   }
 
-  /* ---------------------------------------------------------------- session */
+  /* ---------------------------------------------------------------- session / 会话 */
   async function api(path, body, method){
     var res = await fetch(path, {
       method: method || "POST",
@@ -983,7 +983,7 @@
     return env;
   }
 
-  /* ------------------------------------------------------------------ exec */
+  /* ------------------------------------------------------------------ exec / 执行 */
   function setManual(on, term){
     state.manual = !!on;
     if (term != null) state.manualTerm = term;
@@ -1040,7 +1040,7 @@
     return outputs;
   }
 
-  /* ------------------------------------------------------------------- ac */
+  /* ------------------------------------------------------------------- ac / 补全 */
   function tokenBeforeCursor(){
     var pos = cmd.selectionStart || 0;
     var left = cmd.value.slice(0, pos);
@@ -1104,7 +1104,7 @@
     cmd.focus();
   }
 
-  /* ---------------------------------------------------------------- events */
+  /* ---------------------------------------------------------------- events / 事件 */
   cmd.addEventListener("input", function(){
     cmd.style.height = "auto";
     cmd.style.height = Math.min(cmd.scrollHeight, 120) + "px";
@@ -1291,7 +1291,7 @@
     this.value = "";
   });
 
-  /* --------------------------------------------------------------- examples */
+  /* --------------------------------------------------------------- examples / 示例 */
   var EXAMPLES = [
     ["PLUS ONE TWO", "3"],
     ["MULT TWO THREE", "6"],
@@ -1356,7 +1356,7 @@
     renderExamples();
   }
 
-  /* ------------------------------------------------------------------ boot */
+  /* ------------------------------------------------------------------ boot / 启动 */
   async function boot(){
     var saved = loadLocal();
     if (saved){
@@ -1366,7 +1366,7 @@
       $("strategy").value = saved.strategy || "applicative";
       if (Array.isArray(saved.code)) state.codeLines = saved.code;
     }
-    // 首次访问默认浅色；之后沿用用户保存的主题。
+    // 首次访问默认浅色；之后沿用用户保存的主题
     // First visit defaults to light; later visits keep the saved theme.
     applyTheme(state.theme);
     $("lang").value = state.lang;
