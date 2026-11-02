@@ -95,9 +95,18 @@
   .ac .item{padding:4px 10px;font-family:var(--mono);font-size:12.5px;cursor:pointer;display:flex;justify-content:space-between;gap:12px;}
   .ac .item .hint{color:var(--faint);font-size:11px;}
   .ac .item.active,.ac .item:hover{background:var(--hover);}
-  .status{display:flex;gap:12px;flex-wrap:wrap;font-family:var(--mono);font-size:10.5px;color:var(--faint);margin-top:8px;}
+  .status{display:flex;gap:12px;flex-wrap:wrap;font-family:var(--mono);font-size:10.5px;color:var(--faint);margin-top:8px;align-items:center;}
   .status b{font-weight:500;color:var(--dim);}
-  #st-steps{cursor:pointer;border-bottom:1px dashed var(--faint);}
+  .status .lim{display:inline-flex;align-items:center;gap:5px;}
+  .status input[type=number]{width:66px;background:transparent;border:1px solid var(--border);border-radius:var(--radius);color:var(--dim);font-family:var(--mono);font-size:10.5px;padding:1px 4px;}
+  .status input[type=number]:focus-visible{outline:1px solid var(--accent);outline-offset:1px;}
+  .manual-bar{display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin-top:8px;padding-top:8px;border-top:1px dashed var(--border);font-family:var(--mono);font-size:10.5px;color:var(--faint);}
+  .mini{font-family:var(--mono);font-size:10.5px;color:var(--dim);background:transparent;border:1px solid var(--border);border-radius:var(--radius);padding:2px 8px;cursor:pointer;}
+  .mini:hover:not(:disabled){color:var(--text);border-color:var(--border-strong);}
+  .mini:disabled{opacity:.35;cursor:default;}
+  .manual-bar .mterm{color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:46%;}
+  .panel-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px;}
+  .panel-head h3{margin:0;}
   /* 右侧面板 / inspector */
   .side{background:transparent;border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;}
   .tabs{display:flex;border-bottom:1px solid var(--border);overflow-x:auto;}
@@ -205,9 +214,18 @@
         </div>
         <div class="status">
           <span><b id="st-strategy">applicative</b></span>
-          <span><b id="st-steps">10000</b> <span id="st-steps-label">steps</span></span>
+          <span class="lim"><span id="st-steps-label">步 / steps</span>
+            <input id="st-limit" type="number" min="1" step="1000" value="10000" aria-label="reduction step limit"></span>
           <span><b id="st-type">—</b></span>
           <span id="st-conn">●</span>
+        </div>
+        <div class="manual-bar">
+          <span id="m-label">手动 / Manual</span>
+          <button class="mini" id="m-begin" type="button">开始 / begin</button>
+          <button class="mini" id="m-step" type="button" disabled>单步 / step</button>
+          <button class="mini" id="m-run" type="button" disabled>到底 / run</button>
+          <button class="mini" id="m-end" type="button" disabled>结束 / end</button>
+          <span class="mterm" id="m-term"></span>
         </div>
       </div>
     </section>
@@ -251,6 +269,14 @@
     dark:    {zh:"深色", en:"Dark"}, light:{zh:"浅色", en:"Light"},
     clear:   {zh:"清空", en:"clear"},
     steps:   {zh:"步", en:"steps"},
+    manual:  {zh:"手动归约", en:"Manual"},
+    begin:   {zh:"开始", en:"begin"},
+    stepB:   {zh:"单步", en:"step"},
+    runB:    {zh:"到底", en:"run"},
+    endB:    {zh:"结束", en:"end"},
+    reset:   {zh:"重置", en:"reset"},
+    resetAsk:{zh:"确定要清空所有自定义定义吗？", en:"Reset all user definitions?"},
+    manualEmpty:{zh:"先输入一个表达式，再点“开始”。", en:"Type an expression first, then press begin."},
     trace:   {zh:"轨迹", en:"trace"}, ast:{zh:"结构", en:"AST"}, type:{zh:"类型", en:"type"},
     welcome: {zh:"REPL 就绪。输入表达式后按 Enter 执行；右侧面板会显示归约轨迹、语法树与类型。", en:"REPL ready. Press Enter to run; the panel shows traces, AST and types."},
     noTrace: {zh:"这个结果没有归约步骤（已经是正规形）。", en:"No reduction steps for this result (already a normal form)."},
@@ -280,10 +306,13 @@
     codeLines: [],
     history: [],
     hIdx: 0,
-    selected: null,      // 当前选中的 result 对象
+    selected: null,      // 当前选中的 result 对象 / current result object
     tracePos: 0,
     tab: "trace",
     envRows: [],
+    manual: false,       // 手动归约模式 / manual reduction mode
+    manualTerm: "",
+    limit: 10000,
     typing: false,
     acIndex: -1,
     acItems: []
@@ -306,7 +335,7 @@
     try {
       localStorage.setItem(LS, JSON.stringify({
         lang: state.lang, theme: state.theme, strategy: $("strategy").value,
-        code: state.codeLines
+        limit: state.limit, code: state.codeLines
       }));
     } catch(e){}
   }
@@ -375,6 +404,14 @@
   }
 
   function addActions(lineEl, obj, source){
+    // 手动单步的输出没有 trace，补一个单步对比 / synthesize a one-step trace
+    if (!obj.trace && obj.before && obj.term){
+      obj = Object.assign({}, obj, {
+        trace: [{n: 1, rule: obj.rule || "β", note: obj.note || "",
+                 before: obj.before, after: obj.term}],
+        steps: 1
+      });
+    }
     var btn = elem("button", "act", "⚙ " + t("trace"));
     btn.type = "button";
     btn.addEventListener("click", function(ev){
@@ -386,6 +423,7 @@
       if (obj.trace || obj.ast || obj.type) selectResult(obj, lineEl, state.tab === "trace" && !obj.trace ? "ast" : "trace");
     });
     lineEl._obj = obj;
+    return obj;
   }
 
   function selectResult(obj, lineEl, tab){
@@ -428,7 +466,11 @@
       var line = addLine(obj.kind, obj.text || obj.term);
       if (obj.kind === "step" && obj.term) line.querySelector(".body").textContent = obj.term;
       if (obj.kind === "define") refreshEnv();
-      if (obj.kind === "term" || obj.kind === "step") addActions(line, obj, source);
+      if (obj.kind === "term"){ setManual(true, obj.term); }
+      if (obj.kind === "term" || obj.kind === "step"){
+        var enriched = addActions(line, obj, source);
+        if (obj.kind === "step") selectResult(enriched, line, "trace");
+      }
       return;
     }
     if (obj.kind === "trace"){
@@ -523,8 +565,11 @@
   }
 
   function renderEnv(){
-    if (!state.envRows.length) return '<p class="empty">' + esc(t("envEmpty")) + '</p>';
-    var html = '<h3>' + esc(t("env")) + ' · ' + state.envRows.length + '</h3>';
+    var head = '<div class="panel-head"><h3>' + esc(t("env")) + ' · ' + state.envRows.length +
+               '</h3><button class="mini" type="button" data-reset="1">' + esc(t("reset")) +
+               '</button></div>';
+    if (!state.envRows.length) return head + '<p class="empty">' + esc(t("envEmpty")) + '</p>';
+    var html = head;
     html += '<p class="empty" style="margin-bottom:8px;font-style:normal">' + esc(t("envHint")) + '</p>';
     state.envRows.forEach(function(r){
       html += '<div class="env-row">';
@@ -599,6 +644,16 @@
     Array.prototype.forEach.call(panel.querySelectorAll("[data-del]"), function(el){
       el.addEventListener("click", function(){ execSilent(":del " + el.dataset.del).then(refreshEnv); });
     });
+    Array.prototype.forEach.call(panel.querySelectorAll("[data-reset]"), function(el){
+      el.addEventListener("click", function(){
+        if (!window.confirm(t("resetAsk"))) return;
+        execSilent(":reset").then(function(){
+          setManual(false);
+          refreshEnv();
+          saveLocal();
+        });
+      });
+    });
   }
 
   /* ---------------------------------------------------------------- session */
@@ -669,20 +724,36 @@
   }
 
   /* ------------------------------------------------------------------ exec */
+  function setManual(on, term){
+    state.manual = !!on;
+    if (term != null) state.manualTerm = term;
+    if (!on) state.manualTerm = "";
+    $("m-begin").disabled = state.manual;
+    $("m-step").disabled = !state.manual;
+    $("m-run").disabled = !state.manual;
+    $("m-end").disabled = !state.manual;
+    $("m-term").textContent = state.manual ? state.manualTerm : "";
+    $("m-term").title = state.manual ? state.manualTerm : "";
+  }
+
   async function exec(line, opts){
     opts = opts || {};
     if (!opts.silent) echoPrompt(line);
     var trimmed = line.trim();
-    if (!trimmed) { scrollDown(); return; }
+    if (!trimmed) { scrollDown(); return []; }
 
     if (trimmed === ":clear" || trimmed === "clear" || trimmed === ":cls"){
-      clearAll(); return;
+      clearAll(); return [];
     }
 
     if (opts.record !== false) state.codeLines.push(line);
 
     var outputs = await evalLine(line, opts.silent);
     outputs.forEach(function(o){ renderOutput(o, line, opts.silent); });
+
+    if (/^:end\b/.test(trimmed)) setManual(false);
+    if (/^:reset\b/.test(trimmed)){ setManual(false); await refreshEnv(); }
+    if (/^:del\b/.test(trimmed)) await refreshEnv();
 
     var last = outputs.filter(function(o){ return o.kind === "result" || o.kind === "warn"; }).pop();
     if (last){
@@ -695,6 +766,7 @@
     }
     if (!opts.silent) scrollDown();
     saveLocal();
+    return outputs;
   }
 
   /* ------------------------------------------------------------------- ac */
@@ -810,6 +882,7 @@
     state.selected = null;
     state.envRows = [];
     state.session = null;
+    setManual(false);
     newSession().then(function(){
       addLine("info", t("welcome"));
       renderPanel();
@@ -850,16 +923,45 @@
     });
   });
 
-  $("st-steps").addEventListener("click", function(){
-    var v = prompt("step limit / 步数上限", $("st-steps").textContent);
-    if (v == null) return;
-    execSilent(":steps " + String(v).trim()).then(function(outs){
+  $("st-limit").addEventListener("change", function(){
+    var v = parseInt(this.value, 10);
+    if (!(v > 0)){ this.value = state.limit; return; }
+    state.limit = v;
+    execSilent(":steps " + v).then(function(outs){
       outs.forEach(function(o){
-        if (o.kind === "info"){ addLine("info", o.text); $("st-steps").textContent = String(v).trim(); }
-        else addLine("fail", o.text || "");
+        if (o.kind === "info") addLine("info", o.text);
+        else if (o.kind) addLine(o.kind, o.text || "");
       });
       saveLocal();
     });
+  });
+
+  // 手动归约 / manual reduction
+  $("m-begin").addEventListener("click", async function(){
+    var src = cmd.value.trim();
+    if (!src){
+      var rev = state.codeLines.slice().reverse();
+      for (var i = 0; i < rev.length; i++){
+        if (rev[i].trim() && rev[i].trim()[0] !== ":"){ src = rev[i].trim(); break; }
+      }
+    }
+    if (!src){ toast(t("manualEmpty")); cmd.focus(); return; }
+    cmd.value = ""; cmd.style.height = "auto";
+    var outs = await exec(":begin " + src);
+    if (outs && outs.some(function(o){ return o.kind === "term"; })) setManual(true, src);
+  });
+  $("m-step").addEventListener("click", function(){
+    if (state.manual) exec(":step");
+  });
+  $("m-run").addEventListener("click", async function(){
+    if (!state.manual) return;
+    await exec(":run");
+    setManual(false);
+  });
+  $("m-end").addEventListener("click", async function(){
+    if (!state.manual) return;
+    await exec(":end");
+    setManual(false);
   });
 
   $("share").addEventListener("click", function(){
@@ -943,6 +1045,11 @@
     $("clear").textContent = t("clear");
     $("theme-toggle").textContent = state.theme === "dark" ? t("light") : t("dark");
     $("st-steps-label").textContent = t("steps");
+    $("m-label").textContent = t("manual");
+    $("m-begin").textContent = t("begin");
+    $("m-step").textContent = t("stepB");
+    $("m-run").textContent = t("runB");
+    $("m-end").textContent = t("endB");
     renderExamples();
   }
 
@@ -952,6 +1059,7 @@
     if (saved){
       state.lang = saved.lang || "both";
       state.theme = saved.theme || "light";
+      state.limit = saved.limit || 10000;
       $("strategy").value = saved.strategy || "applicative";
       if (Array.isArray(saved.code)) state.codeLines = saved.code;
     }
@@ -961,6 +1069,7 @@
     applyTheme(state.theme);
     $("lang").value = state.lang;
     $("st-strategy").textContent = $("strategy").value;
+    $("st-limit").value = state.limit;
     applyStaticTexts();
     loadPrelude();
 
@@ -985,6 +1094,13 @@
     }
 
     await refreshEnv();
+    var stepsLine = state.codeLines.filter(function(l){ return /^:steps\s+\d+/.test(l.trim()); }).pop();
+    if (stepsLine){
+      state.limit = parseInt(stepsLine.trim().split(/\s+/)[1], 10) || state.limit;
+      $("st-limit").value = state.limit;
+    } else {
+      await evalLine(":steps " + state.limit, true);
+    }
     if ($("strategy").value !== "applicative") execSilent(":strategy " + $("strategy").value);
     renderPanel();
     cmd.focus();
