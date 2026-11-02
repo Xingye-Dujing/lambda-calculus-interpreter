@@ -1,0 +1,2 @@
+# 截图工具依赖 / screenshot tool requirements
+websocket-client>=1.6
