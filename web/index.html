@@ -1366,9 +1366,8 @@
       $("strategy").value = saved.strategy || "applicative";
       if (Array.isArray(saved.code)) state.codeLines = saved.code;
     }
-    if (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches && !saved){
-      state.theme = "dark";
-    }
+    // 首次访问默认浅色；之后沿用用户保存的主题。
+    // First visit defaults to light; later visits keep the saved theme.
     applyTheme(state.theme);
     $("lang").value = state.lang;
     $("st-strategy").textContent = $("strategy").value;
