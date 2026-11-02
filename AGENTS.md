@@ -47,6 +47,11 @@ Chinese/English**.
 - `index.html` uses `<base href="./">` so it works at `/` and behind the
   production `/lambda/` prefix (Caddy `handle_path` strips it). Fonts are served
   by Flask at `/fonts/<file>`.
+- Every `Command` has a UI entry: manual reduction controls (`:begin`/`:step`/
+  `:run`/`:end`), the step-limit input (`:steps`), Env **load** (`:load`) and
+  **reset** (`:reset`). Keep it that way when adding commands.
+- `:load` is confined to `INTERP_DIR` by default (`LAMBDA_LOAD_ROOT=*` disables
+  the check); `web/app.py` rejects escaping paths with 400.
 - `--batch` sets stdin/stdout/stderr to UTF-8, which removes the old Windows
   `chcp` and `λ`→`\` workarounds. Keep the UTF-8 setup when changing the
   subprocess call; send bytes (not `text=True`) so Python does not translate

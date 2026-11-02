@@ -100,6 +100,8 @@ build.bat       # Windows
 - 接口：`GET /api/prelude`、`POST /api/session`、`POST /api/eval`
   （请求体 `{"session": "...", "line": "..."}`；旧的 `{"code": "..."}` 仍可用）。
   返回 408 表示计算超时。
+- `:load` 默认只允许解释器目录内的文件；环境面板的“加载”按钮会提示输入相对
+  路径。设置 `LAMBDA_LOAD_ROOT=*` 可放开限制（仅建议本地使用）。
 - 解释器查找顺序：`$LAMBDA_INTERP_BIN` → `$LAMBDA_INTERP_DIR/extension[.exe]`
   → `<仓库根目录>/extension[.exe]` → `/opt/lambda-calculus-interpreter/extension`。
 - 页面使用 `<base href="./">`，本地 `/` 与线上 `/lambda/` 前缀下都能工作。

@@ -129,6 +129,9 @@ replayed on every keystroke.
 - `GET /api/prelude`, `POST /api/session`, `POST /api/eval` with
   `{"session": "...", "line": "..."}`; the legacy `{"code": "..."}` form still
   works. A 408 response means the term timed out.
+- `:load` is confined to the interpreter directory by default; the Env panel's
+  **Load** button prompts for such a relative path. Set `LAMBDA_LOAD_ROOT=*` to
+  allow any path (local use only).
 - Interpreter lookup: `$LAMBDA_INTERP_BIN`, `$LAMBDA_INTERP_DIR/extension[.exe]`,
   `<repo>/extension[.exe]`, `/opt/lambda-calculus-interpreter/extension`.
 - `<base href="./">` keeps it working at `/` and behind the `/lambda/` prefix.
