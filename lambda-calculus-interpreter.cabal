@@ -24,7 +24,7 @@ executable main
                   , directory
                   , haskeline
   default-language: Haskell2010
-  ghc-options:      -O2 -threaded -rtsopts
+  ghc-options:      -O2 -Wall -threaded -rtsopts
 
 executable extension
   main-is:          extension.hs
@@ -34,4 +34,4 @@ executable extension
                   , directory
                   , haskeline
   default-language: Haskell2010
-  ghc-options:      -O2 -threaded -rtsopts
+  ghc-options:      -O2 -Wall -threaded -rtsopts

@@ -1,4 +1,6 @@
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE BangPatterns #-}
 
 -- ---------------------------------------------------------------------------
 -- 最小 λ 演算解释器 / Minimal lambda calculus interpreter
@@ -115,44 +117,46 @@ betaStep x body arg =
       note  = "β 归约 β-reduction: (λ" ++ x ++ ". …) " ++ shorten 42 (pretty arg)
   in Reduction note after
 
+-- 四种策略由四个开关描述，避免复制四份遍历
+-- One traversal driven by four flags instead of four copies.
+data Order = Order
+  { underLambda :: Bool
+  , redexFirst  :: Bool
+  , argsToValue :: Bool
+  , argsIfLam   :: Bool
+  }
+
+orderOf :: Strategy -> Order
+orderOf Applicative = Order True  False False False
+orderOf Normal      = Order True  True  False False
+orderOf CallByName  = Order False True  False False
+orderOf CallByValue = Order False False True  True
+
 stepOnce :: Strategy -> Expr -> Maybe StepOut
-stepOnce Applicative = go
+stepOnce strat = go
   where
-    go (Var _) = Nothing
-    go (Lam x b) = do s <- go b; return s { soWhole = Lam x (soWhole s) }
-    go (App f a) =
-      case go f of
-        Just s  -> Just s { soWhole = App (soWhole s) a }
-        Nothing -> case go a of
-          Just s  -> Just s { soWhole = App f (soWhole s) }
-          Nothing -> case f of
-            Lam x b -> let r = betaStep x b a in Just (StepOut (redTerm r) r)
-            _       -> Nothing
-stepOnce Normal = go
-  where
-    go (App (Lam x b) a) = let r = betaStep x b a in Just (StepOut (redTerm r) r)
-    go (App f a) =
-      case go f of
-        Just s  -> Just s { soWhole = App (soWhole s) a }
-        Nothing -> fmap (\s -> s { soWhole = App f (soWhole s) }) (go a)
-    go (Lam x b) = do s <- go b; return s { soWhole = Lam x (soWhole s) }
+    Order{..} = orderOf strat
+
+    go (App f a)
+      | redexFirst, Lam x b <- f = contract x b a
+      | otherwise =
+          case go f of
+            Just s -> Just s { soWhole = App (soWhole s) a }
+            Nothing
+              | argsIfLam, not (isLam f) -> Nothing
+              | Just s <- go a -> Just s { soWhole = App f (soWhole s) }
+              | Lam x b <- f, not argsToValue || isValue a -> contract x b a
+              | otherwise -> Nothing
+    go (Lam x b)
+      | underLambda = do
+          s <- go b
+          return s { soWhole = Lam x (soWhole s) }
+      | otherwise = Nothing
     go _ = Nothing
-stepOnce CallByName = go
-  where
-    go (App (Lam x b) a) = let r = betaStep x b a in Just (StepOut (redTerm r) r)
-    go (App f a) =
-      case go f of
-        Just s  -> Just s { soWhole = App (soWhole s) a }
-        Nothing -> fmap (\s -> s { soWhole = App f (soWhole s) }) (go a)
-    go _ = Nothing
-stepOnce CallByValue = go
-  where
-    go (App f a) =
-      case f of
-        Lam x b | isValue a -> let r = betaStep x b a in Just (StepOut (redTerm r) r)
-        Lam _ _             -> fmap (\s -> s { soWhole = App f (soWhole s) }) (go a)
-        _                   -> fmap (\s -> s { soWhole = App (soWhole s) a }) (go f)
-    go _ = Nothing
+
+    contract x b a = let r = betaStep x b a in Just (StepOut (redTerm r) r)
+    isLam (Lam _ _)   = True
+    isLam _           = False
     isValue (Lam _ _) = True
     isValue (Var _)   = True
     isValue _         = False
@@ -211,7 +215,7 @@ defaultLimit = 10000
 evalUntil :: Bool -> Bool -> Int -> Strategy -> (Expr -> Bool) -> Expr -> EvalResult
 evalUntil eta keepTrace limit strat done e0 = loop 1 e0 []
   where
-    loop n e acc
+    loop !n e !acc
       | n > limit = EvalResult e (reverse acc) (n - 1) True
       | done e    = EvalResult e (reverse acc) (n - 1) False
       | otherwise = case stepFor eta strat e of
@@ -264,14 +268,14 @@ valueHint e = case (isChurchNumeral e, isChurchBoolean e) of
 -- 打印 Printing
 -- ---------------------------------------------------------------------------
 pretty :: Expr -> String
-pretty = go 0
+pretty e = go 0 e ""
   where
-    go :: Int -> Expr -> String
-    go _ (Var x) = x
-    go p (Lam x b) = let s = "λ" ++ x ++ " → " ++ go 0 b
-                     in if p > 0 then "(" ++ s ++ ")" else s
-    go p (App f a) = let s = go 1 f ++ " " ++ go 2 a
-                     in if p > 1 then "(" ++ s ++ ")" else s
+    go :: Int -> Expr -> ShowS
+    go _ (Var x)   = showString x
+    go p (Lam x b) = showParen (p > 0)
+      (showString "λ" . showString x . showString " → " . go 0 b)
+    go p (App f a) = showParen (p > 1)
+      (go 1 f . showChar ' ' . go 2 a)
 
 shorten :: Int -> String -> String
 shorten n s
@@ -288,11 +292,14 @@ fork _ _ []            = []
 fork first rest (l:ls) = (first ++ l) : map (rest ++) ls
 
 deBruijnView :: Expr -> String
-deBruijnView = go []
+deBruijnView e = go [] e ""
   where
-    go bound (Var x) = maybe x (('#' :) . show) (elemIndex x bound)
-    go bound (Lam x b) = "λ." ++ go (x : bound) b
-    go bound (App f a) = "(" ++ go bound f ++ " " ++ go bound a ++ ")"
+    go bound (Var x) = case elemIndex x bound of
+      Just i  -> showChar '#' . shows i
+      Nothing -> showString x
+    go bound (Lam x b) = showString "λ." . go (x : bound) b
+    go bound (App f a) =
+      showChar '(' . go bound f . showChar ' ' . go bound a . showChar ')'
 
 -- ---------------------------------------------------------------------------
 -- 解析器 Parser
@@ -620,12 +627,12 @@ parseArgs = go Both False False
     go lang _ version ("-h":xs)        = go lang True version xs
     go lang help _ ("--version":xs)    = go lang help True xs
     go lang help _ ("-v":xs)           = go lang help True xs
-    go lang help version ("--lang":xs) = case xs of
+    go _ help version ("--lang":xs) = case xs of
       (v:rest) -> case parseLang v of
         Just l  -> go l help version rest
         Nothing -> Left ("未知语言 / unknown language: " ++ v)
       [] -> Left "缺少 --lang 的值 / missing value for --lang"
-    go lang help version (x:xs)
+    go _ help version (x:xs)
       | Just v <- stripPrefix "--lang=" x =
           case parseLang v of
             Just l  -> go l help version xs

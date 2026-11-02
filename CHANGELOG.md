@@ -50,6 +50,21 @@
 - `--help` is UTF-8 when redirected on Windows.
 - The favicon 404 is gone.
 
+### Performance
+
+- Pretty printers (`pretty`, `sourceExpr`, `deBruijnView`, `prettyTy`) now build
+  `ShowS` functions, removing the quadratic string concatenation on deep terms.
+  A 1,200-step identity chain dropped from ~26 s to under a second locally.
+- Trace JSON and its truncation flag are built in one pass, so `pretty` runs
+  once per step instead of twice.
+- Redex listing collects path, subterm and rule in one traversal and no longer
+  performs a substitution just to label a rule.
+- `evalUntil` uses strict step counters/accumulators (`BangPatterns`).
+- `main` uses the same four-flag `Order` table as `extension` instead of four
+  hand-written `stepOnce` copies.
+- `.lam` continuation assembly is linear instead of repeated `++`.
+- Builds and Cabal now pass `-Wall`; both files are warning-free.
+
 ### Changed
 
 - The web language switch replays history in the same interpreter process

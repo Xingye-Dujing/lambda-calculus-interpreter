@@ -1,6 +1,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE BangPatterns #-}
 
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
@@ -280,7 +281,7 @@ defaultLimit = 10000
 evalUntil :: Bool -> Bool -> Int -> Strategy -> (Expr -> Bool) -> Expr -> EvalResult
 evalUntil eta keepTrace limit strat done e0 = loop 1 e0 []
   where
-    loop n e acc
+    loop !n e !acc
       | n > limit = EvalResult e (reverse acc) (n - 1) True
       | done e    = EvalResult e (reverse acc) (n - 1) False
       | otherwise = case stepFor eta strat e of
@@ -295,12 +296,6 @@ evalUntil eta keepTrace limit strat done e0 = loop 1 e0 []
 evalWith :: Bool -> Bool -> Int -> Strategy -> Expr -> EvalResult
 evalWith eta keepTrace limit strat =
   evalUntil eta keepTrace limit strat (const False)
-
-eval :: Bool -> Int -> Strategy -> Expr -> EvalResult
-eval = evalWith False
-
-evalTrace :: Int -> Strategy -> Expr -> EvalResult
-evalTrace = evalWith False True
 
 evalTraceWith :: Bool -> Int -> Strategy -> Expr -> EvalResult
 evalTraceWith eta = evalWith eta True
@@ -324,20 +319,24 @@ redexAtRoot (App (Lam x b) a) =
   let r = betaStep x b a in Just (StepOut (redTerm r) r)
 redexAtRoot _ = Nothing
 
-allRedexPaths :: Expr -> [Path]
-allRedexPaths e =
-  (if isRedex e then [[]] else []) ++
-  case e of
-    App f a   -> map (0 :) (allRedexPaths f) ++ map (1 :) (allRedexPaths a)
-    Lam _ b   -> map (0 :) (allRedexPaths b)
-    Var _     -> []
+-- 一次遍历同时收集路径、子项和规则；规则用 alphaNeeded 判断，避免为了
+-- 显示而真的做一次替换
+-- One traversal collects path, subterm and rule. The rule uses alphaNeeded,
+-- so no substitution is performed just to display the list.
+data Redex = Redex Path Expr String
 
-subtermAt :: Path -> Expr -> Maybe Expr
-subtermAt [] e            = Just e
-subtermAt (0:ps) (App f _) = subtermAt ps f
-subtermAt (1:ps) (App _ a) = subtermAt ps a
-subtermAt (0:ps) (Lam _ b) = subtermAt ps b
-subtermAt _ _             = Nothing
+redexInfos :: Expr -> [Redex]
+redexInfos = go []
+  where
+    go p e = here ++ children
+      where
+        here = case e of
+          App (Lam x b) a -> [Redex p e (if alphaNeeded x b a then "β+α" else "β")]
+          _               -> []
+        children = case e of
+          App f a -> go (p ++ [0]) f ++ go (p ++ [1]) a
+          Lam _ b -> go (p ++ [0]) b
+          _       -> []
 
 stepAt :: Path -> Expr -> Maybe StepOut
 stepAt [] e = redexAtRoot e
@@ -351,12 +350,18 @@ stepAt _ _ = Nothing
 
 stepAtIndex :: Int -> Expr -> Maybe StepOut
 stepAtIndex i e =
-  case drop (max 0 (i - 1)) (allRedexPaths e) of
-    (p:_) -> stepAt p e
+  case drop (max 0 (i - 1)) (redexInfos e) of
+    (Redex p _ _ : _) -> stepAt p e
     []    -> Nothing
 
 redexCount :: Expr -> Int
-redexCount = length . allRedexPaths
+redexCount = go
+  where
+    go e = (if isRedex e then 1 else 0) +
+           case e of
+             App f a -> go f + go a
+             Lam _ b -> go b
+             Var _   -> 0
 
 pathText :: Path -> String
 pathText [] = "root"
@@ -445,21 +450,18 @@ valueHintMsg e = case (isChurchNumeral e, isChurchBoolean e, isChurchPair e) of
          Just n  -> ("  (" ++ n ++ " 组合子)", "  (" ++ n ++ " combinator)")
          Nothing -> ("", "")
 
-valueHint :: Lang -> Expr -> String
-valueHint lang = renderMsg lang . valueHintMsg
-
 -- ---------------------------------------------------------------------------
 -- 美观打印 Pretty Printing
 -- ---------------------------------------------------------------------------
 pretty :: Expr -> String
-pretty = go 0
+pretty e = go 0 e ""
   where
-    go :: Int -> Expr -> String
-    go _ (Var x) = x
-    go p (Lam x body) = let s = "λ" ++ x ++ " → " ++ go 0 body
-                        in if p > 0 then "(" ++ s ++ ")" else s
-    go p (App f a) = let s = go 1 f ++ " " ++ go 2 a
-                     in if p > 1 then "(" ++ s ++ ")" else s
+    go :: Int -> Expr -> ShowS
+    go _ (Var x)      = showString x
+    go p (Lam x body) = showParen (p > 0)
+      (showString "λ" . showString x . showString " → " . go 0 body)
+    go p (App f a)    = showParen (p > 1)
+      (go 1 f . showChar ' ' . go 2 a)
 
 shorten :: Int -> String -> String
 shorten n s
@@ -480,11 +482,14 @@ fork first rest (l:ls) = (first ++ l) : map (rest ++) ls
 
 -- de Bruijn 索引视图
 deBruijnView :: Expr -> String
-deBruijnView = go []
+deBruijnView e = go [] e ""
   where
-    go bound (Var x) = maybe x (('#' :) . show) (elemIndex x bound)
-    go bound (Lam x b) = "λ." ++ go (x : bound) b
-    go bound (App f a) = "(" ++ go bound f ++ " " ++ go bound a ++ ")"
+    go bound (Var x) = case elemIndex x bound of
+      Just i  -> showChar '#' . shows i
+      Nothing -> showString x
+    go bound (Lam x b) = showString "λ." . go (x : bound) b
+    go bound (App f a) =
+      showChar '(' . go bound f . showChar ' ' . go bound a . showChar ')'
 
 -- ---------------------------------------------------------------------------
 -- 解析器 Parser
@@ -844,13 +849,12 @@ parseOnOff raw = case map lower (trim raw) of
 data Ty = TVar String | TArr Ty Ty deriving (Eq)
 
 prettyTy :: Ty -> String
-prettyTy = go 0
+prettyTy t = go 0 t ""
   where
-    go :: Int -> Ty -> String
-    go _ (TVar t) = t
-    go p (TArr a b) =
-      let s = go 1 a ++ " → " ++ go 0 b
-      in if p > 0 then "(" ++ s ++ ")" else s
+    go :: Int -> Ty -> ShowS
+    go _ (TVar v)   = showString v
+    go p (TArr a b) = showParen (p > 0)
+      (go 1 a . showString " → " . go 0 b)
 
 normalizeNames :: Ty -> Ty
 normalizeNames t = fst (go t Map.empty)
@@ -1148,22 +1152,29 @@ traceClipped steps = any longStep steps
   where
     longStep s = max (length (pretty (tsBefore s))) (length (pretty (tsAfter s))) > 300
 
-traceField :: [TraceStep] -> (String, J)
-traceField steps = "trace" .= JArr (map one (take traceLimit steps))
-  where
-    one s = JObj
-      [ "n"      .= JNum (tsIndex s)
-      , "rule"   .= JStr (tsRule s)
-      , "note"   .= JStr (tsNote s)
-      , "before" .= JStr (shorten 300 (pretty (tsBefore s)))
-      , "after"  .= JStr (shorten 300 (pretty (tsAfter s))) ]
-
-traceMetaField :: Int -> [TraceStep] -> [(String, J)]
-traceMetaField total steps
+-- 一次遍历同时生成轨迹 JSON 与截断标记，避免重复 pretty
+-- Build the trace JSON and its clipped flag in one pass (pretty is expensive).
+traceFields :: Int -> [TraceStep] -> [(String, J)]
+traceFields total steps
   | null steps = []
   | otherwise =
-      [ "traceShown"     .= JNum (length steps)
-      , "traceTruncated" .= JBool (total > length steps || traceClipped steps) ]
+      [ "trace"          .= JArr (map fst rendered)
+      , "traceShown"     .= JNum (length shown)
+      , "traceTruncated" .= JBool (total > length shown || any snd rendered) ]
+  where
+    shown = take traceLimit steps
+    rendered = map one shown
+    one s =
+      let before = pretty (tsBefore s)
+          after  = pretty (tsAfter s)
+          long   = max (length before) (length after) > 300
+      in ( JObj
+             [ "n"      .= JNum (tsIndex s)
+             , "rule"   .= JStr (tsRule s)
+             , "note"   .= JStr (tsNote s)
+             , "before" .= JStr (shorten 300 before)
+             , "after"  .= JStr (shorten 300 after) ]
+         , long )
 
 astField :: Expr -> (String, J)
 astField e = "ast" .= JArr (map JStr (treeLines e))
@@ -1202,18 +1213,15 @@ astTreeFields e
 -- 归约位置列表 / list of β-redexes (capped so huge terms stay bounded)
 redexFields :: Expr -> [(String, J)]
 redexFields e =
-  [ "redexes" .= JArr (map one (zip [1..] (take 200 paths)))
-  , "redexCount" .= JNum (length paths) ]
+  [ "redexes" .= JArr (map one (zip [1..] (take 200 infos)))
+  , "redexCount" .= JNum (length infos) ]
   where
-    paths = allRedexPaths e
-    one (i, p) =
-      let sub  = fromMaybe e (subtermAt p e)
-          rule = maybe "β" (redRule . soRed) (stepAt p e)
-      in JObj
-        [ "i"    .= JNum i
-        , "path" .= JStr (pathText p)
-        , "term" .= JStr (shorten 200 (pretty sub))
-        , "rule" .= JStr rule ]
+    infos = redexInfos e
+    one (i, Redex p sub rule) = JObj
+      [ "i"    .= JNum i
+      , "path" .= JStr (pathText p)
+      , "term" .= JStr (shorten 200 (pretty sub))
+      , "rule" .= JStr rule ]
 
 -- ---------------------------------------------------------------------------
 -- 表格打印 Print Table
@@ -1306,14 +1314,17 @@ logicalLines content = go (zip [1..] (lines content))
     go ((n, l):rest)
       | null (trim l) || isCommentLine l = go rest
       | otherwise =
-          let (joined, rest') = gather (trim l) (parenDelta l) rest
-          in (n, joined) : go rest'
-    gather acc depth rest@((_, l):more)
-      | isCommentLine l = gather acc depth more
-      | depth > 0 || (startsIndented l && '=' `elem` acc) =
-          gather (acc ++ " " ++ trim l) (depth + parenDelta l) more
-      | otherwise = (acc, rest)
-    gather acc _ [] = (acc, [])
+          let first = trim l
+              (parts, rest') = gatherLines [first] ('=' `elem` first) (parenDelta l) rest
+          in (n, unwords (reverse parts)) : go rest'
+    gatherLines parts hasEq depth rest@((_, l):more)
+      | isCommentLine l = gatherLines parts hasEq depth more
+      | depth > 0 || (startsIndented l && hasEq) =
+          let part = trim l
+          in gatherLines (part : parts) (hasEq || '=' `elem` part)
+                        (depth + parenDelta l) more
+      | otherwise = (parts, rest)
+    gatherLines parts _ _ [] = (parts, [])
     startsIndented (c:_) = isSpace c
     startsIndented []    = False
 
@@ -1357,16 +1368,14 @@ applyLoadOutcome st out = st
 -- 可被解析器重新读取的源语法（与 pretty 的 → 不同）
 -- Source syntax that the parser can read back (unlike pretty's →).
 sourceExpr :: Expr -> String
-sourceExpr = go 0
+sourceExpr e = go 0 e ""
   where
-    go :: Int -> Expr -> String
-    go _ (Var x) = x
-    go p (Lam x b) =
-      let s = "\\" ++ x ++ "." ++ go 0 b
-      in if p > 0 then "(" ++ s ++ ")" else s
-    go p (App f a) =
-      let s = go 1 f ++ " " ++ go 2 a
-      in if p > 1 then "(" ++ s ++ ")" else s
+    go :: Int -> Expr -> ShowS
+    go _ (Var x)      = showString x
+    go p (Lam x b)    = showParen (p > 0)
+      (showChar '\\' . showString x . showChar '.' . go 0 b)
+    go p (App f a)    = showParen (p > 1)
+      (go 1 f . showChar ' ' . go 2 a)
 
 -- 保存时把 Y 编码还原为 rec，避免写出一整段不动点组合子
 -- Restore a Y-encoded definition to `rec` form when saving.
@@ -1400,26 +1409,27 @@ prettyDef name e = case e of
 emitEvalResult :: ReplState -> EvalResult -> Maybe Expr -> IO ()
 emitEvalResult st res mExpr = do
   let final   = erFinal res
+      termTxt = pretty final
       hintMsg = valueHintMsg final
       steps   = erCount res
       stepZh  = if steps > 0 then "  (" ++ show steps ++ " 步)" else ""
       stepEn  = if steps > 0 then "  (" ++ show steps ++ " steps)" else ""
-      textZh  = pretty final ++ stepZh ++ fst hintMsg
-      textEn  = pretty final ++ stepEn ++ snd hintMsg
+      textZh  = termTxt ++ stepZh ++ fst hintMsg
+      textEn  = termTxt ++ stepEn ++ snd hintMsg
       mtyMsg  = case mExpr of
         Just expr -> either (const ("", "")) prettySchemeMsg
                            (inferScheme (rsTypeEnv st) expr)
         Nothing   -> ("", "")
       trail   = erSteps res
       fields  = [ "steps"    .= JNum steps
-                , "term"     .= JStr (pretty final)
+                , "term"     .= JStr termTxt
                 , "limitHit" .= JBool (erLimitHit res)
                 , "hint"     .= JStr (renderMsg (rsLang st) hintMsg)
                 , "hintZh"   .= JStr (fst hintMsg)
                 , "hintEn"   .= JStr (snd hintMsg)
                 , "strategy" .= JStr (strategyId (rsStrategy st))
                 , "eta"      .= JBool (rsEta st)
-                , astField final
+                , "ast"      .= JArr (map JStr (treeLines final))
                 , "db"       .= JStr (deBruijnView final)
                 ]
                 ++ redexFields final
@@ -1428,8 +1438,7 @@ emitEvalResult st res mExpr = do
                       else [ "type"   .= JStr (renderMsg (rsLang st) mtyMsg)
                            , "typeZh" .= JStr (fst mtyMsg)
                            , "typeEn" .= JStr (snd mtyMsg) ])
-                ++ (if null trail then []
-                      else traceField trail : traceMetaField (erCount res) trail)
+                ++ traceFields (erCount res) trail
   if erLimitHit res
     then emitL st "warn"
           (textZh ++ " —— 已达到 " ++ show (rsLimit st) ++ " 步上限，归约未完成")
@@ -1569,9 +1578,8 @@ runCommand st (Trace expr) = do
                , "steps"    .= JNum (erCount res)
                , "limitHit" .= JBool (erLimitHit res)
                , "eta"      .= JBool (rsEta st)
-               , "strategy" .= JStr (strategyId (rsStrategy st))
-               , traceField trail ]
-               ++ traceMetaField (erCount res) trail
+               , "strategy" .= JStr (strategyId (rsStrategy st)) ]
+               ++ traceFields (erCount res) trail
   if rsJson st
     then emit st "trace" "" fields
     else do
@@ -1776,9 +1784,6 @@ prettySchemeMsg (Forall vars t0) =
   let base = prettyTy (normalizeNames t0)
       poly = if null vars then ("", "") else ("（多态）", " (polymorphic)")
   in (base ++ fst poly, base ++ snd poly)
-
-prettyScheme :: Lang -> Scheme -> String
-prettyScheme lang = renderMsg lang . prettySchemeMsg
 
 -- ---------------------------------------------------------------------------
 -- 帮助信息 Help Message
