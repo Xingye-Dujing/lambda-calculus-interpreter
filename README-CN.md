@@ -160,6 +160,7 @@ cabal run extension -- --help
 - **结构**面板支持可折叠树与 **SVG 图**两种视图。
 - 结果行操作：复制、插入、直接定义为新名字、把轨迹导出为 Markdown。
 - 策略选择、步数上限、分享链接（服务端短 id 或完整 `#state=`）、`.lam` 导入导出、深浅色主题、中/英/双语切换。
+- **窄屏适配**：宽度不足 900px 时改为单列、整页滚动，终端区保留自身高度上限，标签栏吸顶；不足 600px 时按钮放大到 32px 以上、输入框用 16px 字号（避免 iOS 聚焦自动放大）、标签栏等分整行，触屏上结果行操作常显。
 - 切换语言通过 `POST /api/session/<sid>/lang` 只更新解释器语言，再由前端用服务端返回的 `textZh`/`textEn` 本地重渲染，不重放历史也不重建解释器。
 - 接口：`GET /api/prelude`、`GET /api/health`、`POST /api/share`、`GET /api/share/<id>`、`POST /api/session`、`POST /api/eval`（`{"session", "line"}`）、`POST /api/session/<sid>/lang`、`DELETE /api/session/<sid>`；旧的 `{"code": "..."}` 仍可用。返回 408 表示计算超时；410 表示会话过期，前端应回放历史。
 - `:load` 默认只允许解释器目录内的文件；环境面板的“加载”按钮会提示输入相对路径。设置 `LAMBDA_LOAD_ROOT=*` 可放开限制（仅建议本地使用）。

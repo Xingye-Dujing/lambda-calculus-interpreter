@@ -201,6 +201,10 @@ session and speaks the `--batch --json` protocol.
 - Strategy selector, step-limit control, share links (server-side short ids or
   a full `#state=` payload), `.lam` import/export, light/dark theme, and a
   Chinese/English/bilingual switch.
+- **Small screens**: below 900px the layout becomes one scrolling column with a
+  sticky tab bar and a capped terminal area; below 600px controls grow to 32px+
+  targets, inputs use 16px so iOS does not zoom on focus, the tab bar divides the
+  row evenly, and result-row actions stay visible on touch.
 - Language switching uses `POST /api/session/<sid>/lang` and re-renders existing
   output locally from the server's `textZh`/`textEn` fields; it does not replay
   commands or start a new interpreter.

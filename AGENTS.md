@@ -76,6 +76,16 @@ Chinese/English**.
 - The desktop layout is a fixed `100vh` flex column: terminal and inspector share
   one row height, both scroll internally, and the page never scrolls. The AST
   view offers a collapsible `astTree` and an SVG graph, plus a text tree.
+- Small screens: the responsive rules sit at the **end** of the stylesheet, since
+  `main`, `.term` and `.panel` carry base rules of equal specificity. Below
+  `900px` the page becomes one column that scrolls as a whole (`.term-out` keeps
+  its own `max-height`, `.panel` does not), the tab bar is sticky, and inline row
+  actions plus `.env-del` stay visible. Below `600px` controls get 32px+ touch
+  targets, `#cmd`/modal inputs use 16px so iOS does not zoom on focus, the tab
+  bar divides the width evenly, and `MatchMedia("(max-width:600px)")` swaps the
+  input placeholder for the short `placeholderShort` string. Narrow screens show
+  a one-time `narrowHint` toast pointing below the terminal. Only the CSS and
+  that hint are viewport-driven; everything else is orthogonal to the breakpoints.
 - The first visit defaults to the light theme; the toggle persists the choice in
   `localStorage` (the OS `prefers-color-scheme` is intentionally not consulted).
 - The **Guide** tab (`renderGuide`) opens when there is no saved state; keep its

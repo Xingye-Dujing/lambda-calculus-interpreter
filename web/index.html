@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <base href="./">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
 <title>Lambda 演算计算器 · Lambda Calculus</title>
@@ -77,16 +77,6 @@
   .modal input:focus{border-color:var(--border-strong);}
   .modal .row{display:flex;justify-content:flex-end;gap:8px;}
   main{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1fr) 380px;gap:18px;align-items:stretch;}
-  @media (max-width:900px){
-    html,body{height:auto;overflow:auto;}
-    .app{height:auto;min-height:100%;overflow:visible;padding-bottom:28px;}
-    main{grid-template-columns:minmax(0,1fr);grid-auto-rows:auto;}
-    .term,.side{height:auto;}
-    .term-out{min-height:240px;max-height:50vh;}
-    .panel{max-height:60vh;}
-    footer{max-height:none;}
-    .helpers{flex-direction:column;align-items:stretch;gap:6px;}
-  }
   .term{display:flex;flex-direction:column;min-height:0;height:100%;background:transparent;border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;}
   .term-bar{flex:none;display:flex;align-items:center;gap:10px;padding:8px 14px;border-bottom:1px solid var(--border);}
   .term-title{font-family:var(--mono);font-size:10px;color:var(--faint);letter-spacing:.16em;text-transform:uppercase;}
@@ -234,6 +224,76 @@
   .player .play{width:30px;}
   .tools{display:flex;flex-wrap:wrap;gap:7px;}
   .tools .mini{padding:4px 9px;}
+
+  /* ------------------------------------------------ 平板 / 手机：单列、整页滚动
+     Tablet / phone: one column, the page itself scrolls.
+     放在所有组件规则之后，避免被同优先级的基础规则覆盖
+     Kept last so component rules of equal specificity cannot override it. */
+  @media (max-width:900px){
+    html,body{height:auto;overflow:auto;-webkit-text-size-adjust:100%;}
+    .app{height:auto;min-height:100vh;min-height:100dvh;max-width:none;overflow:visible;
+         padding:14px 14px calc(16px + env(safe-area-inset-bottom));}
+    header{gap:10px;padding-bottom:10px;margin-bottom:12px;}
+    main{grid-template-columns:minmax(0,1fr);grid-auto-rows:auto;gap:12px;}
+    .term,.side{height:auto;min-height:0;}
+    .side{overflow:visible;}
+    .term-body{padding:10px 12px 9px;}
+    .term-out{min-height:220px;max-height:min(52vh,430px);padding-right:2px;}
+    .panel{max-height:none;overflow:visible;padding:12px;}
+    .tabs{position:sticky;top:0;background:var(--bg);z-index:20;}
+    /* 触屏没有悬停，行内操作始终显示 / no hover on touch: keep inline actions visible */
+    .line .act,.env-del{opacity:1;}
+    footer{margin-top:14px;}
+    .helpers{flex-direction:column;align-items:stretch;gap:6px;}
+    .chips{width:100%;}
+    .hint{white-space:normal;line-height:1.55;}
+    .toast{bottom:calc(16px + env(safe-area-inset-bottom));}
+    /* 16px 起可避免 iOS 聚焦时自动放大 / 16px stops iOS from zooming on focus */
+    #cmd,.modal input{font-size:16px;}
+  }
+
+  /* ------------------------------------------------------------ 手机 / Phone */
+  @media (max-width:600px){
+    .app{padding:12px 12px calc(14px + env(safe-area-inset-bottom));}
+    header{flex-direction:column;align-items:stretch;}
+    h1{font-size:15px;line-height:1.45;letter-spacing:.02em;}
+    .sub{font-size:10.5px;line-height:1.5;}
+    .controls{gap:6px;}
+    button.ctl,.sel-btn{font-size:11.5px;padding:7px 9px;min-height:32px;}
+    .sel-btn{gap:7px;}
+    .term-bar{padding:7px 12px;}
+    .term-tools button{min-height:28px;padding:4px 10px;}
+    .term-out{font-size:13px;line-height:1.7;min-height:200px;max-height:min(48vh,380px);}
+    .term-line{font-size:15px;gap:7px;margin-top:8px;padding-top:9px;}
+    #cmd{font-size:16px;line-height:1.5;}
+    .ac{min-width:0;width:100%;max-height:40vh;}
+    .status{gap:10px;font-size:11px;}
+    .status input[type=number]{width:72px;font-size:12px;padding:3px 5px;}
+    .line-acts{gap:5px;}
+    .line .act{padding:2px 8px;min-height:24px;}
+    .manual-bar{font-size:11px;gap:6px;}
+    .mini{font-size:11px;padding:5px 11px;min-height:30px;}
+    .manual-bar .mterm{max-width:100%;}
+    .redex-btn{font-size:11px;padding:4px 9px;min-height:28px;}
+    .tab{flex:1 1 0;min-width:0;min-height:36px;padding:9px 2px 8px;}
+    .tab .en{font-size:8.5px;}
+    .player{gap:7px;}
+    .player button{width:34px;height:34px;font-size:13px;}
+    .player .play{width:38px;}
+    .steps-list .st{padding:6px 8px;font-size:11.5px;}
+    .env-del{min-height:26px;}
+    .chip{min-height:30px;padding:5px 10px;}
+    .modal{padding:14px;}
+    .modal input{font-size:16px;}
+    .sel-opt{padding:8px 10px;font-size:12.5px;}
+    .sel-menu{max-height:50vh;}
+  }
+
+  /* 触屏没有悬停：行内操作与环境删除按钮常显 / touch has no hover, so keep them visible */
+  @media (hover:none){
+    .line .act{opacity:1;min-height:24px;padding:2px 8px;}
+    .env-del{opacity:1;}
+  }
 </style>
 </head>
 <body>
@@ -380,6 +440,7 @@
     exportB: {zh:"导出", en:"Export"},
     importB: {zh:"导入", en:"Import"},
     placeholder:{zh:"输入表达式，回车执行", en:"type an expression, Enter to run"},
+    placeholderShort:{zh:"输入表达式", en:"expression"},
     manualEmpty:{zh:"先输入一个表达式，再点“开始”。", en:"Type an expression first, then press begin."},
     trace:   {zh:"轨迹", en:"trace"}, ast:{zh:"结构", en:"AST"}, type:{zh:"类型", en:"type"},
     welcome: {zh:"REPL 就绪。输入表达式后按 Enter 执行；右侧面板会显示归约轨迹、语法树与类型。", en:"REPL ready. Press Enter to run; the panel shows traces, AST and types."},
@@ -412,7 +473,9 @@
     redexNone:{zh:"已没有可归约位置。", en:"No redexes left."},
     traceCut:{zh:"轨迹较长，只显示前 500 步（长项已截断）。", en:"Long trace: only the first 500 steps are shown (long terms clipped)."},
     play:{zh:"播放", en:"play"}, pause:{zh:"暂停", en:"pause"},
-    shareState:{zh:"分享链接（含代码、策略、步数与主题）", en:"Share link includes code, strategy, limit and theme"}
+    shareState:{zh:"分享链接（含代码、策略、步数与主题）", en:"Share link includes code, strategy, limit and theme"},
+    narrowHint:{zh:"提示：手机屏幕上“轨迹 / 结构 / 类型”面板在终端下方，向下滚动即可看到。",
+                en:"Tip: on a phone the Trace/AST/Type panel sits below the terminal; scroll down to reach it."}
   };
 
   var state = {
@@ -444,6 +507,14 @@
   var $ = function(id){ return document.getElementById(id); };
   var out = $("out"), cmd = $("cmd"), ac = $("ac"), panel = $("panel");
   var root = document.documentElement;
+
+  // 手机屏幕上的提示语要短一些，否则输入框里只剩半句
+  // On a phone the longer hint gets clipped, so use a short one there.
+  var phoneQuery = window.matchMedia ? window.matchMedia("(max-width:600px)") : null;
+  function isPhone(){ return !!(phoneQuery && phoneQuery.matches); }
+  function applyPlaceholder(){
+    cmd.placeholder = t(isPhone() ? "placeholderShort" : "placeholder");
+  }
 
   function t(key, extra){
     var e = I18N[key] || {zh:key, en:key};
@@ -596,7 +667,17 @@
   }
 
   var selects = [];
+  var NARROW_HINT_KEY = "lambda.hint.narrow";
 
+  /* -------------------------------------------- narrow hint / 窄屏一次性提示 */
+  function showNarrowHint(){
+    if (!isPhone()) return;
+    var seen = false;
+    try { seen = localStorage.getItem(NARROW_HINT_KEY) === "1"; } catch(e){}
+    if (seen) return;
+    try { localStorage.setItem(NARROW_HINT_KEY, "1"); } catch(e){}
+    setTimeout(function(){ toast(t("narrowHint")); }, 800);
+  }
   /* --------------------------------------------------------------- storage / 存储 */
   var LS = "lambda.ui.v2";
   function saveLocal(){
@@ -1102,16 +1183,19 @@
       {h: ["3 · 手动归约", "3 · Step through"],
        b: ["写好表达式后点“开始”，下方会列出全部可归约位置：点任意一项按该 redex 归约，或用“单步”按策略走。",
            "Press Start; every redex is listed. Click one to contract it, or use Step to follow the strategy."]},
-      {h: ["4 · 定义与环境", "4 · Definitions"],
+      {h: ["4 · 结果与面板", "4 · Results and the panel"],
+       b: ["结果行可以复制、插入或定义为新名字；“轨迹/结构/类型”只在终端下方出现，手机上向下滚动即可看到。",
+           "Result rows can be copied, inserted or saved as a definition. Trace/AST/Type sit below the terminal: scroll down on a phone."]},
+      {h: ["5 · 定义与环境", "5 · Definitions"],
        b: ["用 id = \\x.x 定义；“环境”可插入、删除、加载 .lam、重置。",
            "Define with id = \\x.x; Env inserts, deletes, loads .lam and resets."]},
-      {h: ["5 · 检查与导出", "5 · Check and export"],
+      {h: ["6 · 检查与导出", "6 · Check and export"],
        b: ["用 :eq / :conv 判断等价，:int 解码邱奇数；结果行可复制、插入或直接定义为新名字。",
            "Use :eq / :conv for equivalence and :int to decode; output rows can be copied, inserted or saved as a definition."]},
-      {h: ["6 · 小贴士", "6 · Tips"],
+      {h: ["7 · 小贴士", "7 · Tips"],
        b: ["数字自动转 Church 编码；预定义含 PRED/SUB/PAIR/列表/Y；分享链接会带上策略、步数、快速模式与主题。",
            "Numbers become Church numerals; the prelude includes PRED/SUB/PAIR/lists/Y; share links keep strategy, limit, fast mode and theme."]},
-      {h: ["7 · 快速模式", "7 · Fast mode"],
+      {h: ["8 · 快速模式", "8 · Fast mode"],
        b: ["顶部“快速”开关使用共享正规化，适合 Church 算术；它不记录步数与轨迹，需要逐步归约时请关掉。",
            "The Fast toggle uses shared normalization, ideal for Church arithmetic; it records no steps or trace, so turn it off to step through."]}
     ];
@@ -1865,7 +1949,7 @@
     $("share").textContent = t("share");
     $("export").textContent = t("exportB");
     $("import").textContent = t("importB");
-    $("cmd").placeholder = t("placeholder");
+    applyPlaceholder();
     $("theme-toggle").textContent = state.theme === "dark" ? t("light") : t("dark");
     $("st-steps-label").textContent = t("steps");
     $("m-label").textContent = t("manual");
@@ -1939,6 +2023,12 @@
     renderPanel();
     if (!saved && !state.codeLines.length && !hash) switchTab("guide");
     cmd.focus();
+    showNarrowHint();
+  }
+
+  if (phoneQuery){
+    if (phoneQuery.addEventListener) phoneQuery.addEventListener("change", applyPlaceholder);
+    else if (phoneQuery.addListener) phoneQuery.addListener(applyPlaceholder);
   }
 
   boot();
