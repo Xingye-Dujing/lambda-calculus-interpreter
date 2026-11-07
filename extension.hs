@@ -723,7 +723,7 @@ diagnose s rest pos
   | Just i <- unmatchedParen s =
       (i, ( "括号不匹配：第 " ++ show i ++ " 列的括号没有闭合"
           , "Unbalanced parenthesis at column " ++ show i ))
-  | isLambdaStart && not ('.' `elem` s) =
+  | isLambdaStart && not (hasSeparator s) =
       (pos, ( "Lambda 表达式缺少分隔符（形如 λx. body、λx → body 或 \\x -> body）"
             , "Lambda abstraction is missing '.', '→' or '->', e.g. λx. body" ))
   | Just (i, c) <- firstIllegal s =
@@ -739,6 +739,7 @@ diagnose s rest pos
       ('λ':_) -> True
       ('\\':_) -> True
       _ -> False
+    hasSeparator t = '.' `elem` t || '→' `elem` t || "->" `isPrefixOf` dropWhile (/= '-') t
 
 -- 找到第一个未匹配的右括号或未闭合的左括号
 -- First unmatched right parenthesis, or the last unclosed left one.
