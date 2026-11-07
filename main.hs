@@ -10,7 +10,7 @@
 
 import qualified Data.Set as Set
 import Control.Applicative ((<|>))
-import Control.Exception (catch, SomeException)
+import Control.Exception (catch, SomeException, AsyncException(..), throwIO)
 import Control.Monad (void, when, unless, forM_)
 import Control.Monad.IO.Class (liftIO)
 import Data.Char (isAlpha, isDigit, isSpace)
@@ -637,7 +637,14 @@ repl st = do
   case minput of
     Nothing    -> return ()
     Just input -> do
-      me <- liftIO $ handleLine st input
+      -- 与扩展版一致：Ctrl+C 只中断当前计算，REPL 继续运行
+      -- Match the extended REPL: Ctrl+C interrupts only the current command.
+      me <- liftIO $ handleLine st input `catch` \(e :: AsyncException) ->
+        case e of
+          UserInterrupt -> do
+            emit "warn" (say st "已中断当前计算。" "Interrupted.")
+            return (Just st)
+          _ -> throwIO e
       forM_ me repl
 
 -- 解析命令行；未知选项直接报错，避免拼写错误被静默忽略
