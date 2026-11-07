@@ -261,6 +261,15 @@ def test_types(b: Path) -> None:
     r = one([":type \\x.x x"], b)
     check("occurs check", "infinite type" in r.get("text", ""), str(r))
 
+    # 自由变量是单态的：同一名字的两次出现共享一个类型
+    # Free variables are monomorphic: both occurrences of a name share one type.
+    r = one([":type x x"], b)
+    check("free var self-application", "infinite type" in r.get("text", ""), str(r))
+    r = one([":type x"], b)
+    check("free var not polymorphic", "(polymorphic)" not in r.get("type", ""), str(r))
+    r = one([":type x y"], b)
+    check("free var result not polymorphic", "(polymorphic)" not in r.get("type", ""), str(r))
+
     # 重新定义为不可类型化的项后，旧类型方案必须被清除，不能残留
     # Redefining to an untypable term must drop the stale type scheme.
     outs = run(["f = \\x.x", ":type f", "f = \\x.x x", ":type f"], b)

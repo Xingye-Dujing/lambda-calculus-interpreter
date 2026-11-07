@@ -1135,9 +1135,15 @@ infer env (App f a) = do
 generalize :: TypeEnv -> Ty -> TI Scheme
 generalize env t = do
   t' <- applySub t
+  -- 环境中的类型也要应用当前替换，否则与之相连的自由变量会被错误地泛化
+  -- Apply the substitution to environment types too, or variables linked to
+  -- the environment are wrongly quantified.
+  envTypes <- mapM (\(Forall vs ty) -> do
+                       ty' <- applySub ty
+                       return (vs, ty')) (Map.elems env)
   let envFree = Set.unions
         [ freeTyVars ty `Set.difference` Set.fromList vs
-        | Forall vs ty <- Map.elems env ]
+        | (vs, ty) <- envTypes ]
   return (Forall (Set.toList (freeTyVars t' `Set.difference` envFree)) t')
 
 runTI :: TI a -> Int -> Either String a
@@ -1146,7 +1152,20 @@ runTI m seed = case unTI m (TISt seed 0 Map.empty) of
   Right (a, _) -> Right a
 
 inferScheme :: TypeEnv -> Expr -> Either String Scheme
-inferScheme tenv e = runTI (infer tenv e >>= generalize tenv) (Map.size tenv + 1)
+inferScheme tenv e = runTI go (Map.size tenv + 1)
+  where
+    -- 自由变量必须是单态的：同一名字的每次出现共享一个类型变量，
+    -- 否则 'x x' 会被错误地类型化。
+    -- Free variables are monomorphic: every occurrence of a name shares one
+    -- type variable, otherwise 'x x' would incorrectly type-check.
+    go = do
+      seeded <- foldM addFree tenv (Set.toList (freeVars e))
+      infer seeded e >>= generalize seeded
+    addFree env v
+      | Map.member v env = return env
+      | otherwise        = do
+          tv <- freshTy
+          return (Map.insert v (Forall [] tv) env)
 
 -- ---------------------------------------------------------------------------
 -- 预定义环境 Predefined Environment
