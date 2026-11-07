@@ -104,12 +104,19 @@ substRename x v fvV body =
       | y `Set.notMember` fvV =
           fmap (\(b, r) -> (Lam y b, r)) (go inner)
       | otherwise             =
-          let y'      = freshVar y (freeVars inner `Set.union` fvV)
-              (b1, _) = substRename y (Var y') (Set.singleton y') inner
-              b2      = case go b1 of
-                          Just (b, _) -> b
-                          Nothing     -> b1
-          in Just (Lam y' b2, True)
+          -- x 不在体内时无需替换，也无需 α-重命名
+          -- If x is not free in the body there is nothing to substitute and
+          -- no reason to rename the binder.
+          let fvInner = freeVars inner
+          in if x `Set.notMember` fvInner
+               then Nothing
+               else
+                 let y'      = freshVar y (fvInner `Set.union` fvV)
+                     (b1, _) = substRename y (Var y') (Set.singleton y') inner
+                     b2      = case go b1 of
+                                 Just (b, _) -> b
+                                 Nothing     -> b1
+                 in Just (Lam y' b2, True)
 
 -- ---------------------------------------------------------------------------
 -- α 等价 Alpha Equivalence
@@ -171,13 +178,15 @@ data Reduction = Reduction
 
 data StepOut = StepOut { soWhole :: Expr, soRed :: Reduction }
 
--- 替换时是否需要先 α-重命名（与 subst 的分支条件保持一致）
+-- 替换时是否需要先 α-重命名（与 substRename 的分支条件保持一致）
+-- Whether substitution must rename a binder first (mirrors substRename).
 alphaNeeded :: String -> Expr -> Expr -> Bool
 alphaNeeded x body arg = go body
   where
     fvA = freeVars arg
     go (Lam y b)
-      | y /= x && y `Set.member` fvA && x `Set.member` freeVars b = True
+      | y == x = False
+      | y `Set.member` fvA && x `Set.member` freeVars b = True
       | otherwise = go b
     go (App f a) = go f || go a
     go _         = False

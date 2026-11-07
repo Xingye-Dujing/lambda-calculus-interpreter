@@ -87,12 +87,19 @@ substRename x v fvV body =
       | x == y                = Nothing
       | y `Set.notMember` fvV = fmap (\(b, r) -> (Lam y b, r)) (go inner)
       | otherwise             =
-          let y'      = freshVar y (freeVars inner `Set.union` fvV)
-              (b1, _) = substRename y (Var y') (Set.singleton y') inner
-              b2      = case go b1 of
-                          Just (b, _) -> b
-                          Nothing     -> b1
-          in Just (Lam y' b2, True)
+          -- x 不在体内时无需替换，也无需 α-重命名
+          -- If x is not free in the body there is nothing to substitute and
+          -- no reason to rename the binder.
+          let fvInner = freeVars inner
+          in if x `Set.notMember` fvInner
+               then Nothing
+               else
+                 let y'      = freshVar y (fvInner `Set.union` fvV)
+                     (b1, _) = substRename y (Var y') (Set.singleton y') inner
+                     b2      = case go b1 of
+                                 Just (b, _) -> b
+                                 Nothing     -> b1
+                 in Just (Lam y' b2, True)
 
 subst :: String -> Expr -> Expr -> Expr
 subst x v = fst . substRename x v (freeVars v)

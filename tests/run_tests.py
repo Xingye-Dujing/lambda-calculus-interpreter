@@ -144,6 +144,16 @@ def test_combinators_and_alpha(b: Path) -> None:
     check("capture avoidance term", r.get("term") == "λy' → y", repr(r.get("term")))
     check("capture avoidance rule", r.get("trace", [{}])[0].get("rule") == "β+α", str(r.get("trace")))
 
+    # x 不在 λ 体中时无需 α-重命名
+    # No α-rename is needed when x is not free in the lambda body.
+    r = one(["(\\x.\\y.y) y"], b)
+    check("no spurious alpha term", r.get("term") == "λy → y", repr(r.get("term")))
+    check("no spurious alpha rule", r.get("trace", [{}])[0].get("rule") == "β", str(r.get("trace")))
+    # 内层同名绑定遮蔽 x 时，redex 列表与轨迹的规则必须一致
+    # When an inner binder shadows x, the redex list and trace must agree.
+    r = one([":begin (\\x.\\x.\\y.x) y"], b)
+    check("redex rule matches trace", r.get("redexes", [{}])[0].get("rule") == "β", str(r.get("redexes")))
+
 
 def test_beta_steps(b: Path) -> None:
     r = one(["PLUS ONE TWO"], b)
