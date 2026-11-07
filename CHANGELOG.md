@@ -1,5 +1,41 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- Parser diagnostics recognise `→` and `->` when reporting a missing lambda
+  separator.
+- Redefining a name to an untypable term no longer keeps its stale type scheme
+  (REPL and `:load`); `:type` on a defined-but-untypable name (`Y`, `rec`) says
+  it has no simple type instead of reporting a free `t0`.
+- Free variables are monomorphic in type inference (`:type x x` is an infinite
+  type), and `generalize` applies the substitution to the environment.
+- Web `:load`/`:save` resolve relative paths against the interpreter's working
+  directory before checking `LAMBDA_LOAD_ROOT`, closing a confinement bypass;
+  multi-line web input is split into single commands (no sentinel desync and no
+  hidden `:load`), and request bodies are capped.
+- `:ast`/`:db` respect the 400-node cap in both interpreters (a huge term used
+  to hang), and `main` caps traces at 500 steps.
+- `:whnf` stops at a top-level lambda.
+- Substitution no longer α-renames when `x` is absent from the body, and a
+  redex's listed rule agrees with the trace.
+- Call-by-name stops at weak head normal form instead of reducing arguments of
+  neutral heads.
+- Church-numeral/boolean detection no longer misclassifies a shadowed binder.
+- Fast mode is lazy, so Y recursion (e.g. `rec fact THREE`) reaches a normal
+  form instead of exhausting fuel.
+- `.lam` files are read as UTF-8, a leading BOM is stripped, and errors during
+  reading are caught.
+- `main` survives `Ctrl+C`.
+- Web: typing `:lang` in the terminal syncs the UI; crafted share/localStorage
+  state is validated; a failed fetch shows an error instead of rejecting
+  unhandled; clearing during an evaluation no longer adopts the stale session;
+  and a missing interpreter binary returns a clear 500 instead of an unhandled
+  one.
+- Tests now include regression coverage for each fix and a Node + minimal-DOM
+  web UI test (32 groups).
+
 ## 2.0.0 — 2026-11-03
 
 ### Added
