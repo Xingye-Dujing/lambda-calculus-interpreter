@@ -214,7 +214,7 @@ data Order = Order
 orderOf :: Strategy -> Order
 orderOf Applicative = Order True  False False False
 orderOf Normal      = Order True  True  False False
-orderOf CallByName  = Order False True  False False
+orderOf CallByName  = Order False True  False True
 orderOf CallByValue = Order False False True  True
 
 stepOnce :: Strategy -> Expr -> Maybe StepOut

@@ -184,6 +184,11 @@ def test_strategies(b: Path) -> None:
     r = one([":strategy cbn", f"(\\x.y) {omega}"], b)
     check("call-by-name terminates on K Ω", r.get("term") == "y", repr(r.get("term")))
 
+    # 按名调用是弱策略：中性头应用不归约参数
+    # Call-by-name is weak: a neutral-head application does not reduce its argument.
+    r = one([":strategy cbn", "x ((\\y.y) z)"], b)
+    check("cbn weak neutral head", r.get("term") == "x ((λy → y) z)" and r.get("steps") == 0, str(r))
+
     results = run([":steps 40", ":strategy applicative", f"(\\x.y) {omega}"], b)
     r = results[-1][0]
     check("applicative order diverges on K Ω", r.get("limitHit") is True, str(r.get("limitHit")))
