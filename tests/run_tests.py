@@ -497,6 +497,18 @@ def test_main_binary() -> None:
     out = proc.stdout.decode("utf-8", "replace").lower()
     check("main ast huge bounded", "omitted" in out, out[:120])
 
+    # 长轨迹只保留前 500 步并提示（与扩展版一致）
+    # A long trace keeps only the first 500 steps with a notice (like extension).
+    expr = "a"
+    for _ in range(520):
+        expr = f"(\\x.x) ({expr})"
+    proc = subprocess.run(
+        [str(exe), "--lang", "en"], input=(f":steps 2000\n:trace {expr}\n:q\n").encode("utf-8"),
+        capture_output=True, timeout=60, cwd=str(ROOT),
+    )
+    out = proc.stdout.decode("utf-8", "replace").lower()
+    check("main trace capped", "only the first 500" in out, out[-240:])
+
 
 # ---------------------------------------------------------------------------
 # Web API：会话与 `:load` 路径限制 / web session and :load confinement
