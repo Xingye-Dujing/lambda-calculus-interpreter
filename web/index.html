@@ -1838,13 +1838,25 @@
       .replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"");
   }
 
+  // 分享链接可被手工构造（#state= 不经过服务端），因此逐字段校验，
+  // 避免非法策略/步数/语言把界面带入无效状态。
+  // Share links can be crafted (#state= bypasses the server), so validate each
+  // field instead of trusting it.
+  function validLang(v){ return v === "zh" || v === "en" || v === "both"; }
+  function validTheme(v){ return v === "light" || v === "dark"; }
+  function validLimit(v){ return typeof v === "number" && isFinite(v) && v > 0; }
+
   function applySharePayload(payload){
     if (!payload) return;
-    if (Array.isArray(payload.code)) state.codeLines = payload.code;
-    if (payload.strategy) $("strategy").value = payload.strategy;
-    if (payload.limit) state.limit = payload.limit;
-    if (payload.theme) state.theme = payload.theme;
-    if (payload.lang) state.lang = payload.lang;
+    if (Array.isArray(payload.code)) {
+      state.codeLines = payload.code.filter(function(x){ return typeof x === "string"; });
+    }
+    if (typeof payload.strategy === "string" && STRATEGY_LABELS[payload.strategy]) {
+      $("strategy").value = payload.strategy;
+    }
+    if (validLimit(payload.limit)) state.limit = Math.floor(payload.limit);
+    if (validTheme(payload.theme)) state.theme = payload.theme;
+    if (validLang(payload.lang)) state.lang = payload.lang;
     if (payload.eta != null) state.eta = !!payload.eta;
     if (payload.fast != null) state.fast = !!payload.fast;
     applyFastButton();
@@ -1989,13 +2001,17 @@
   async function boot(){
     var saved = loadLocal();
     if (saved){
-      state.lang = saved.lang || "both";
-      state.theme = saved.theme || "light";
-      state.limit = saved.limit || 10000;
+      if (validLang(saved.lang)) state.lang = saved.lang;
+      if (validTheme(saved.theme)) state.theme = saved.theme;
+      if (validLimit(saved.limit)) state.limit = Math.floor(saved.limit);
       state.eta = !!saved.eta;
       state.fast = !!saved.fast;
-      $("strategy").value = saved.strategy || "applicative";
-      if (Array.isArray(saved.code)) state.codeLines = saved.code;
+      if (typeof saved.strategy === "string" && STRATEGY_LABELS[saved.strategy]) {
+        $("strategy").value = saved.strategy;
+      }
+      if (Array.isArray(saved.code)) {
+        state.codeLines = saved.code.filter(function(x){ return typeof x === "string"; });
+      }
     }
     // 首次访问默认浅色；之后沿用用户保存的主题
     // First visit defaults to light; later visits keep the saved theme.

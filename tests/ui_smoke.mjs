@@ -99,6 +99,8 @@ const sandbox = {
   encodeURIComponent, decodeURIComponent,
   btoa: (s) => Buffer.from(s, "binary").toString("base64"),
   atob: (s) => Buffer.from(s, "base64").toString("binary"),
+  escape: globalThis.escape,
+  unescape: globalThis.unescape,
   Event: class { constructor(type) { this.type = type; } },
   URL: { createObjectURL: () => "blob:x", revokeObjectURL: () => {} },
   Blob: class {},
@@ -114,6 +116,19 @@ const sandbox = {
 };
 sandbox.window = sandbox;
 sandbox.self = sandbox;
+
+// 用一个手工构造（含非法字段）的 #state= 链接启动，验证逐字段校验
+// Boot from a crafted #state= link with invalid fields to exercise validation.
+const badPayload = {
+  v: 2, code: ["PLUS ONE TWO", 99], strategy: "evil",
+  limit: -5, theme: "weird", lang: "xx", eta: false, fast: false,
+};
+sandbox.location.hash = "#state=" +
+  Buffer.from(JSON.stringify(badPayload), "utf8").toString("base64url");
+
+// 模拟 HTML 中策略下拉框的默认选中项 / simulate the select's default option.
+document.getElementById("strategy").value = "applicative";
+document.getElementById("lang").value = "both";
 
 vm.createContext(sandbox);
 try {
@@ -140,6 +155,17 @@ const failures = [];
 function check(name, cond, detail) {
   if (!cond) failures.push(`${name}: ${detail}`);
 }
+
+// Crafted share state must be validated field by field.
+check("share code filtered",
+      state.codeLines.length === 1 && state.codeLines[0] === "PLUS ONE TWO",
+      JSON.stringify(state.codeLines));
+check("share limit ignored", state.limit === 10000, "limit=" + state.limit);
+check("share theme ignored", state.theme === "light", "theme=" + state.theme);
+check("share lang ignored", state.lang === "both", "lang=" + state.lang);
+check("share strategy ignored",
+      document.getElementById("strategy").value === "applicative",
+      "strategy=" + document.getElementById("strategy").value);
 
 // Bug: typing :lang in the terminal must update local state and the select.
 await typeAndEnter(":lang zh");
