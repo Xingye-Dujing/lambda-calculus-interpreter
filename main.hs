@@ -208,8 +208,9 @@ stepFor :: Bool -> Strategy -> Expr -> Maybe StepOut
 stepFor eta strat e =
   stepOnce strat e <|> (if eta then etaStep strat e else Nothing)
 
--- 弱首正规形 / weak head normal form
+-- 弱首正规形：顶层 λ 或中性项（头变量）/ WHNF: a top-level lambda or a neutral term
 isWHNF :: Expr -> Bool
+isWHNF (Lam _ _) = True
 isWHNF e = case headSpine e of
   (Lam _ _, _) -> False
   _            -> True

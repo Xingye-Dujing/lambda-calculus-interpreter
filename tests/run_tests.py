@@ -602,6 +602,11 @@ def test_normal_forms_and_eta(b: Path) -> None:
     r = one([":whnf (\\x.\\y.x) (\\x.x)"], b)
     check("whnf stops early", r.get("term") == "λy → λx → x" and r.get("steps") == 1, str(r))
 
+    # 顶层 λ 本身已经是弱首正规形，不能继续归约 λ 体
+    # A top-level lambda is already in WHNF; its body must not be reduced.
+    r = one([":whnf \\x.(\\y.y) z"], b)
+    check("whnf stops at lambda", r.get("term") == "λx → (λy → y) z" and r.get("steps") == 0, str(r))
+
     r = one([":eta on", ":nf \\x. f x"], b)
     check("eta reduces", r.get("term") == "f", str(r))
     r = one([":eta on", ":trace \\x. f x"], b)
