@@ -1543,6 +1543,16 @@
       applyFastButton();
       if (state.tab === "tools") renderPanel();
     }
+    // 终端里直接输入 :lang 时也要同步本地语言与界面（不只是下拉框走 lang 路由）
+    // Typing :lang in the terminal must also sync local language and UI,
+    // not just the select via the lang route.
+    var langMatch = trimmed.match(/^:lang\s+(zh|en|both)\b/i);
+    if (langMatch){
+      state.lang = langMatch[1].toLowerCase();
+      $("lang").value = state.lang;
+      applyStaticTexts();
+      applyTranscriptLang();
+    }
 
     var last = outputs.filter(function(o){ return o.kind === "result" || o.kind === "warn"; }).pop();
     if (last){

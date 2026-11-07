@@ -15,7 +15,7 @@ Chinese/English**.
   directory`; keep those flags if adding Windows build steps.
 - **Tests:** `.\test.bat` / `./test.sh`, or
   `python tests/run_tests.py [--bin path]`. The suite drives the compiled
-  `extension --batch --json` binary end-to-end (31 groups), including a
+  `extension --batch --json` binary end-to-end (32 groups), including a
   `main`/`extension` differential test. Run it after any core change; it is the
   regression net for `main.hs` and `extension.hs`.
 - `./main` — minimal REPL (`:q` to quit).

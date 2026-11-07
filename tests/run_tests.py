@@ -32,6 +32,7 @@ import json
 import os
 import random
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -1023,6 +1024,22 @@ def test_fast_mode(b: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Web 前端状态同步 / web UI state sync (Node + minimal DOM stub)
+# ---------------------------------------------------------------------------
+
+def test_web_ui_state(b: Path) -> None:
+    node = shutil.which("node")
+    if not node:
+        return  # 未安装 Node 时跳过 / skip when Node is unavailable
+    proc = subprocess.run(
+        [node, str(ROOT / "tests" / "ui_smoke.mjs")],
+        capture_output=True, timeout=60, cwd=str(ROOT),
+    )
+    out = (proc.stdout + proc.stderr).decode("utf-8", "replace")
+    check("web ui state sync", proc.returncode == 0, out[-400:])
+
+
+# ---------------------------------------------------------------------------
 # 运行器 / Runner
 # ---------------------------------------------------------------------------
 
@@ -1057,6 +1074,7 @@ TESTS = [
     test_web_extras,
     test_properties,
     test_differential_main,
+    test_web_ui_state,
     test_main_binary,
 ]
 

@@ -267,7 +267,7 @@ test.bat           # Windows
 python tests/run_tests.py --bin ./extension
 ```
 
-31 groups cover parsing positions, β-reduction results, capture avoidance,
+32 groups cover parsing positions, β-reduction results, capture avoidance,
 traces, all four strategies, step limits, Church/combinator hints, type
 inference, environment commands, file loading (comments, continuations,
 commands, line numbers, save/reload, recursion, multiple files), manual
@@ -275,8 +275,8 @@ reduction and redex picking, normal forms, eta and fast mode, α/β equivalence,
 integer encoding, AST/de Bruijn, bilingual output, JSON protocol, determinism,
 cross-strategy agreement, trace capping, CLI options, web API sessions,
 expiry/language switching/health checks, short share links, bilingual protocol
-fields, wall-clock timeout, randomized properties, and a `main`/`extension`
-differential test.
+fields, wall-clock timeout, randomized properties, web UI state sync (Node),
+and a `main`/`extension` differential test.
 
 ## Implementation
 
