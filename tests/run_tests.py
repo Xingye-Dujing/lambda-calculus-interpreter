@@ -363,6 +363,16 @@ def test_views(b: Path) -> None:
     check("de bruijn ast", isinstance(r.get("ast"), list) and len(r.get("ast")) == 5, str(r.get("ast")))
     check("de bruijn term", r.get("term") == "λx → λy → x y", repr(r.get("term")))
 
+    # 大项的 :ast / :db 必须遵守 400 节点上限，不能生成巨型树（曾经会卡死）
+    # :ast / :db must respect the 400-node cap on huge terms (once hung).
+    r = one([":ast 9999"], b)
+    check("ast huge omitted", r.get("astOmitted") is True and r.get("astTreeOmitted") is True,
+          str(r)[:160])
+    r = one([":db 9999"], b)
+    check("db huge omitted", r.get("astOmitted") is True and r.get("astTreeOmitted") is True,
+          str(r)[:160])
+    check("db huge bounded", len(r.get("text", "")) <= 1100, str(len(r.get("text", ""))))
+
     r = one([":trace (\\x.x) a"], b)
     check("trace command", r.get("kind") == "trace" and r.get("steps") == 1, str(r))
     check("trace final", r.get("final") == "a", str(r.get("final")))

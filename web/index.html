@@ -447,6 +447,7 @@
     noTrace: {zh:"这个结果没有归约步骤（已经是正规形）。", en:"No reduction steps for this result (already a normal form)."},
     noSel:   {zh:"执行一个表达式后，这里会显示它的归约轨迹。", en:"Run an expression to see its reduction trace here."},
     noAst:   {zh:"还没有可显示的语法树。", en:"No syntax tree yet."},
+    astTooLarge:{zh:"表达式过大，已省略语法树（节点上限 400）。", en:"Term too large; AST omitted (400-node limit)."},
     noType:  {zh:"无法推断类型（无类型项或尚未执行表达式）。", en:"No type available (untypable term, or nothing run yet)."},
     envEmpty:{zh:"环境为空。", en:"Environment is empty."},
     before:  {zh:"归约前", en:"before"}, after:{zh:"归约后", en:"after"},
@@ -932,14 +933,16 @@
       return;
     }
     if (obj.kind === "ast"){
-      state.selected = {ast: obj.tree, astTree: obj.astTree, term: ""};
+      state.selected = {ast: obj.tree, astTree: obj.astTree, term: "",
+                        astOmitted: obj.astOmitted, astTreeOmitted: obj.astTreeOmitted};
       switchTab("ast");
       return;
     }
     if (obj.kind === "db"){
       addLine("info", "db: " + (obj.text || ""));
       state.selected = {term: obj.term || "", ast: obj.ast || [],
-                        astTree: obj.astTree, db: obj.text || ""};
+                        astTree: obj.astTree, db: obj.text || "",
+                        astOmitted: obj.astOmitted, astTreeOmitted: obj.astTreeOmitted};
       switchTab("ast");
       return;
     }
@@ -1118,10 +1121,16 @@
 
   function renderAst(){
     var obj = state.selected;
-    if (!obj || (!obj.astTree && (!obj.ast || !obj.ast.length))) {
+    if (!obj) return '<p class="empty">' + esc(t("noAst")) + '</p>';
+    var hasAst = !!(obj.astTree || (obj.ast && obj.ast.length));
+    var omitted = !!(obj.astOmitted || obj.astTreeOmitted);
+    if (!hasAst && !omitted && !obj.db) {
       return '<p class="empty">' + esc(t("noAst")) + '</p>';
     }
     var html = '<h3>' + esc(t("ast")) + '</h3>';
+    if (omitted && !hasAst) {
+      html += '<p class="empty">' + esc(t("astTooLarge")) + '</p>';
+    }
     if (obj.astTree){
       html += '<div class="ast-view">' +
         '<button class="mini" type="button" data-astview="tree"' +

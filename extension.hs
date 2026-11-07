@@ -1337,16 +1337,17 @@ traceFields total steps
 astBudget :: Int
 astBudget = 400
 
-astField :: Expr -> (String, J)
-astField e = astFieldSized (exprSize e) e
-
 astFieldSized :: Int -> Expr -> (String, J)
 astFieldSized n e
   | n <= astBudget = "ast" .= JArr (map JStr (treeLines e))
   | otherwise      = "astOmitted" .= JBool True
 
-treeField :: Expr -> (String, J)
-treeField e = "tree" .= JArr (map JStr (treeLines e))
+-- 与 astFieldSized 一样限制文本树：缩进随深度增长，大项会撑爆 JSON。
+-- Bound the text tree like astFieldSized; indentation grows with depth.
+treeFieldSized :: Int -> Expr -> (String, J)
+treeFieldSized n e
+  | n <= astBudget = "tree" .= JArr (map JStr (treeLines e))
+  | otherwise      = "astOmitted" .= JBool True
 
 -- 结构化语法树，供 Web 端折叠显示
 -- Structured AST for the collapsible web tree.
@@ -1861,17 +1862,27 @@ runCommand st (Trace expr) = do
         "  ⚠ Step limit reached, reduction incomplete")
   return (Just st)
 runCommand st (Ast expr) = do
-  let e' = expandTop (rsEnv st) expr
+  let e'   = expandTop (rsEnv st) expr
+      size = exprSize e'
   if rsJson st
-    then emit st "ast" "" [treeField e', astTreeField e']
-    else putStrLn (unlines (treeLines e'))
+    then emit st "ast" "" (treeFieldSized size e' : astTreeFieldsSized size e')
+    else if size <= astBudget
+           then putStrLn (unlines (treeLines e'))
+           else emitL st "warn"
+                  "项过大，已省略语法树（节点上限 400）。"
+                  "Term too large; AST omitted (400-node limit)." []
   return (Just st)
 runCommand st (DbView expr) = do
-  let e' = expandTop (rsEnv st) expr
-  emit st "db" (deBruijnView e')
-    [ astField e'
-    , astTreeField e'
-    , "term" .= JStr (pretty e') ]
+  let e'      = expandTop (rsEnv st) expr
+      size    = exprSize e'
+      dbTxt   = if size <= astBudget then deBruijnView e'
+                                     else shorten 1000 (deBruijnView e')
+      termTxt = if size <= astBudget then pretty e'
+                                     else shorten 4000 (pretty e')
+  emit st "db" dbTxt
+    ([ astFieldSized size e' ]
+     ++ astTreeFieldsSized size e'
+     ++ [ "term" .= JStr termTxt ])
   return (Just st)
 runCommand st (TypeOf expr) = do
   case inferScheme (rsTypeEnv st) expr of
