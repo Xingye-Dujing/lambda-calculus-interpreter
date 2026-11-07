@@ -515,7 +515,13 @@ expandTop env = expand expandFuel env Set.empty
 -- 语义提示 Semantic Hints：Church 编码 / 组合子
 -- ---------------------------------------------------------------------------
 isChurchNumeral :: Expr -> Maybe Integer
-isChurchNumeral (Lam f (Lam x body)) = go 0 body
+isChurchNumeral (Lam f (Lam x body))
+  -- 同名绑定会让内层 x 遮蔽 f，此时只有 0 仍成立
+  -- A shadowing binder makes the inner x hide f, so only 0 can still hold.
+  | f == x    = case body of
+                  Var x' | x' == x -> Just 0
+                  _                -> Nothing
+  | otherwise = go 0 body
   where
     go n (Var x')   | x' == x = Just n
     go n (App (Var f') rest) | f' == f = go (n + 1) rest
@@ -523,7 +529,7 @@ isChurchNumeral (Lam f (Lam x body)) = go 0 body
 isChurchNumeral _ = Nothing
 
 isChurchBoolean :: Expr -> Maybe Bool
-isChurchBoolean (Lam t (Lam _ (Var t'))) | t == t' = Just True
+isChurchBoolean (Lam t (Lam f (Var t'))) | t == t' && t /= f = Just True
 isChurchBoolean (Lam _ (Lam f (Var f'))) | f == f' = Just False
 isChurchBoolean _ = Nothing
 

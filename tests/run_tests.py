@@ -605,6 +605,19 @@ def test_extended_prelude(b: Path) -> None:
     r = one([":int \\x.x"], b)
     check("int non-numeral", r.get("kind") == "fail", str(r))
 
+    # 同名绑定遮蔽时不是邱奇数（内层 x 应用自身，不是 f x）
+    # A shadowing binder is not a Church numeral (inner x applied to itself).
+    r = one([":int (\\x.\\x.x x)"], b)
+    check("shadowed self-app not numeral", r.get("kind") == "fail", str(r))
+    r = one(["\\x.\\x.x x"], b)
+    check("shadowed self-app no numeral hint", "Church numeral" not in r.get("hint", ""), r.get("hint", ""))
+    # λx.λx.x 仍然是 0，同时也是布尔 False
+    # λx.λx.x is still 0, and also boolean False.
+    r = one([":int \\x.\\x.x"], b)
+    check("shadowed zero numeral", r.get("value") == 0, str(r))
+    r = one(["\\x.\\x.x"], b)
+    check("shadowed zero is false", "False" in r.get("hint", ""), r.get("hint", ""))
+
 
 def test_normal_forms_and_eta(b: Path) -> None:
     r = one([":nf (\\x.\\y.x) a b"], b)
