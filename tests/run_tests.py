@@ -479,6 +479,16 @@ def test_main_binary() -> None:
     out = proc.stdout.decode("utf-8", "replace")
     check("main evaluates", "⇒ a" in out, out[:200])
 
+    # 大项的 :ast 必须被上限拦截，不能卡死
+    # A huge :ast must be capped instead of hanging.
+    big = " ".join(["x"] * 500)
+    proc = subprocess.run(
+        [str(exe), "--lang", "en"], input=(f":ast {big}\n:q\n").encode("utf-8"),
+        capture_output=True, timeout=30, cwd=str(ROOT),
+    )
+    out = proc.stdout.decode("utf-8", "replace").lower()
+    check("main ast huge bounded", "omitted" in out, out[:120])
+
 
 # ---------------------------------------------------------------------------
 # Web API：会话与 `:load` 路径限制 / web session and :load confinement

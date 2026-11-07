@@ -237,6 +237,11 @@ data EvalResult = EvalResult
 defaultLimit :: Int
 defaultLimit = 10000
 
+-- 轨迹上限：超出后仍给出精确步数，但只保留前若干步（与扩展版一致）
+-- Trace cap: keep the exact count but only the first steps, like extension.hs.
+traceLimit :: Int
+traceLimit = 500
+
 -- 求值循环：keepTrace 为 False 时不保留轨迹（省内存）
 -- Evaluation loop; with keepTrace=False the trace is dropped (saves memory).
 evalUntil :: Bool -> Bool -> Int -> Strategy -> (Expr -> Bool) -> Expr -> EvalResult
@@ -248,7 +253,7 @@ evalUntil eta keepTrace limit strat done e0 = loop 1 e0 []
       | otherwise = case stepFor eta strat e of
           Just s ->
             let red  = soRed s
-                acc' = if keepTrace
+                acc' = if keepTrace && n <= traceLimit
                          then TraceStep n (soWhole s) (redNote red) : acc
                          else acc
             in loop (n + 1) (soWhole s) acc'
@@ -337,6 +342,16 @@ deBruijnView e = go [] e ""
     go bound (Lam x b) = showString "λ." . go (x : bound) b
     go bound (App f a) =
       showChar '(' . go bound f . showChar ' ' . go bound a . showChar ')'
+
+-- 树/de Bruijn 视图的节点上限：缩进随深度增长，大项会撑爆输出
+-- Node cap for tree/de Bruijn views; indentation grows with depth.
+astBudget :: Int
+astBudget = 400
+
+exprSize :: Expr -> Int
+exprSize (Var _)   = 1
+exprSize (Lam _ b) = 1 + exprSize b
+exprSize (App f a) = 1 + exprSize f + exprSize a
 
 -- ---------------------------------------------------------------------------
 -- 解析器 Parser
@@ -565,11 +580,19 @@ runCommand st (Trace expr) = do
   forM_ (erSteps res) $ \s -> do
     putStrLn $ "  " ++ show (tsIndex s) ++ ". " ++ tsNote s
     putStrLn $ "       " ++ pretty (tsAfter s)
+  when (erCount res > length (erSteps res)) $ putStrLn (say st
+    "  ⚠ 轨迹较长，只显示前 500 步" "  ⚠ Long trace: only the first 500 steps are shown")
   when (erLimitHit res) $ putStrLn (say st
     "  ⚠ 已达到步数上限，归约未完成" "  ⚠ Step limit reached, reduction incomplete")
   return (Just st)
-runCommand st (Ast expr) = putStrLn (unlines (treeLines expr)) >> return (Just st)
-runCommand st (DbView expr) = putStrLn (deBruijnView expr) >> return (Just st)
+runCommand st (Ast expr)
+  | exprSize expr <= astBudget = putStrLn (unlines (treeLines expr)) >> return (Just st)
+  | otherwise = putStrLn (say st
+      "  ⚠ 项过大，已省略语法树（节点上限 400）"
+      "  ⚠ Term too large; AST omitted (400-node limit)") >> return (Just st)
+runCommand st (DbView expr)
+  | exprSize expr <= astBudget = putStrLn (deBruijnView expr) >> return (Just st)
+  | otherwise = putStrLn (shorten 1000 (deBruijnView expr)) >> return (Just st)
 runCommand st (Nf expr) = do
   printEval st (evalFinal (rsEta st) (rsLimit st) Normal expr)
   return (Just st)
