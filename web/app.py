@@ -103,7 +103,10 @@ def _check_path(line: str) -> str | None:
         try:
             target = Path(raw)
             if not target.is_absolute():
-                target = root / target
+                # 解释器以 INTERP_DIR 为工作目录，相对路径必须按它解析后再检查是否在 root 内
+                # The interpreter runs with cwd=INTERP_DIR, so resolve relative paths
+                # against that (not root) before checking confinement.
+                target = INTERP_DIR / target
             target.resolve().relative_to(root)
         except (ValueError, OSError):
             return (f":{verb} 仅允许解释器目录内的路径 / :{verb} is restricted to {root} "

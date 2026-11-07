@@ -483,6 +483,24 @@ def test_web_api(b: Path) -> None:
     finally:
         client.delete(f"/api/session/{sid}")
 
+    # 自定义 LAMBDA_LOAD_ROOT 时，相对路径必须按解释器工作目录（INTERP_DIR）解析，
+    # 否则校验与解释器实际打开的文件不一致，可绕过路径限制。
+    # With a custom LAMBDA_LOAD_ROOT, relative paths must resolve against the
+    # interpreter's cwd (INTERP_DIR); resolving against root lets the real open
+    # land outside the configured root.
+    saved_root = os.environ.get("LAMBDA_LOAD_ROOT")
+    with tempfile.TemporaryDirectory() as td:
+        os.environ["LAMBDA_LOAD_ROOT"] = td
+        try:
+            err = webapp.validate_line(":load test.lam")
+            check("web load custom root relative confined",
+                  err is not None and "restricted" in err, str(err))
+        finally:
+            if saved_root is None:
+                os.environ.pop("LAMBDA_LOAD_ROOT", None)
+            else:
+                os.environ["LAMBDA_LOAD_ROOT"] = saved_root
+
 
 # ---------------------------------------------------------------------------
 # α 等价、扩展前奏、正规形与 η / alpha, prelude, normal forms and eta
