@@ -443,14 +443,24 @@ def api_eval():
     line = data.get("line")
     if line is None:
         # 兼容 {lines: [...]}：按顺序发送
-        lines = data.get("lines") or []
-        if not lines:
+        raw_lines = data.get("lines") or []
+        if not isinstance(raw_lines, list) or not raw_lines:
             return jsonify({"ok": False, "error": "empty request"}), 400
     else:
-        lines = [line]
+        raw_lines = [line]
+
+    # 会话协议每行一个哨兵：必须把每个值拆成单行再逐条发送，
+    # 否则多行输入会让后续请求读到上一条命令残留的输出。
+    # The session protocol emits one sentinel per line, so split every value
+    # into single lines; otherwise a multi-line value leaves stale output queued.
+    lines: list[str] = []
+    for ln in raw_lines:
+        text = str(ln)
+        parts = text.splitlines()
+        lines.extend(parts if parts else [text])
 
     for ln in lines:
-        problem = validate_line(str(ln))
+        problem = validate_line(ln)
         if problem:
             return jsonify({"ok": False, "error": problem}), 400
 
@@ -465,7 +475,7 @@ def api_eval():
             }), 410
         outputs: list[dict] = []
         for ln in lines:
-            outputs.extend(interp.send(str(ln)))
+            outputs.extend(interp.send(ln))
         with _sessions_lock:
             if sid in _sessions:
                 _sessions[sid]["used"] = time.time()

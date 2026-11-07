@@ -489,6 +489,19 @@ def test_web_api(b: Path) -> None:
         r = client.post("/api/eval", json={"session": sid, "line": ":db \\x.\\y.x y"})
         out = r.get_json()["outputs"][0]
         check("web db kind", out.get("kind") == "db" and out.get("text") == "λ.λ.(#1 #0)", str(out))
+
+        # 多行输入必须拆成单条命令，不能打乱会话的哨兵流
+        # Multi-line input must be split into single commands so the sentinel
+        # stream stays in sync.
+        r = client.post("/api/eval", json={"session": sid, "line": "a\nb\nc"})
+        check("web multiline count", len(r.get_json()["outputs"]) == 3, str(r.get_json())[:120])
+        out = client.post("/api/eval", json={"session": sid, "line": "MULT TWO TWO"}).get_json()["outputs"][0]
+        check("web multiline no desync", out.get("term") == "λf → λx → f (f (f (f x)))", str(out)[:120])
+
+        # 多行里隐藏的 :load 也必须被路径限制拦截
+        # A :load hidden on a later line must still be confined.
+        r = client.post("/api/eval", json={"session": sid, "line": "a\n:load ../../etc/passwd"})
+        check("web multiline hidden load confined", r.status_code == 400, str(r.status_code))
     finally:
         client.delete(f"/api/session/{sid}")
 
