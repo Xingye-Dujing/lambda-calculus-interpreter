@@ -498,6 +498,7 @@
     fast: false,
     limit: 10000,
     replaying: false,
+    gen: 0,
     typing: false,
     playing: false,
     playTimer: null,
@@ -1441,8 +1442,12 @@
   }
 
   async function evalLine(line, silent){
+    var gen = state.gen;
     if (!state.session) await newSession();
     var r = await api("api/eval", {session: state.session, line: line, lang: state.lang});
+    // 清空/重建后，旧请求的结果不能再改动会话或界面
+    // After a clear/rebuild, a stale response must not touch session or UI.
+    if (state.gen !== gen) return [];
     if (r.status === 408 || (r.data && (r.data.timeout || r.data.restart))){
       state.session = null; setConn(false);
       if (!silent){
@@ -1506,6 +1511,7 @@
 
   async function exec(line, opts){
     opts = opts || {};
+    var gen = state.gen;
     if (!opts.silent) echoPrompt(line);
     var trimmed = line.trim();
     if (!trimmed) { scrollDown(); return []; }
@@ -1522,6 +1528,9 @@
     if (opts.record !== false) state.codeLines.push(line);
 
     var outputs = await evalLine(line, opts.silent);
+    // 期间清空了界面：丢弃这条命令的后续渲染与状态更新
+    // If the UI was cleared meanwhile, drop this command's rendering/updates.
+    if (state.gen !== gen) return [];
     outputs.forEach(function(o){ renderOutput(o, line, opts.silent); });
 
     if (/^:end\b/.test(trimmed)) setManual(false);
@@ -1708,6 +1717,7 @@
   }
 
   function clearAll(){
+    state.gen = (state.gen || 0) + 1;
     out.innerHTML = "";
     state.codeLines = [];
     state.selected = null;

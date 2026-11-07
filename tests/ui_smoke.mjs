@@ -202,6 +202,36 @@ check("network error handled", unhandled === 0, "unhandled=" + unhandled);
 check("network error shown", outEl.children.length > beforeLines,
       "lines " + beforeLines + " -> " + outEl.children.length);
 
+// 清空界面时仍在进行的旧请求，返回后不能覆盖新会话
+// A stale request that returns after clearing must not overwrite the new session.
+let releaseOld = null;
+sandbox.fetch = (url, opts) => {
+  const body = opts && opts.body ? JSON.parse(opts.body) : {};
+  if (String(url).includes("api/eval") && body.session === "OLD") {
+    return new Promise((resolve) => {
+      releaseOld = () => resolve({
+        status: 200,
+        json: async () => ({ ok: true, session: "OLD", outputs: [] }),
+      });
+    });
+  }
+  if (String(url).includes("api/eval")) {
+    return Promise.resolve({ status: 200, json: async () => ({ ok: true, session: body.session, outputs: [] }) });
+  }
+  return Promise.resolve({ status: 200, json: async () => ({ ok: true, session: "NEW", outputs: [] }) });
+};
+state.session = "OLD";
+const cmdEl = document.getElementById("cmd");
+cmdEl.value = "PLUS ONE TWO";
+for (const fn of (cmdEl._listeners["keydown"] || [])) fn({ key: "Enter", shiftKey: false, preventDefault() {} });
+await sleep(20); // the eval is now awaiting releaseOld
+const clearEl = document.getElementById("clear");
+for (const fn of (clearEl._listeners["click"] || [])) fn({});
+await sleep(20); // clearAll created session "NEW"
+if (releaseOld) releaseOld();
+await sleep(40);
+check("clear race keeps new session", state.session === "NEW", "session=" + state.session);
+
 if (failures.length) {
   console.error("FAILURES:\n  " + failures.join("\n  "));
   process.exit(1);
