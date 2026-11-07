@@ -223,6 +223,12 @@ def test_parse_errors(b: Path) -> None:
     r = one(["\\x"], b)
     check("missing dot msg", "missing '.'" in r.get("text", ""), str(r))
 
+    # 箭头存在但缺少函数体：不应再被误报为“缺少分隔符”
+    # Arrow present but body missing: must not be misdiagnosed as missing separator.
+    r = one(["\\x ->"], b)
+    check("arrow no body not missing separator", "missing" not in r.get("text", ""), str(r))
+    check("arrow no body is parse error", r.get("kind") == "error", str(r))
+
     r = one(["1a = 2"], b)
     check("invalid name pos", r.get("pos") == 1, str(r))
     check("invalid name msg", "Invalid name" in r.get("text", ""), str(r))
@@ -254,6 +260,13 @@ def test_types(b: Path) -> None:
 
     r = one([":type \\x.x x"], b)
     check("occurs check", "infinite type" in r.get("text", ""), str(r))
+
+    # 重新定义为不可类型化的项后，旧类型方案必须被清除，不能残留
+    # Redefining to an untypable term must drop the stale type scheme.
+    outs = run(["f = \\x.x", ":type f", "f = \\x.x x", ":type f"], b)
+    check("first type", outs[1][0].get("type") == "t0 → t0 (polymorphic)", str(outs[1]))
+    check("stale type dropped", outs[3][0].get("type") != "t0 → t0 (polymorphic)", str(outs[3]))
+    check("second kind", outs[3][0].get("kind") == "type", str(outs[3]))
 
     # 多态定义可以在两种类型下使用
     # A polymorphic definition may be used at two different types.
