@@ -1687,7 +1687,7 @@ runCommand st (Define var expr) = do
       env'  = Map.insert var expr' (rsEnv st)
       (tenv', mtyMsg) = case inferScheme (rsTypeEnv st) expr of
         Right sc -> (Map.insert var sc (rsTypeEnv st), Just (prettySchemeMsg sc))
-        Left _   -> (rsTypeEnv st, Nothing)
+        Left _   -> (Map.delete var (rsTypeEnv st), Nothing)
       fields = [ "name"  .= JStr var
                , "value" .= JStr (pretty expr') ]
                ++ [ "type" .= JStr (renderMsg (rsLang st) ty) | Just ty <- [mtyMsg] ]
