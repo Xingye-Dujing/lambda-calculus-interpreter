@@ -685,6 +685,14 @@ def test_file_features(b: Path) -> None:
             rows = {r["name"] for r in results[-1][0].get("rows", [])}
             check("saved file reloads", {"id", "multi", "idr"} <= rows, str(rows))
 
+        # UTF-8 文件（含中文注释与标识符）必须始终按 UTF-8 读取
+        # UTF-8 files (Chinese comments/identifiers) must always be read as UTF-8.
+        uni = Path(td) / "unicode.lam"
+        uni.write_text("-- 中文注释\n变量 = \\x.x\n", encoding="utf-8")
+        outs = run([f":load {uni}", ":env"], b)
+        rows = {r["name"] for r in outs[-1][0].get("rows", [])}
+        check("utf8 file load", "变量" in rows, str(rows))
+
         # 启动时加载多个文件，并在文件内设置策略
         f1 = Path(td) / "one.lam"
         f2 = Path(td) / "two.lam"

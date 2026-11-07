@@ -1462,9 +1462,18 @@ renderTable lang rows = unlines $
 -- ---------------------------------------------------------------------------
 -- 文件加载 File Loading
 -- ---------------------------------------------------------------------------
+-- 始终按 UTF-8 读取（与 writeFileUtf8 对应），并强制内容以捕获读取中的解码错误
+-- Always read UTF-8 (mirrors writeFileUtf8) and force the content so decode
+-- errors during reading are caught instead of escaping the lazy readFile.
 readFileSafe :: FilePath -> IO (Either String String)
-readFileSafe path = catch (Right <$> readFile path)
-  (\(e :: SomeException) -> return $ Left $ show e)
+readFileSafe path = catch go handler
+  where
+    go = withFile path ReadMode $ \h -> do
+      hSetEncoding h utf8
+      s <- hGetContents h
+      let n = length s
+      n `seq` return (Right s)
+    handler (e :: SomeException) = return $ Left $ show e
 
 data LoadOutcome = LoadOutcome
   { loEnv      :: Env
