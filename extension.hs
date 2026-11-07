@@ -1477,8 +1477,13 @@ readFileSafe path = catch go handler
     go = withFile path ReadMode $ \h -> do
       hSetEncoding h utf8
       s <- hGetContents h
-      let n = length s
-      n `seq` return (Right s)
+      -- 去掉可能存在的 UTF-8 BOM，否则首行定义无法解析
+      -- Drop a leading UTF-8 BOM, or the first definition fails to parse.
+      let s' = case s of
+                 ('\xFEFF':rest) -> rest
+                 _               -> s
+          n = length s'
+      n `seq` return (Right s')
     handler (e :: SomeException) = return $ Left $ show e
 
 data LoadOutcome = LoadOutcome

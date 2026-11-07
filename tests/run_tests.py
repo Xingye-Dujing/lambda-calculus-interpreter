@@ -706,6 +706,14 @@ def test_file_features(b: Path) -> None:
         rows = {r["name"] for r in outs[-1][0].get("rows", [])}
         check("utf8 file load", "变量" in rows, str(rows))
 
+        # 带 UTF-8 BOM 的文件也必须能加载（Windows 编辑器常见）
+        # A file with a UTF-8 BOM must load too (common with Windows editors).
+        bom = Path(td) / "bom.lam"
+        bom.write_bytes(b"\xef\xbb\xbfbomid = \\x.x\n")
+        outs = run([f":load {bom}", ":env"], b)
+        rows = {r["name"] for r in outs[-1][0].get("rows", [])}
+        check("bom file load", "bomid" in rows, str(rows))
+
         # 启动时加载多个文件，并在文件内设置策略
         f1 = Path(td) / "one.lam"
         f2 = Path(td) / "two.lam"
