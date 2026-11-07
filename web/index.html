@@ -1411,15 +1411,21 @@
   }
 
   /* ---------------------------------------------------------------- session / 会话 */
+  // 网络错误不能变成未处理的 Promise 拒绝：统一返回 status 0 与错误对象
+  // A network error must not become an unhandled rejection: return status 0.
   async function api(path, body, method){
-    var res = await fetch(path, {
-      method: method || "POST",
-      headers: {"Content-Type": "application/json"},
-      body: body ? JSON.stringify(body) : undefined
-    });
-    var data = null;
-    try { data = await res.json(); } catch(e){ data = {ok:false, error:"bad response"}; }
-    return {status: res.status, data: data};
+    try {
+      var res = await fetch(path, {
+        method: method || "POST",
+        headers: {"Content-Type": "application/json"},
+        body: body ? JSON.stringify(body) : undefined
+      });
+      var data = null;
+      try { data = await res.json(); } catch(e){ data = {ok:false, error:"bad response"}; }
+      return {status: res.status, data: data};
+    } catch (e) {
+      return {status: 0, data: {ok:false, error: (e && e.message) || "network error"}};
+    }
   }
 
   async function newSession(){
@@ -1447,7 +1453,8 @@
     }
     if (!r.data || !r.data.ok){
       if (!silent) addLine("fail", (r.data && r.data.error) || "request failed");
-      if (r.status >= 500) { state.session = null; setConn(false); }
+      if (r.status === 0) setConn(false);
+      else if (r.status >= 500) { state.session = null; setConn(false); }
       return [];
     }
     if (r.data.session) state.session = r.data.session;

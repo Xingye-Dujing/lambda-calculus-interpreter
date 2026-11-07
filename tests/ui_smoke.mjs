@@ -8,6 +8,11 @@ import path from "node:path";
 import vm from "node:vm";
 import { fileURLToPath } from "node:url";
 
+// 未处理的 Promise 拒绝应让测试失败（网络错误必须被捕获）
+// An unhandled rejection must fail the test (network errors must be caught).
+let unhandled = 0;
+process.on("unhandledRejection", () => { unhandled++; });
+
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "..");
 const htmlPath = process.env.UI_HTML || path.join(root, "web", "index.html");
@@ -185,6 +190,17 @@ check("eta state", state.eta === true, "eta=" + state.eta);
 
 await typeAndEnter(":fast on");
 check("fast state", state.fast === true, "fast=" + state.fast);
+
+// 网络错误必须被捕获并显示失败行，不能产生未处理的拒绝
+// A network error must be caught and shown, not become an unhandled rejection.
+sandbox.fetch = async () => { throw new Error("network down"); };
+const outEl = document.getElementById("out");
+const beforeLines = outEl.children.length;
+await typeAndEnter("PLUS ONE TWO");
+await sleep(40);
+check("network error handled", unhandled === 0, "unhandled=" + unhandled);
+check("network error shown", outEl.children.length > beforeLines,
+      "lines " + beforeLines + " -> " + outEl.children.length);
 
 if (failures.length) {
   console.error("FAILURES:\n  " + failures.join("\n  "));
