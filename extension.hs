@@ -1948,6 +1948,15 @@ runCommand st (DbView expr) = do
      ++ astTreeFieldsSized size e'
      ++ [ "term" .= JStr termTxt ])
   return (Just st)
+runCommand st (TypeOf (Var name))
+  -- 已定义但无法在简单类型系统中类型化的名字（如 Y、rec 定义）不应被当成自由变量
+  -- A defined name with no simple type (Y, rec definitions) must not be treated
+  -- as a free variable.
+  | Map.member name (rsEnv st), Map.notMember name (rsTypeEnv st) = do
+      emitL st "fail"
+        ("无法类型化：" ++ name ++ " 在简单类型系统中没有类型")
+        ("Cannot type: " ++ name ++ " has no simple type") []
+      return (Just st)
 runCommand st (TypeOf expr) = do
   case inferScheme (rsTypeEnv st) expr of
     Left err0 -> do

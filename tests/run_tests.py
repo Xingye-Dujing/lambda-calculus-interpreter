@@ -286,12 +286,19 @@ def test_types(b: Path) -> None:
     r = one([":type x y"], b)
     check("free var result not polymorphic", "(polymorphic)" not in r.get("type", ""), str(r))
 
-    # 重新定义为不可类型化的项后，旧类型方案必须被清除，不能残留
-    # Redefining to an untypable term must drop the stale type scheme.
+    # 重新定义为不可类型化的项后，旧类型方案必须被清除，且报告无简单类型
+    # Redefining to an untypable term must drop the stale type scheme and
+    # report that it has no simple type.
     outs = run(["f = \\x.x", ":type f", "f = \\x.x x", ":type f"], b)
     check("first type", outs[1][0].get("type") == "t0 → t0 (polymorphic)", str(outs[1]))
-    check("stale type dropped", outs[3][0].get("type") != "t0 → t0 (polymorphic)", str(outs[3]))
-    check("second kind", outs[3][0].get("kind") == "type", str(outs[3]))
+    check("stale type dropped", outs[3][0].get("kind") == "fail", str(outs[3]))
+
+    # 已定义但无简单类型的名字不能当作自由变量返回 t0
+    # A defined name with no simple type must not report a free t0.
+    r = one([":type Y"], b)
+    check("type of Y fails", r.get("kind") == "fail", str(r))
+    r = one(["rec g = \\x.x", ":type g"], b)
+    check("type of rec fails", r.get("kind") == "fail", str(r))
 
     # 多态定义可以在两种类型下使用
     # A polymorphic definition may be used at two different types.
@@ -344,7 +351,7 @@ def test_load_file(b: Path) -> None:
         redef.write_text("f = \\x.x x\n", encoding="utf-8")
         outs = run(["f = \\x.x", ":type f", f":load {redef}", ":type f"], b)
         check("load redef first type", outs[1][0].get("type") == "t0 → t0 (polymorphic)", str(outs[1]))
-        check("load redef stale dropped", outs[3][0].get("type") != "t0 → t0 (polymorphic)", str(outs[3]))
+        check("load redef stale dropped", outs[3][0].get("kind") == "fail", str(outs[3]))
 
 
 # ---------------------------------------------------------------------------
