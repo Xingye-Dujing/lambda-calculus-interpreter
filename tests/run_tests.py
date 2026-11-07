@@ -841,6 +841,22 @@ def test_web_extras(b: Path) -> None:
     finally:
         webapp.app.config["MAX_CONTENT_LENGTH"] = saved_limit
 
+    # 解释器缺失时返回清晰错误，而不是未处理的 500
+    # A missing interpreter returns a clear error, not an unhandled 500.
+    saved_bin = webapp.INTERP_BIN
+    webapp.INTERP_BIN = ROOT / "definitely-missing-extension"
+    try:
+        r = client.post("/api/session", json={"lang": "en"})
+        check("web session missing bin",
+              r.status_code == 500 and "Not found" in r.get_json().get("error", ""),
+              str(r.get_json()))
+        r = client.post("/api/eval", json={"line": "PLUS ONE TWO"})
+        check("web eval missing bin",
+              r.status_code == 500 and "Not found" in r.get_json().get("error", ""),
+              str(r.get_json()))
+    finally:
+        webapp.INTERP_BIN = saved_bin
+
     # 短链分享：服务端保存状态并可按 id 取回
     payload = {"v": 2, "code": ["PLUS ONE TWO"], "strategy": "normal",
                "limit": 42, "theme": "dark", "lang": "en", "eta": False}

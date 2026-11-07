@@ -387,6 +387,8 @@ def api_share_get(sid):
 
 @app.route("/api/session", methods=["POST"])
 def api_session():
+    if not INTERP_BIN.is_file():
+        return jsonify({"ok": False, "error": _missing_bin_msg()}), 500
     data = request.get_json(force=True, silent=True) or {}
     lang = data.get("lang") if data.get("lang") in ALLOWED_LANGS else "both"
     sid, _ = get_session(None, lang)
@@ -467,6 +469,9 @@ def api_eval():
         problem = validate_line(ln)
         if problem:
             return jsonify({"ok": False, "error": problem}), 400
+
+    if not INTERP_BIN.is_file():
+        return jsonify({"ok": False, "error": _missing_bin_msg()}), 500
 
     sid_in = data.get("session")
     try:
