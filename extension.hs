@@ -4,6 +4,7 @@
 {-# LANGUAGE BangPatterns #-}
 
 import qualified Data.Map.Strict as Map
+import qualified Data.IntMap.Strict as IM
 import qualified Data.Set as Set
 import Control.Applicative ((<|>))
 import Control.Exception (catch, mask_, throwIO, SomeException, AsyncException(..))
@@ -352,57 +353,89 @@ evalWHNF eta limit strat = evalUntil eta True limit strat isWHNF
 -- fuel budget exists solely to stop divergent terms.
 data DB = DVar Int | DFree String | DLam String DB | DApp DB DB
 
+-- 惰性求值：参数是带 id 的 thunk，只在真正用到时求值并记忆结果，
+-- 因此 Y 递归（如 rec fact）这类只有惰性求值才终止的项也能得到正规形。
+-- Lazy evaluation: arguments are thunks with ids, forced only when used and
+-- memoized, so terms that only terminate lazily (e.g. rec fact via Y) also
+-- reach a normal form.
 data FastVal
-  = FastLam String (FastVal -> FastM FastVal)
+  = FastLam String (Int -> FastM FastVal)   -- 参数是 thunk id / takes a thunk id
   | FastGen Int
   | FastFree String
-  | FastApp FastVal FastVal
+  | FastApp FastVal Int                     -- 中性应用 + 参数 thunk / neutral app + arg thunk
 
-newtype FastM a = FastM { runFastM :: Int -> Either () (a, Int) }
+data Thunk = Thunk DB [Int] | Done FastVal
+
+data FastState = FastState
+  { fsFuel  :: Int
+  , fsNext  :: Int
+  , fsStore :: IM.IntMap Thunk
+  }
+
+newtype FastM a = FastM { runFastM :: FastState -> Either () (a, FastState) }
 
 instance Functor FastM where
-  fmap f (FastM m) = FastM $ \n -> case m n of
-    Left ()       -> Left ()
-    Right (a, n') -> Right (f a, n')
+  fmap f (FastM m) = FastM $ \s -> case m s of
+    Left ()        -> Left ()
+    Right (a, s')  -> Right (f a, s')
 
 instance Applicative FastM where
-  pure a = FastM $ \n -> Right (a, n)
-  FastM mf <*> FastM ma = FastM $ \n -> case mf n of
+  pure a = FastM $ \s -> Right (a, s)
+  FastM mf <*> FastM ma = FastM $ \s -> case mf s of
     Left ()       -> Left ()
-    Right (f, n1) -> case ma n1 of
+    Right (f, s1) -> case ma s1 of
       Left ()       -> Left ()
-      Right (a, n2) -> Right (f a, n2)
+      Right (a, s2) -> Right (f a, s2)
 
 instance Monad FastM where
-  FastM m >>= k = FastM $ \n -> case m n of
+  FastM m >>= k = FastM $ \s -> case m s of
     Left ()       -> Left ()
-    Right (a, n1) -> case k a of FastM m' -> m' n1
+    Right (a, s1) -> case k a of FastM m' -> m' s1
 
 -- 每发生一次 β 归约消耗一格燃料
 -- One tick per β-contraction.
 tick :: FastM ()
-tick = FastM $ \n -> if n <= 0 then Left () else Right ((), n - 1)
+tick = FastM $ \s ->
+  if fsFuel s <= 0 then Left () else Right ((), s { fsFuel = fsFuel s - 1 })
+
+freshThunk :: DB -> [Int] -> FastM Int
+freshThunk db env = FastM $ \s ->
+  let i = fsNext s
+  in Right (i, s { fsNext = i + 1, fsStore = IM.insert i (Thunk db env) (fsStore s) })
+
+freshVal :: FastVal -> FastM Int
+freshVal v = FastM $ \s ->
+  let i = fsNext s
+  in Right (i, s { fsNext = i + 1, fsStore = IM.insert i (Done v) (fsStore s) })
+
+force :: Int -> FastM FastVal
+force i = FastM $ \s -> case IM.lookup i (fsStore s) of
+  Just (Done v)       -> Right (v, s)
+  Just (Thunk db env) -> case runFastM (evalDB env db) s of
+    Left ()       -> Left ()
+    Right (v, s') -> Right (v, s' { fsStore = IM.insert i (Done v) (fsStore s') })
+  Nothing             -> Right (FastFree "?", s)   -- 不可达 / unreachable
 
 toDB :: [String] -> Expr -> DB
 toDB bound (Var x)   = maybe (DFree x) DVar (elemIndex x bound)
 toDB bound (Lam x b) = DLam x (toDB (x : bound) b)
 toDB bound (App f a) = DApp (toDB bound f) (toDB bound a)
 
-evalDB :: [FastVal] -> DB -> FastM FastVal
+evalDB :: [Int] -> DB -> FastM FastVal
 evalDB env (DVar i) =
   case drop i env of
-    (v : _) -> pure v
+    (t : _) -> force t
     []      -> pure (FastFree "?")   -- 不可达 / unreachable
 evalDB _   (DFree x)  = pure (FastFree x)
-evalDB env (DLam x b) = pure (FastLam x (\v -> evalDB (v : env) b))
+evalDB env (DLam x b) = pure (FastLam x (\t -> evalDB (t : env) b))
 evalDB env (DApp f a) = do
   vf <- evalDB env f
-  va <- evalDB env a
-  applyFast vf va
+  t  <- freshThunk a env
+  applyFast vf t
 
-applyFast :: FastVal -> FastVal -> FastM FastVal
-applyFast (FastLam _ f) v = tick >> f v
-applyFast f a             = pure (FastApp f a)
+applyFast :: FastVal -> Int -> FastM FastVal
+applyFast (FastLam _ f) t = tick >> f t
+applyFast f t             = pure (FastApp f t)
 
 quoteFast :: Set.Set String -> [String] -> FastVal -> FastM Expr
 quoteFast _ bound (FastGen i) =
@@ -411,18 +444,19 @@ quoteFast _ bound (FastGen i) =
        then pure (Var (bound !! (n - 1 - i)))
        else pure (Var ("#" ++ show i))
 quoteFast _ _ (FastFree x) = pure (Var x)
-quoteFast avoid bound (FastApp f a) =
-  App <$> quoteFast avoid bound f <*> quoteFast avoid bound a
-quoteFast avoid bound (FastLam hint f) =
+quoteFast avoid bound (FastApp f t) =
+  App <$> quoteFast avoid bound f <*> (force t >>= quoteFast avoid bound)
+quoteFast avoid bound (FastLam hint f) = do
+  t <- freshVal (FastGen (length bound))
   let name  = freshVar hint avoid
       avoid' = Set.insert name avoid
-  in Lam name <$> (f (FastGen (length bound))
-                    >>= quoteFast avoid' (name : bound))
+  Lam name <$> (f t >>= quoteFast avoid' (name : bound))
 
 fastNormalForm :: Int -> Expr -> Maybe Expr
 fastNormalForm fuel e =
-  case runFastM (evalDB [] (toDB [] e) >>= quoteFast (freeVars e) []) fuel of
-    Left ()      -> Nothing
+  case runFastM (evalDB [] (toDB [] e) >>= quoteFast (freeVars e) [])
+                (FastState fuel 0 IM.empty) of
+    Left ()       -> Nothing
     Right (nf, _) -> Just nf
 
 -- ---------------------------------------------------------------------------

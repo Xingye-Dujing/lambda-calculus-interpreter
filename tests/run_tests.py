@@ -1004,6 +1004,12 @@ def test_fast_mode(b: Path) -> None:
     off = one([":fast on", ":fast off", "MULT 3 3"], b)
     check("fast off restores steps", "steps" in off and "fast" not in off, str(off)[:160])
 
+    # 快速模式必须求正规形：Y 递归只有惰性求值才终止，也应当能算出结果
+    # Fast mode must normalize; Y recursion terminates only lazily, yet must work.
+    rec = "rec fact = \\n. IF (ISZERO n) ONE (MULT n (fact (PRED n)))"
+    r = one([rec, ":fast on", ":steps 5000", ":int (fact THREE)"], b)
+    check("fast normalizes Y recursion", r.get("value") == 6, str(r)[:160])
+
     # .lam 内的 :fast 也会生效 / a :fast directive inside a .lam file applies too
     f = ROOT / "fast_mode_tmp.lam"
     try:
