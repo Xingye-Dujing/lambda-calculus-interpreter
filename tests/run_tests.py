@@ -312,6 +312,15 @@ def test_load_file(b: Path) -> None:
         check("load summary", any("Loaded 2" in o.get("text", "") for o in infos), str(infos))
         check("load error line", "line 2" in errors[0].get("text", "").lower(), errors[0].get("text", ""))
 
+        # 从文件加载时把已有变量重定义为不可类型化的项，旧类型方案必须被清除
+        # Loading a file that redefines an existing var to an untypable term
+        # must drop its stale type scheme.
+        redef = Path(td) / "redef.lam"
+        redef.write_text("f = \\x.x x\n", encoding="utf-8")
+        outs = run(["f = \\x.x", ":type f", f":load {redef}", ":type f"], b)
+        check("load redef first type", outs[1][0].get("type") == "t0 → t0 (polymorphic)", str(outs[1]))
+        check("load redef stale dropped", outs[3][0].get("type") != "t0 → t0 (polymorphic)", str(outs[3]))
+
 
 # ---------------------------------------------------------------------------
 # 手动归约 / Manual reduction

@@ -1500,7 +1500,7 @@ loadDefinitionsFromFile env0 tenv0 path = do
               env'  = Map.insert var expr' (loEnv acc)
               tenv' = case inferScheme (loTypeEnv acc) expr of
                 Right sc -> Map.insert var sc (loTypeEnv acc)
-                Left _   -> loTypeEnv acc
+                Left _   -> Map.delete var (loTypeEnv acc)
           in acc { loEnv = env', loTypeEnv = tenv', loOk = (var, expr') : loOk acc }
         Right (DefineRec var expr) ->
           let body  = expandTop (Map.delete var (loEnv acc)) expr
