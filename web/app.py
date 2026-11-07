@@ -64,6 +64,9 @@ ALLOWED_LANGS = {"zh", "en", "both"}
 SHARE_TTL = float(os.environ.get("LAMBDA_SHARE_TTL", "604800"))   # 7 days
 MAX_SHARES = int(os.environ.get("LAMBDA_MAX_SHARES", "500"))
 MAX_SHARE_BYTES = 64 * 1024
+# 限制请求体大小，避免公开部署时一个巨大请求耗尽内存
+# Cap the request body so a huge request cannot exhaust memory in production.
+MAX_BODY = int(os.environ.get("LAMBDA_MAX_BODY", str(1024 * 1024)))
 
 # `:load` 默认只允许解释器目录内的文件，防止 Web 用户读取服务器任意路径；
 # 设为 `*` 可关闭限制（仅建议在本地使用）
@@ -149,6 +152,7 @@ PRELUDE = [
 ]
 
 app = Flask(__name__, static_folder=None, static_url_path=None)
+app.config["MAX_CONTENT_LENGTH"] = MAX_BODY
 
 
 # ---------------------------------------------------------------------------

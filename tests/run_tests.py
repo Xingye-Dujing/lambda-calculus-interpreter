@@ -828,6 +828,19 @@ def test_web_extras(b: Path) -> None:
     icon = client.get("/icon.svg")
     check("icon served", icon.status_code == 200 and "svg" in icon.content_type, icon.content_type)
 
+    # 请求体上限：超大请求应直接 413，而不是被读进内存
+    # Request body cap: an oversized request is rejected with 413.
+    check("web body limit configured",
+          webapp.app.config.get("MAX_CONTENT_LENGTH") == 1024 * 1024,
+          str(webapp.app.config.get("MAX_CONTENT_LENGTH")))
+    saved_limit = webapp.app.config["MAX_CONTENT_LENGTH"]
+    webapp.app.config["MAX_CONTENT_LENGTH"] = 256
+    try:
+        big = client.post("/api/eval", json={"line": "x" * 1000})
+        check("web oversized 413", big.status_code == 413, str(big.status_code))
+    finally:
+        webapp.app.config["MAX_CONTENT_LENGTH"] = saved_limit
+
     # 短链分享：服务端保存状态并可按 id 取回
     payload = {"v": 2, "code": ["PLUS ONE TWO"], "strategy": "normal",
                "limit": 42, "theme": "dark", "lang": "en", "eta": False}
