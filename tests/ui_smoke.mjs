@@ -1,6 +1,6 @@
 // 前端状态同步的冒烟测试 / Frontend state-sync smoke test.
 // 用一个最小 DOM 桩加载 web/index.html 的脚本，验证在终端输入
-// :lang/:steps/:eta/:fast 后，本地 state 与界面会同步更新。
+// :lang/:steps/:eta/:fast 后，本地 state 与界面会同步更新
 // Loads the web/index.html script under a minimal DOM stub and checks that
 // typing :lang/:steps/:eta/:fast in the terminal updates local state and UI.
 import fs from "node:fs";

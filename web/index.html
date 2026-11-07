@@ -1856,7 +1856,7 @@
   }
 
   // 分享链接可被手工构造（#state= 不经过服务端），因此逐字段校验，
-  // 避免非法策略/步数/语言把界面带入无效状态。
+  // 避免非法策略/步数/语言把界面带入无效状态
   // Share links can be crafted (#state= bypasses the server), so validate each
   // field instead of trusting it.
   function validLang(v){ return v === "zh" || v === "en" || v === "both"; }

@@ -456,7 +456,7 @@ def api_eval():
         raw_lines = [line]
 
     # 会话协议每行一个哨兵：必须把每个值拆成单行再逐条发送，
-    # 否则多行输入会让后续请求读到上一条命令残留的输出。
+    # 否则多行输入会让后续请求读到上一条命令残留的输出
     # The session protocol emits one sentinel per line, so split every value
     # into single lines; otherwise a multi-line value leaves stale output queued.
     lines: list[str] = []

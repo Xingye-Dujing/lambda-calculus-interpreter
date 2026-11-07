@@ -77,8 +77,8 @@ freshVar base avoid
 -- 无捕获替换 Capture-Avoiding Substitution
 -- ---------------------------------------------------------------------------
 -- 参数的自由的变量只算一次，向下贯穿整次替换；同时把“是否发生过
--- α-重命名”作为返回值带出来，这样 β 步不需要再单独扫一遍项来判定规则。
--- 返回 Nothing 表示该子树不含 x，调用方直接复用原树（共享而非复制）。
+-- α-重命名”作为返回值带出来，这样 β 步不需要再单独扫一遍项来判定规则
+-- 返回 Nothing 表示该子树不含 x，调用方直接复用原树（共享而非复制）
 -- Free variables of the argument are computed once and threaded through the
 -- whole substitution; the same pass reports whether any α-renaming was needed,
 -- so a β step no longer scans the term twice. Nothing means the subtree does
@@ -123,7 +123,7 @@ substRename x v fvV body =
 -- α 等价 Alpha Equivalence
 -- ---------------------------------------------------------------------------
 -- 不构造 de Bruijn 中间树，直接在两个绑定环境上同步下降：融合掉
--- toDB 的两棵树分配，等价判断变成一次结构比较。
+-- toDB 的两棵树分配，等价判断变成一次结构比较
 -- No intermediate de Bruijn tree: both binding environments are walked in
 -- lockstep, so α-equivalence fuses the old toDB allocation away.
 alphaEq :: Expr -> Expr -> Bool
@@ -345,7 +345,7 @@ evalWHNF eta limit strat = evalUntil eta True limit strat isWHNF
 -- ---------------------------------------------------------------------------
 -- 小步引擎每一步都要重建整项；Church 算术里这会让每步代价随项增长。快速
 -- 模式改用环境 + 闭包：绑定存进环境，参数作为共享 thunk 传递，同一次求值
--- 只算一次。它只给正规形，不产生轨迹或精确步数；燃料只用于挡住发散项。
+-- 只算一次。它只给正规形，不产生轨迹或精确步数；燃料只用于挡住发散项
 -- The small-step engine rebuilds the whole term every step, which grows with
 -- Church arithmetic. Fast mode uses environments and closures instead: bindings
 -- live in the environment and arguments are shared thunks, so each is evaluated
@@ -354,7 +354,7 @@ evalWHNF eta limit strat = evalUntil eta True limit strat isWHNF
 data DB = DVar Int | DFree String | DLam String DB | DApp DB DB
 
 -- 惰性求值：参数是带 id 的 thunk，只在真正用到时求值并记忆结果，
--- 因此 Y 递归（如 rec fact）这类只有惰性求值才终止的项也能得到正规形。
+-- 因此 Y 递归（如 rec fact）这类只有惰性求值才终止的项也能得到正规形
 -- Lazy evaluation: arguments are thunks with ids, forced only when used and
 -- memoized, so terms that only terminate lazily (e.g. rec fact via Y) also
 -- reach a normal form.
@@ -484,7 +484,7 @@ redexInfos :: Expr -> [Redex]
 redexInfos = go []
   where
     -- 路径按反向累积，只有真的遇到 redex 时才 reverse；正规形里没有 redex，
-    -- 因此不会为每个节点分配一条路径。
+    -- 因此不会为每个节点分配一条路径
     -- Paths accumulate reversed and are reversed only at a redex, so a normal
     -- form allocates no path per node.
     go rev e = here ++ children
@@ -1205,7 +1205,7 @@ inferScheme :: TypeEnv -> Expr -> Either String Scheme
 inferScheme tenv e = runTI go (Map.size tenv + 1)
   where
     -- 自由变量必须是单态的：同一名字的每次出现共享一个类型变量，
-    -- 否则 'x x' 会被错误地类型化。
+    -- 否则 'x x' 会被错误地类型化
     -- Free variables are monomorphic: every occurrence of a name shares one
     -- type variable, otherwise 'x x' would incorrectly type-check.
     go = do
@@ -1392,7 +1392,7 @@ astFieldSized n e
   | n <= astBudget = "ast" .= JArr (map JStr (treeLines e))
   | otherwise      = "astOmitted" .= JBool True
 
--- 与 astFieldSized 一样限制文本树：缩进随深度增长，大项会撑爆 JSON。
+-- 与 astFieldSized 一样限制文本树：缩进随深度增长，大项会撑爆 JSON
 -- Bound the text tree like astFieldSized; indentation grows with depth.
 treeFieldSized :: Int -> Expr -> (String, J)
 treeFieldSized n e

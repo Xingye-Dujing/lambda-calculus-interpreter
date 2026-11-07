@@ -561,7 +561,7 @@ def test_web_api(b: Path) -> None:
         client.delete(f"/api/session/{sid}")
 
     # 自定义 LAMBDA_LOAD_ROOT 时，相对路径必须按解释器工作目录（INTERP_DIR）解析，
-    # 否则校验与解释器实际打开的文件不一致，可绕过路径限制。
+    # 否则校验与解释器实际打开的文件不一致，可绕过路径限制
     # With a custom LAMBDA_LOAD_ROOT, relative paths must resolve against the
     # interpreter's cwd (INTERP_DIR); resolving against root lets the real open
     # land outside the configured root.
