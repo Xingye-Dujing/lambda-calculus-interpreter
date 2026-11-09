@@ -49,6 +49,14 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-binary
+          path: |
+            extension.exe
+            main.exe
+          if-no-files-found: error
+
   macos:
     name: macOS DMG (${{ matrix.arch }})
     # macOS 13/14 runners are retired; build both current Intel and Apple Silicon.
@@ -93,9 +101,113 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-binary-${{ matrix.arch }}
+          path: |
+            main
+            extension
+          if-no-files-found: error
+
+  desktop-windows:
+    name: Desktop EXE (pywebview)
+    needs: [windows]
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-binary
+          path: .
+
+      - name: Install desktop dependencies
+        run: python -m pip install -r web/requirements.txt -r desktop-requirements.txt
+
+      - name: Build desktop app
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $ver = (Get-Content VERSION -Raw).Trim()
+          pyinstaller --noconfirm --clean --onefile --windowed `
+            --name lambda-calculus-interpreter-desktop `
+            --collect-all webview --hidden-import=clr `
+            --add-binary "extension.exe;." `
+            --add-data "web;web" --add-data "VERSION;." --add-data "lib;lib" `
+            desktop.py
+          $zip = "dist/lambda-calculus-interpreter-$ver-desktop-windows-x64.zip"
+          Compress-Archive -Path "dist/lambda-calculus-interpreter-desktop.exe" -DestinationPath $zip
+          $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+          "$hash  $(Split-Path $zip -Leaf)" | Set-Content "dist/SHA256SUMS-desktop-windows.txt"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-windows
+          path: |
+            dist/*.zip
+            dist/SHA256SUMS-desktop-windows.txt
+          if-no-files-found: error
+
+  desktop-macos:
+    name: Desktop DMG (pywebview, ${{ matrix.arch }})
+    needs: [macos]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15-intel
+            arch: x64
+          - os: macos-15
+            arch: arm64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: macos-binary-${{ matrix.arch }}
+          path: .
+
+      - name: Install desktop dependencies
+        run: python -m pip install -r web/requirements.txt -r desktop-requirements.txt
+
+      - name: Build desktop app
+        shell: bash
+        run: |
+          set -euo pipefail
+          ver="$(tr -d '\r\n' < VERSION)"
+          pyinstaller --noconfirm --clean --windowed \
+            --name LambdaCalculusInterpreter \
+            --collect-all webview \
+            --add-binary "extension:." \
+            --add-data "web:web" --add-data "VERSION:." --add-data "lib:lib" \
+            desktop.py
+          dmg="dist/lambda-calculus-interpreter-$ver-desktop-macos-${{ matrix.arch }}.dmg"
+          hdiutil create -volname "Lambda Calculus Interpreter" \
+            -srcfolder "dist/LambdaCalculusInterpreter.app" -ov -format UDZO "$dmg"
+          (cd dist && shasum -a 256 "$(basename "$dmg")" > "SHA256SUMS-desktop-macos-${{ matrix.arch }}.txt")
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-macos-${{ matrix.arch }}
+          path: |
+            dist/*.dmg
+            dist/SHA256SUMS-desktop-macos-${{ matrix.arch }}.txt
+          if-no-files-found: error
+
   release:
     name: Publish Release
-    needs: [windows, macos]
+    needs: [windows, macos, desktop-windows, desktop-macos]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

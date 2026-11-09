@@ -222,6 +222,23 @@ pip install -r web/requirements.txt
 python web/app.py          # http://127.0.0.1:8081
 ```
 
+## 桌面版（`pywebview`）
+
+`desktop.py` 在本地回环端口启动同一套 Flask 界面，并用 `pywebview` 原生窗口打开。PyInstaller 会把 Python 运行时、`web/`、`lib/`、`VERSION` 与编译好的 `extension` 一起打包成桌面程序。
+
+```bash
+pip install -r web/requirements.txt -r desktop-requirements.txt
+# 先运行 build.bat / build.sh 生成 extension
+pyinstaller --noconfirm --clean --onefile --windowed \
+  --name lambda-calculus-interpreter-desktop \
+  --collect-all webview \
+  --add-binary "extension.exe;." \
+  --add-data "web;web" --add-data "VERSION;." --add-data "lib;lib" \
+  desktop.py
+```
+
+macOS 使用 `--windowed`、`--add-binary "extension:."` 与 `--add-data "web:web"`，再把 `dist/LambdaCalculusInterpreter.app` 包成 DMG。发布工作流会同时构建 Windows x64、macOS x64 与 macOS arm64 桌面产物。桌面程序未签名，首次启动时 Windows SmartScreen / macOS Gatekeeper 可能要求确认。
+
 ## 批处理与 JSON 协议
 
 `--batch` 从 stdin 逐行读取命令，每条命令后输出记录分隔符 `\x1e`。`--json` 让每条输出成为 JSON 对象：

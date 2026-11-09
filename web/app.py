@@ -50,6 +50,7 @@ import os
 import queue
 import re
 import subprocess
+import sys
 import threading
 import time
 import unicodedata
@@ -60,7 +61,9 @@ from flask import (Flask, Response, g, has_request_context, jsonify, request,
                    send_from_directory, stream_with_context)
 from werkzeug.exceptions import HTTPException, RequestEntityTooLarge
 
-APP_DIR = Path(__file__).resolve().parent
+APP_DIR = (Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent)) / "web"
+           if getattr(sys, "frozen", False)
+           else Path(__file__).resolve().parent)
 RS = "\x1e"                     # 与前端的记录分隔符保持一致 / keep in sync with the frontend
 EVAL_TIMEOUT = float(os.environ.get("LAMBDA_EVAL_TIMEOUT", "10"))
 SESSION_IDLE = float(os.environ.get("LAMBDA_SESSION_IDLE", "1800"))
@@ -131,7 +134,7 @@ ALLOW_SAVE = os.environ.get("LAMBDA_ALLOW_SAVE", "0").strip().lower() in (
 def load_root() -> Path | None:
     raw = os.environ.get("LAMBDA_LOAD_ROOT")
     if raw is None:
-        return INTERP_DIR
+        return INTERP_CWD
     if raw.strip() in ("", "*"):
         return None
     return Path(raw).expanduser().resolve()
@@ -152,10 +155,10 @@ def _check_path(line: str) -> str | None:
         try:
             target = Path(raw)
             if not target.is_absolute():
-                # 解释器以 INTERP_DIR 为工作目录，相对路径必须按它解析后再检查是否在 root 内
-                # The interpreter runs with cwd=INTERP_DIR, so resolve relative paths
+                # 解释器以 INTERP_CWD 为工作目录，相对路径必须按它解析后再检查是否在 root 内
+                # The interpreter runs with cwd=INTERP_CWD, so resolve relative paths
                 # against that (not root) before checking confinement.
-                target = INTERP_DIR / target
+                target = INTERP_CWD / target
             target.resolve().relative_to(root)
         except (ValueError, OSError):
             return (f":{verb} 仅允许解释器目录内的路径 / :{verb} is restricted to {root} "
@@ -188,6 +191,14 @@ def _resolve_interp() -> Path:
 
 INTERP_BIN = _resolve_interp()
 INTERP_DIR = INTERP_BIN.parent
+# 解释器的工作目录；桌面版指向可写的用户目录，普通 Web 部署仍是二进制所在目录
+# Interpreter working directory; the desktop build points it at a writable user
+# directory, while a normal web deployment keeps the binary's directory.
+INTERP_CWD = Path(os.environ.get("LAMBDA_INTERP_CWD", str(INTERP_DIR))).expanduser()
+try:
+    INTERP_CWD.mkdir(parents=True, exist_ok=True)
+except OSError:
+    INTERP_CWD = INTERP_DIR
 
 # 与 extension.hs 中 initEnv 保持一致
 PRELUDE = [
@@ -360,7 +371,7 @@ class Interpreter:
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
-            cwd=str(INTERP_DIR),
+            cwd=str(INTERP_CWD),
             env=env,
             bufsize=0,
         )
@@ -705,7 +716,7 @@ def run_interpreter(code: str, lang: str = "both", timeout: float = EVAL_TIMEOUT
         input=code.encode("utf-8"),
         capture_output=True,
         timeout=timeout,
-        cwd=str(INTERP_DIR),
+        cwd=str(INTERP_CWD),
         env={**os.environ, "TERM": "dumb"},
     )
     out = (proc.stdout or b"").decode("utf-8", "replace")

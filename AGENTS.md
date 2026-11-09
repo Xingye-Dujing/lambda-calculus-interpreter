@@ -144,6 +144,19 @@ Chinese/English**.
   subprocess call; send bytes (not `text=True`) so Python does not translate
   `\n` to `\r\n`.
 
+## Desktop app (`desktop.py`)
+
+- `desktop.py` starts `web.app` on a loopback port and opens it with
+  `pywebview`. PyInstaller bundles `web/`, `lib/`, `VERSION` and `extension`
+  (`desktop-requirements.txt` has the build deps).
+- `web/app.py` detects `sys.frozen` and resolves `APP_DIR` from `sys._MEIPASS`,
+  while `LAMBDA_INTERP_CWD` points the interpreter at a writable user directory
+  (`~/.lambda-calculus-interpreter` by default in the desktop wrapper).
+- The release workflow builds a Windows one-file EXE and macOS `.app` bundles
+  packaged as DMGs for x64 and arm64. Desktop builds are unsigned.
+- Keep `desktop.py` and the PyInstaller flags in `.github/workflows/release.yml`
+  in sync with any new web asset or runtime directory.
+
 ## Architecture
 
 - `main.hs` and `extension.hs` are deliberately standalone. The core (`Expr`,

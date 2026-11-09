@@ -81,3 +81,8 @@ desktop.ini
 # 分享短链持久化 / persisted share links
 /web/shares.json
 /web/shares.json.tmp
+
+# PyInstaller 构建产物 / PyInstaller build output
+/build/
+/dist/
+/*.spec

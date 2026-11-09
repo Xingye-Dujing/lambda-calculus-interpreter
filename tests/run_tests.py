@@ -1266,7 +1266,9 @@ def test_style_conventions(b: Path) -> None:
         "tests/run_tests.py", "tests/ui_smoke.mjs", "tools/check_core_sync.py",
         "README.md", "README-CN.md", "AGENTS.md", "CHANGELOG.md",
         "CONTRIBUTING.md", "tools/screenshot.py", "lib/prelude.lam",
-        "Dockerfile", "web/requirements.txt",
+        "Dockerfile", "web/requirements.txt", "desktop.py",
+        "desktop-requirements.txt", "web/__init__.py",
+        ".github/workflows/release.yml",
     )
     comment_prefixes = ("#", "--", "//", "rem ", "/*", "*")
     for name in sources:

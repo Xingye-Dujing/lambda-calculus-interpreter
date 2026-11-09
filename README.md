@@ -323,6 +323,30 @@ pip install -r web/requirements.txt
 python web/app.py          # http://127.0.0.1:8081
 ```
 
+## Desktop app (`pywebview`)
+
+`desktop.py` starts the same Flask UI on a loopback port and opens it in a native
+`pywebview` window. PyInstaller bundles the Python runtime, `web/`, `lib/`,
+`VERSION` and the compiled `extension` into one desktop application.
+
+```bash
+pip install -r web/requirements.txt -r desktop-requirements.txt
+# after building extension (build.bat / build.sh)
+pyinstaller --noconfirm --clean --onefile --windowed \
+  --name lambda-calculus-interpreter-desktop \
+  --collect-all webview \
+  --add-binary "extension.exe;." \
+  --add-data "web;web" --add-data "VERSION;." --add-data "lib;lib" \
+  desktop.py
+```
+
+On macOS use `--windowed`, `--add-binary "extension:."` and
+`--add-data "web:web"`, then wrap `dist/LambdaCalculusInterpreter.app` in a DMG.
+The release workflow builds these desktop artifacts for Windows x64, macOS x64
+and macOS arm64 alongside the command-line archives. Desktop builds are
+unsigned, so Windows SmartScreen / macOS Gatekeeper may ask for confirmation on
+first launch.
+
 ## Batch and JSON protocol
 
 `--batch` reads one command per stdin line and prints `\x1e` after each result.

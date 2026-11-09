@@ -1,0 +1,4 @@
+# Desktop wrapper dependencies / 桌面封装依赖
+# Build with: pyinstaller ... desktop.py (see .github/workflows/release.yml)
+pywebview>=5.4
+pyinstaller>=6.10

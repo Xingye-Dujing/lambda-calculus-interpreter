@@ -19,6 +19,8 @@ extra-source-files: README.md
                     VERSION
                     test.lam
                     lib/prelude.lam
+                    desktop.py
+                    desktop-requirements.txt
 
 executable main
   main-is:          main.hs

@@ -28,6 +28,10 @@
 - `.github/workflows/release.yml` builds Windows EXE archives and macOS DMGs
   (x64 and arm64) on a `v*` tag or manual dispatch and publishes them to a
   GitHub Release.
+- Desktop packaging via `desktop.py` + `pywebview` + PyInstaller: a Windows
+  one-file EXE and macOS `.app` DMGs (x64 and arm64). `web/app.py` resolves
+  frozen resources from `sys._MEIPASS`, and `LAMBDA_INTERP_CWD` keeps the
+  interpreter in a writable user directory.
 
 ### Changed
 
