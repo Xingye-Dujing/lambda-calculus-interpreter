@@ -134,10 +134,15 @@ cabal build all
 cabal run extension -- --help
 ```
 
+Release artifacts are produced by `.github/workflows/release.yml`: pushing a
+`v*` tag (or running the workflow manually) builds a Windows `.zip` with
+`main.exe`/`extension.exe` and macOS `.dmg` images for x64 and arm64, then
+publishes them to a GitHub Release with SHA-256 checksums.
+
 ## Version
 
 `VERSION` at the repository root is the single source of truth (currently
-2.1.0); the Cabal package version and `./extension -v|--version` follow it.
+2.2.0); the Cabal package version and `./extension -v|--version` follow it.
 See [CHANGELOG.md](./CHANGELOG.md) for the release history.
 
 ## Usage

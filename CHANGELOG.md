@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2.2.0 — 2026-11-09
 
 ### Added
 
@@ -25,12 +25,15 @@
 - `:type expr : T` now reports `expected`/`actual` with a readable mismatch.
 - `tools/check_core_sync.py --fix` copies shared declarations from
   `extension.hs` into `main.hs`.
+- `.github/workflows/release.yml` builds Windows EXE archives and macOS DMGs
+  (x64 and arm64) on a `v*` tag or manual dispatch and publishes them to a
+  GitHub Release.
 
 ### Changed
 
 - `rec` definitions use the call-by-value `Z` combinator, so simple recursion
   also works under applicative order when the branch does not need lazy `if`.
-- The test suite grew to 47 groups and covers the CLI modes, new syntax,
+- The test suite grew to 48 groups and covers the CLI modes, new syntax,
   prelude/library, rewind commands, timing fields, SSE, share persistence and
   rate limiting.
 

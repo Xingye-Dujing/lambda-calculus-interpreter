@@ -29,6 +29,10 @@ Chinese/English**.
   Run it after any core change; it is the regression net for `main.hs` and
   `extension.hs`. `python tools/check_core_sync.py` compares the shared core;
   `--fix` copies differing shared declarations from `extension.hs` to `main.hs`.
+- **Release:** `.github/workflows/release.yml` runs on a `v*` tag or manual
+  dispatch, builds `main.exe`/`extension.exe` on Windows, packages macOS DMGs
+  for x64 and arm64, and publishes them (plus SHA-256 files) with
+  `softprops/action-gh-release`.
 - `./main` — minimal REPL (`:q` to quit).
 - `./extension [file...] [-h|--help] [-v|--version] [--lang zh|en|both] [--lang=zh]
   [--timeout 秒] [--batch] [--json] [-e|--eval cmd] [--check file]

@@ -1,0 +1,131 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (default: v + VERSION)"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    name: Windows EXE
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: haskell-actions/setup@v2
+        with:
+          ghc-version: "9.6"
+
+      - name: Build (Windows)
+        shell: cmd
+        run: build.bat
+
+      - name: Package EXE
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $ver = (Get-Content VERSION -Raw).Trim()
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item main.exe,extension.exe,README.md,README-CN.md,LICENSE,VERSION dist
+          Copy-Item lib dist\lib -Recurse
+          $zip = "dist/lambda-calculus-interpreter-$ver-windows-x64.zip"
+          Compress-Archive -Path dist\* -DestinationPath $zip
+          $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+          "$hash  $(Split-Path $zip -Leaf)" | Set-Content "dist/SHA256SUMS-windows.txt"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-exe
+          path: dist/*
+          if-no-files-found: error
+
+  macos:
+    name: macOS DMG (${{ matrix.arch }})
+    # macOS 13/14 runners are retired; build both current Intel and Apple Silicon.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15-intel
+            arch: x64
+          - os: macos-15
+            arch: arm64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: haskell-actions/setup@v2
+        with:
+          ghc-version: "9.6"
+
+      - name: Build (macOS)
+        run: bash build.sh
+
+      - name: Package DMG
+        shell: bash
+        run: |
+          set -euo pipefail
+          ver="$(tr -d '\r\n' < VERSION)"
+          staging="dist/lambda-calculus-interpreter"
+          mkdir -p "$staging"
+          cp main extension README.md README-CN.md LICENSE VERSION "$staging"/
+          cp -R lib "$staging"/lib
+          chmod +x "$staging/main" "$staging/extension"
+          dmg="dist/lambda-calculus-interpreter-$ver-macos-${{ matrix.arch }}.dmg"
+          hdiutil create -volname "Lambda Calculus Interpreter" \
+            -srcfolder "$staging" -ov -format UDZO "$dmg"
+          (cd dist && shasum -a 256 "$(basename "$dmg")" > "SHA256SUMS-macos-${{ matrix.arch }}.txt")
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-dmg-${{ matrix.arch }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    name: Publish Release
+    needs: [windows, macos]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Resolve release tag
+        id: tag
+        shell: bash
+        run: |
+          if [ -n "${{ inputs.tag }}" ]; then
+            tag="${{ inputs.tag }}"
+          elif [ "${{ github.ref_type }}" = "tag" ]; then
+            tag="${{ github.ref_name }}"
+          else
+            tag="v$(tr -d '\r\n' < VERSION)"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Publishing $tag"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: ${{ steps.tag.outputs.tag }}
+          generate_release_notes: true
+          files: |
+            dist/*.zip
+            dist/*.dmg
+            dist/SHA256SUMS-*.txt
