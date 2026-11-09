@@ -142,7 +142,7 @@ publishes them to a GitHub Release with SHA-256 checksums.
 ## Version
 
 `VERSION` at the repository root is the single source of truth (currently
-2.2.0); the Cabal package version and `./extension -v|--version` follow it.
+2.2.1); the Cabal package version and `./extension -v|--version` follow it.
 See [CHANGELOG.md](./CHANGELOG.md) for the release history.
 
 ## Usage
@@ -343,9 +343,10 @@ pyinstaller --noconfirm --clean --onefile --windowed \
 On macOS use `--windowed`, `--add-binary "extension:."` and
 `--add-data "web:web"`, then wrap `dist/LambdaCalculusInterpreter.app` in a DMG.
 The release workflow builds these desktop artifacts for Windows x64, macOS x64
-and macOS arm64 alongside the command-line archives. Desktop builds are
-unsigned, so Windows SmartScreen / macOS Gatekeeper may ask for confirmation on
-first launch.
+and macOS arm64 alongside the command-line archives. On Windows the desktop app
+and its child `extension.exe` processes run without console windows. Desktop
+builds are unsigned, so Windows SmartScreen / macOS Gatekeeper may ask for
+confirmation on first launch.
 
 ## Batch and JSON protocol
 

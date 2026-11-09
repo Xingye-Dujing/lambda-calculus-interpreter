@@ -93,7 +93,7 @@ cabal run extension -- --help
 
 ## 版本
 
-仓库根目录的 `VERSION` 是版本单一来源（当前 2.2.0）；Cabal 包的版本号与
+仓库根目录的 `VERSION` 是版本单一来源（当前 2.2.1）；Cabal 包的版本号与
 `./extension -v|--version` 都以此为准。发布历史见 [CHANGELOG.md](./CHANGELOG.md)。
 
 ## 使用方法
@@ -237,7 +237,7 @@ pyinstaller --noconfirm --clean --onefile --windowed \
   desktop.py
 ```
 
-macOS 使用 `--windowed`、`--add-binary "extension:."` 与 `--add-data "web:web"`，再把 `dist/LambdaCalculusInterpreter.app` 包成 DMG。发布工作流会同时构建 Windows x64、macOS x64 与 macOS arm64 桌面产物。桌面程序未签名，首次启动时 Windows SmartScreen / macOS Gatekeeper 可能要求确认。
+macOS 使用 `--windowed`、`--add-binary "extension:."` 与 `--add-data "web:web"`，再把 `dist/LambdaCalculusInterpreter.app` 包成 DMG。发布工作流会同时构建 Windows x64、macOS x64 与 macOS arm64 桌面产物。Windows 上桌面程序及其启动的 `extension.exe` 都不会弹出控制台窗口。桌面程序未签名，首次启动时 Windows SmartScreen / macOS Gatekeeper 可能要求确认。
 
 ## 批处理与 JSON 协议
 

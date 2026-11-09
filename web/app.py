@@ -350,6 +350,24 @@ def _err_any(exc):
 # ---------------------------------------------------------------------------
 # 常驻解释器 / persistent interpreter
 # ---------------------------------------------------------------------------
+def _hidden_process_kwargs() -> dict:
+    """Keep the bundled interpreter from opening a console window on Windows.
+
+    PyInstaller's --windowed hides the desktop app's console, but the spawned
+    `extension.exe` is a console-subsystem program and would otherwise flash a
+    black window for every session.
+    """
+    if os.name != "nt":
+        return {}
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startupinfo.wShowWindow = subprocess.SW_HIDE
+    return {
+        "creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        "startupinfo": startupinfo,
+    }
+
+
 class Interpreter:
     """一个 `extension --batch --json` 子进程 + 一个读线程"""
 
@@ -374,6 +392,7 @@ class Interpreter:
             cwd=str(INTERP_CWD),
             env=env,
             bufsize=0,
+            **_hidden_process_kwargs(),
         )
         self._reader = threading.Thread(target=self._read_loop, daemon=True)
         self._reader.start()
@@ -718,6 +737,7 @@ def run_interpreter(code: str, lang: str = "both", timeout: float = EVAL_TIMEOUT
         timeout=timeout,
         cwd=str(INTERP_CWD),
         env={**os.environ, "TERM": "dumb"},
+        **_hidden_process_kwargs(),
     )
     out = (proc.stdout or b"").decode("utf-8", "replace")
     results: list[dict] = []

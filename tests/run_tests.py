@@ -1595,6 +1595,13 @@ def test_web_stream_and_storage(b: Path) -> None:
         _sys.path.insert(0, web_dir)
     import app as webapp  # noqa: WPS433
 
+    if os.name == "nt":
+        kw = webapp._hidden_process_kwargs()
+        check("desktop child process hides console",
+              kw.get("creationflags") == webapp.subprocess.CREATE_NO_WINDOW
+              and kw.get("startupinfo") is not None,
+              str(kw))
+
     client = webapp.app.test_client()
     sid = client.post("/api/session").get_json()["session"]
     try:

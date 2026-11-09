@@ -154,6 +154,9 @@ Chinese/English**.
   (`~/.lambda-calculus-interpreter` by default in the desktop wrapper).
 - The release workflow builds a Windows one-file EXE and macOS `.app` bundles
   packaged as DMGs for x64 and arm64. Desktop builds are unsigned.
+- On Windows, child `extension.exe` processes use `CREATE_NO_WINDOW` and hidden
+  `STARTUPINFO` (`_hidden_process_kwargs` in `web/app.py`); PyInstaller's
+  `--windowed` hides the desktop app's own console.
 - Keep `desktop.py` and the PyInstaller flags in `.github/workflows/release.yml`
   in sync with any new web asset or runtime directory.
 

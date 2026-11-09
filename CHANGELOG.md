@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.2.1 — 2026-11-09
+
+### Fixed
+
+- The desktop build no longer flashes a console window on Windows: child
+  `extension.exe` processes are started with `CREATE_NO_WINDOW` and a hidden
+  `STARTUPINFO` while PyInstaller keeps the desktop app itself windowed.
+
 ## 2.2.0 — 2026-11-09
 
 ### Added
