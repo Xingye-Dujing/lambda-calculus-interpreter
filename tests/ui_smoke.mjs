@@ -232,6 +232,25 @@ if (releaseOld) releaseOld();
 await sleep(40);
 check("clear race keeps new session", state.session === "NEW", "session=" + state.session);
 
+// 静态可访问性与新 UI 入口检查 / static a11y and new-UI-entry checks.
+// 无浏览器时用 HTML 断言兜底，真实交互仍由上面的 DOM 桩覆盖
+// With no browser available, assert on the HTML; the DOM stub covers behaviour.
+check("tabs expose aria-controls", /role="tab"[^>]*aria-controls=/.test(html)
+      || /aria-controls="panel"/.test(html), "aria-controls missing");
+check("skip link present", html.includes('id="skip-link"'), "skip-link missing");
+check("reduced motion rule", html.includes("prefers-reduced-motion"),
+      "prefers-reduced-motion missing");
+check("cancel control present", html.includes('id="cancel-eval"'),
+      "cancel-eval missing");
+check("status type uses bilingual fields", /typeZh[\s\S]{0,120}typeEn/.test(html),
+      "typeZh/typeEn not paired");
+check("command palette wired", html.includes("Ctrl+K") || html.includes("ctrl+k")
+      || html.includes("cmdPaletteTitle"), "command palette missing");
+check("timing commands in UI", html.includes(":time") && html.includes(":bench"),
+      ":time / :bench UI entries missing");
+check("cancel endpoint wired", html.includes("/cancel"), "cancel route missing");
+check("IIFE end marker intact", script.includes("})();"), "IIFE marker missing");
+
 if (failures.length) {
   console.error("FAILURES:\n  " + failures.join("\n  "));
   process.exit(1);

@@ -66,3 +66,18 @@ desktop.ini
 
 # 截图与本地工具数据 / Screenshots and local tool state
 .openchamber/
+
+# ---------------------------------------------------------------------------
+# 生成资源：宣传片、截图与输出 / Generated assets: video, screenshots, output
+# ---------------------------------------------------------------------------
+/video/
+/docs/screenshots/
+*.mp4
+/out/
+
+# 本地 agent 笔记 / Local agent notes
+.workbuddy/
+
+# 分享短链持久化 / persisted share links
+/web/shares.json
+/web/shares.json.tmp

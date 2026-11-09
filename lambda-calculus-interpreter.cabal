@@ -1,6 +1,6 @@
 cabal-version:      3.0
 name:               lambda-calculus-interpreter
-version:            2.0.0
+version:            2.1.0
 synopsis:           Pure lambda calculus interpreter with traces and a web UI
 description:
   Two standalone executables: a minimal REPL and an extended REPL with
@@ -13,8 +13,12 @@ build-type:         Simple
 extra-source-files: README.md
                     README-CN.md
                     CHANGELOG.md
+                    CONTRIBUTING.md
                     AGENTS.md
+                    Dockerfile
+                    VERSION
                     test.lam
+                    lib/prelude.lam
 
 executable main
   main-is:          main.hs
@@ -23,6 +27,7 @@ executable main
                   , containers
                   , directory
                   , haskeline
+                  , process
   default-language: Haskell2010
   ghc-options:      -O2 -Wall -threaded -rtsopts
 
@@ -33,5 +38,6 @@ executable extension
                   , containers
                   , directory
                   , haskeline
+                  , process
   default-language: Haskell2010
   ghc-options:      -O2 -Wall -threaded -rtsopts

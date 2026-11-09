@@ -780,8 +780,12 @@ def test_file_features(b: Path) -> None:
 # ---------------------------------------------------------------------------
 
 def test_cli_options(b: Path) -> None:
+    # 版本号以根目录 VERSION 为单一来源；两个可执行文件与 Cabal 必须一致
+    # VERSION is the single source of truth; both binaries and Cabal must match.
+    version = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
     p = subprocess.run([str(b), "--version"], capture_output=True, timeout=30)
-    check("version", "2.0.0" in p.stdout.decode("utf-8", "replace"), p.stdout.decode("utf-8", "replace"))
+    check("version", version in p.stdout.decode("utf-8", "replace"),
+          p.stdout.decode("utf-8", "replace"))
     p = subprocess.run([str(b), "--lang=zh", "--help"], capture_output=True, timeout=30)
     out = p.stdout.decode("utf-8", "replace")
     check("--lang= form", "用法" in out, out[:80])
@@ -1088,6 +1092,303 @@ def test_web_ui_state(b: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# 2.1.0 新特性 / 2.1.0 features
+# ---------------------------------------------------------------------------
+
+def test_let_and_annotations(b: Path) -> None:
+    r = one(["let id = \\x.x in id ONE"], b)
+    check("let reduces", r.get("term") == "λf → λx → f x", str(r))
+    r = one(["(let id = \\x.x in id) TRUE"], b)
+    check("let inside parens", r.get("term") == "λt → λf → t", str(r))
+    r = one(["let x = (\\y.y) in x x"], b)
+    check("let shadowing binder", r.get("term") == "λy → y", str(r))
+    r = one([":type let id = \\x.x in PAIR (id TRUE) (id ONE)"], b)
+    check("let polymorphism", r.get("kind") == "type", str(r))
+    r = one(["(\\x.x : a -> a) ONE"], b)
+    check("annotation erased", r.get("term") == "λf → λx → f x", str(r))
+    r = one([":type \\x.x : a -> a"], b)
+    check("annotation matches", r.get("matches") is True, str(r))
+    r = one([":type \\x.x : a -> b"], b)
+    check("annotation mismatch", r.get("matches") is False, str(r))
+    r = one([":type \\x.x"], b)
+    check("type lists free vars", r.get("freeVars") == [], str(r))
+    r = one(["PLUS ONE TWO -- 加法"], b)
+    check("trailing -- comment", r.get("term") == "λf → λx → f (f (f x))", str(r))
+    r = one(["PLUS ONE TWO # 注释"], b)
+    check("trailing # comment", r.get("term") == "λf → λx → f (f (f x))", str(r))
+
+
+def test_new_commands(b: Path) -> None:
+    r = one([":time PLUS ONE TWO"], b)
+    check("time elapsedMs", isinstance(r.get("elapsedMs"), (int, float))
+          and r.get("elapsedMs") >= 0, str(r))
+    r = one([":bench 3 (\\x.x) ONE"], b)
+    check("bench runs", r.get("runs") == 3 and "elapsedTotalMs" in r, str(r))
+    r = one([":bench 0 (\\x.x)"], b)
+    check("bench rejects zero", r.get("kind") == "error", str(r))
+    r = one([":help :step"], b)
+    check("topic help", r.get("kind") == "help" and "Usage" in r.get("text", ""), str(r))
+    r = one([":help :nope"], b)
+    check("unknown topic", r.get("kind") == "fail"
+          and r.get("code") == "unknown_command", str(r))
+    r = one([":help"], b)
+    check("full help", ":bench" in r.get("text", "") and ":time" in r.get("text", ""), str(r)[:200])
+
+
+def test_error_codes(b: Path) -> None:
+    for cmd, want in (("\\x", "parse_error"), (":nope", "parse_error"),
+                      (":type Y", "type_error"), (":del missing", "command_failed")):
+        r = one([cmd], b)
+        check(f"code for {cmd}", r.get("code") == want, str(r))
+    r = one([":steps 3", "(\\x.x x)(\\x.x x)"], b)
+    check("step_limit code", r.get("code") == "step_limit", str(r))
+    r = one([":fast on", ":steps 1", "MULT 9 9"], b)
+    check("fast_budget code", r.get("code") == "fast_budget", str(r))
+
+
+def test_cycle_and_fuel(b: Path) -> None:
+    outs = run([":steps 20", "(\\x.x x)(\\x.x x)"], b)
+    r = outs[-1][0]
+    check("cycle detected", r.get("cycle") is True, str(r))
+    check("cycle text", "divergent" in r.get("text", ""), str(r))
+    codes = [o.get("code") for o in outs[-1]]
+    check("cycle_detected event", "cycle_detected" in codes, str(codes))
+    r = one(["PLUS ONE TWO"], b)
+    check("cycle false on normal term", r.get("cycle") is False, str(r))
+    outs = run(["x = x", "x"], b)
+    check("macro fuel warns", outs[-1][0].get("code") == "macro_fuel", str(outs[-1]))
+    check("macro fuel still evaluates", any(o.get("kind") == "result" for o in outs[-1]),
+          str(outs[-1]))
+
+
+def test_eta_redex_selection(b: Path) -> None:
+    outs = run([":eta on", ":begin \\x. f x", ":step 1"], b)
+    check("eta redex listed", outs[1][0].get("redexCount") == 1, str(outs[1][0]))
+    check("eta redex contractible", outs[2][0].get("term") == "f", str(outs[2][0]))
+    outs = run([":eta off", ":begin \\x. f x"], b)
+    check("eta redex hidden when off", outs[-1][0].get("redexCount") == 0,
+          str(outs[-1][0]))
+
+
+def test_rec_type_env(b: Path) -> None:
+    outs = run(["g = \\x.x", ":type g", "rec g = \\x.x", ":type g"], b)
+    check("rec type before", outs[1][0].get("kind") == "type", str(outs[1]))
+    check("rec clears stale type", outs[3][0].get("kind") == "fail", str(outs[3]))
+
+
+def test_file_commands(b: Path) -> None:
+    with tempfile.TemporaryDirectory() as td:
+        f = Path(td) / "extended.lam"
+        f.write_text(
+            "-- 扩展文件命令 / extended file commands\n"
+            ":eta on\n"
+            ":steps 200\n"
+            ":fast off\n"
+            "a1 = \\x.x -- 行尾注释 / trailing comment\n"
+            "rec r1 = \\x.x\n"
+            ":del a1\n"
+            ":type \\x.x\n"
+            ":reset\n"
+            "b2 = \\y.y\n",
+            encoding="utf-8",
+        )
+        outs = run([f":load {f}", ":env"], b)
+        kinds = [o.get("kind") for o in outs[0]]
+        check("file query echoed", "type" in kinds, str(kinds))
+        info = next((o for o in outs[0] if o.get("kind") == "info" and "failed" in o), {})
+        check("file has no failed lines", info.get("failed") == 0, str(info))
+        rows = {r["name"] for r in outs[-1][0].get("rows", [])}
+        check("file :del applied", "a1" not in rows, str(sorted(rows)[:8]))
+        check("file :reset applied", "r1" not in rows and "b2" in rows,
+              str(sorted(rows)[:8]))
+
+
+def test_version_sources(b: Path) -> None:
+    version = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
+    check("VERSION format", re.fullmatch(r"\d+\.\d+\.\d+", version) is not None, version)
+    cabal = (ROOT / "lambda-calculus-interpreter.cabal").read_text(encoding="utf-8")
+    check("cabal version", re.search(r"^version:\s+" + re.escape(version),
+                                     cabal, re.M) is not None, cabal[:160])
+    for name in ("extension.exe", "extension", "main.exe", "main"):
+        exe = ROOT / name
+        if not exe.is_file():
+            continue
+        p = subprocess.run([str(exe), "--version"], capture_output=True, timeout=30)
+        check(f"{name} version", version in p.stdout.decode("utf-8", "replace"),
+              p.stdout.decode("utf-8", "replace")[:100])
+        break
+
+
+def test_core_sync(b: Path) -> None:
+    script = ROOT / "tools" / "check_core_sync.py"
+    check("core sync script present", script.is_file(), str(script))
+    if not script.is_file():
+        return
+    p = subprocess.run([sys.executable, str(script)], capture_output=True,
+                       timeout=60, cwd=str(ROOT))
+    check("core sync", p.returncode == 0,
+          (p.stdout + p.stderr).decode("utf-8", "replace")[-500:])
+
+
+def test_random_terms(b: Path) -> None:
+    # 随机生成项，验证 α 自反与归约结果在多种语法形态下都稳定
+    # Generate random terms to check α-reflexivity and parse robustness.
+    rng = random.Random(20261108)
+    pool = ["p", "q", "a", "b", "c", "x", "y", "z"]
+
+    def gen(depth: int) -> str:
+        if depth <= 0 or rng.random() < 0.3:
+            return rng.choice(pool)
+        if rng.random() < 0.4:
+            v = rng.choice(pool)
+            return f"(\\{v}.{gen(depth - 1)})"
+        return f"({gen(depth - 1)} {gen(depth - 1)})"
+
+    terms = [gen(3) for _ in range(12)]
+    outs = run([f":eq {t} , {t}" for t in terms], b)
+    for term, objs in zip(terms, outs):
+        check(f"alpha reflexive {term[:20]}",
+              bool(objs) and objs[0].get("equal") is True, str(objs[:1]))
+
+
+def test_performance_budget(b: Path) -> None:
+    # 宽松阈值：只挡住数量级退化，不对具体机器性能做断言
+    # Loose threshold: catch order-of-magnitude regressions, not machine speed.
+    r = one([":time PLUS 20 20"], b)
+    ms = r.get("elapsedMs", 10 ** 6)
+    check("evaluation budget", isinstance(ms, (int, float)) and 0 <= ms < 5000, str(ms))
+
+
+def test_style_conventions(b: Path) -> None:
+    # 轻量规范检查，代替独立 linter / lightweight convention check instead of a linter.
+    sources = (
+        "main.hs", "extension.hs", "web/app.py", "web/index.html",
+        "tests/run_tests.py", "tests/ui_smoke.mjs", "tools/check_core_sync.py",
+        "README.md", "README-CN.md", "AGENTS.md", "CHANGELOG.md",
+        "CONTRIBUTING.md", "tools/screenshot.py", "lib/prelude.lam",
+        "Dockerfile", "web/requirements.txt",
+    )
+    comment_prefixes = ("#", "--", "//", "rem ", "/*", "*")
+    for name in sources:
+        path = ROOT / name
+        check(f"source present {name}", path.is_file(), str(path))
+        if not path.is_file():
+            continue
+        text = path.read_text(encoding="utf-8")
+        check(f"no corner brackets {name}",
+              "\u300c" not in text and "\u300d" not in text, name)
+        check(f"no emoji {name}",
+              not any(0x1F300 <= ord(ch) <= 0x1FAFF for ch in text), name)
+        bad_lines = [i + 1 for i, line in enumerate(text.splitlines())
+                     if line.lstrip().startswith(comment_prefixes)
+                     and line.rstrip().endswith("。")]
+        check(f"comment does not end with 。 {name}", not bad_lines, str(bad_lines[:5]))
+    html = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
+    for native in ("prompt(", "confirm(", "alert("):
+        check(f"no native {native[:-1]}", native not in html, html[:80])
+
+
+def test_web_21(b: Path) -> None:
+    try:
+        import flask  # noqa: F401
+    except ImportError:
+        return  # 未安装 Flask 时跳过 / skip when Flask is unavailable
+    import sys as _sys
+    web_dir = str(ROOT / "web")
+    if web_dir not in _sys.path:
+        _sys.path.insert(0, web_dir)
+    import app as webapp  # noqa: WPS433
+
+    client = webapp.app.test_client()
+    health = client.get("/api/health").get_json()
+    for key in ("version", "uptime", "shares", "sessionsMax", "interpreterPath"):
+        check(f"health field {key}", key in health, str(health))
+    check("health version matches VERSION",
+          health.get("version") == (ROOT / "VERSION").read_text(encoding="utf-8").strip(),
+          str(health.get("version")))
+    check("request id header",
+          "X-Request-ID" in client.get("/api/health").headers, "")
+
+    sid = client.post("/api/session").get_json()["session"]
+    try:
+        r = client.post(f"/api/session/{sid}/cancel")
+        check("cancel session", r.status_code == 200
+              and r.get_json().get("cancelled") is True, str(r.get_json()))
+    finally:
+        pass
+    r = client.post(f"/api/session/{sid}/cancel")
+    check("cancel unknown returns JSON 404", r.status_code == 404
+          and r.get_json().get("code") == "not_found", str(r.get_json()))
+
+    r = client.post("/api/share", json={"code": [":load /etc/passwd"]})
+    check("share rejects :load", r.status_code == 400, str(r.get_json()))
+    r = client.post("/api/share", json={"code": [":save evil.lam"]})
+    check("share rejects :save", r.status_code == 400, str(r.get_json()))
+    r = client.post("/api/share", json={"code": ["PLUS ONE TWO", ":lang en"]})
+    check("share accepts safe payload", r.status_code == 200, str(r.get_json()))
+    if r.status_code == 200:
+        got = client.get(f"/api/share/{r.get_json()['id']}").get_json()
+        check("share roundtrip", got.get("ok") is True
+              and got.get("state", {}).get("code") == ["PLUS ONE TWO", ":lang en"], str(got))
+    r = client.post("/api/share", json={"code": ["ok"] * 201})
+    check("share line cap", r.status_code == 400, str(r.get_json()))
+
+    r = client.get("/api/does-not-exist")
+    check("404 returns JSON", r.status_code == 404
+          and r.get_json().get("ok") is False, str(r.get_json()))
+    r = client.post("/api/eval", json={"session": "missing", "line": "\\x.x"})
+    check("expired session code", r.get_json().get("code") == "session_expired",
+          str(r.get_json()))
+    r = client.post("/api/eval", json={"line": ":load /etc/passwd"})
+    check("load error code", r.get_json().get("code") == "load_error", str(r.get_json()))
+
+    # 强制让解释器 send 超时，验证 408 的 JSON 形状与 timeout 标记
+    # Force the interpreter send to time out and check the 408 JSON shape.
+    original_send = webapp.Interpreter.send
+
+    def fake_send(self, line, timeout=None):  # noqa: ANN001
+        raise TimeoutError("forced timeout / 强制超时")
+
+    webapp.Interpreter.send = fake_send
+    try:
+        timeout_sid = client.post("/api/session").get_json()["session"]
+        r = client.post("/api/eval", json={"session": timeout_sid, "line": "\\x.x"})
+        body = r.get_json()
+        check("eval 408", r.status_code == 408 and body.get("timeout") is True
+              and body.get("code") == "timeout", str(body))
+    finally:
+        webapp.Interpreter.send = original_send
+        client.delete(f"/api/session/{timeout_sid}")
+
+    # 并发创建会话不能互相覆盖 / concurrent session creation must not clobber.
+    import threading as _threading
+    statuses: list[int] = []
+
+    def make_session() -> None:
+        c = webapp.app.test_client()
+        statuses.append(c.post("/api/session").status_code)
+
+    threads = [_threading.Thread(target=make_session) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+    check("concurrent session creation", statuses == [200] * 4, str(statuses))
+
+    # 分享 TTL 生效后短链必须失效 / expired share links must disappear.
+    saved_ttl = webapp.SHARE_TTL
+    webapp.SHARE_TTL = -1.0
+    try:
+        stored = client.post("/api/share", json={"code": ["PLUS ONE TWO"]})
+        short_id = stored.get_json().get("id")
+        r = client.get(f"/api/share/{short_id}")
+        check("share TTL", r.status_code == 404 and r.get_json().get("code") == "not_found",
+              str(r.get_json()))
+    finally:
+        webapp.SHARE_TTL = saved_ttl
+
+
+# ---------------------------------------------------------------------------
 # 运行器 / Runner
 # ---------------------------------------------------------------------------
 
@@ -1124,7 +1425,225 @@ TESTS = [
     test_differential_main,
     test_web_ui_state,
     test_main_binary,
+    test_let_and_annotations,
+    test_new_commands,
+    test_error_codes,
+    test_cycle_and_fuel,
+    test_eta_redex_selection,
+    test_rec_type_env,
+    test_file_commands,
+    test_version_sources,
+    test_core_sync,
+    test_random_terms,
+    test_performance_budget,
+    test_style_conventions,
+    test_web_21,
 ]
+
+
+def test_new_features(b: Path) -> None:
+    # 1. CLI one-shot / check modes and exit codes
+    run_cli = lambda *args, input_text=None: subprocess.run(  # noqa: E731
+        [str(b), *args], input=(input_text or "").encode("utf-8"),
+        capture_output=True, cwd=str(ROOT), timeout=60)
+    p = run_cli("--eval", ":int (PLUS TWO THREE)", "--lang", "en")
+    check("--eval runs and exits 0",
+          p.returncode == 0 and b"5" in p.stdout, p.stdout.decode("utf-8", "replace"))
+    p = run_cli("--eval", "BROKEN (", "--lang", "en")
+    check("--eval parse error exits 1", p.returncode == 1, str(p.returncode))
+    p = run_cli("--check", "lib/prelude.lam", "--lang", "en")
+    check("--check library passes", p.returncode == 0, p.stdout.decode("utf-8", "replace"))
+    p = run_cli("--check", "test.lam", "--lang", "en")
+    check("--check test.lam reports failures", p.returncode == 1, str(p.returncode))
+    p = run_cli("--check", "--batch", "test.lam", "--lang", "en")
+    check("--check rejects --batch", p.returncode != 0, str(p.returncode))
+    p = run_cli("--max-term-size", "2", "--json", "--eval", "PLUS ONE TWO", "--lang", "en")
+    check("--max-term-size rejects a large term",
+          p.returncode == 0 and b"term_too_large" in p.stdout,
+          p.stdout.decode("utf-8", "replace")[:200])
+    p = run_cli("--max-term-size", "200", "--json", "--eval", ":int (PLUS ONE TWO)", "--lang", "en")
+    check("--max-term-size accepts a small term",
+          p.returncode == 0 and b'"value":3' in p.stdout,
+          p.stdout.decode("utf-8", "replace")[:200])
+
+    # 2. combinators, numeric and list library
+    cases = [
+        (":int (I 4)", "4"),
+        (":int (K 4 9)", "4"),
+        (":int (S K K 4)", "4"),
+        (":int (C PLUS 1 2)", "3"),
+        (":int (B SUCC SUCC 2)", "4"),
+        (":int (W PLUS 3)", "6"),
+        (":int (MIN THREE TWO)", "2"),
+        (":int (MAX THREE TWO)", "3"),
+        (":int (DIV 7 2)", "3"),
+        (":int (MOD 7 2)", "1"),
+        (":int (XOR TRUE FALSE 1 2)", "1"),
+    ]
+    for expr, want in cases:
+        got = one([expr], b)
+        check(f"new prelude {expr}", str(got.get("value")) == want, str(got))
+    got = one([":strategy normal", ":int (LENGTH (RANGE 1 5))"], b)
+    check("RANGE/LENGTH", str(got.get("value")) == "5", str(got))
+    got = one([":strategy normal", ":int (FOLD PLUS 0 [1, 2, 3])"], b)
+    check("FOLD + list literal", str(got.get("value")) == "6", str(got))
+
+    # 3. surface syntax
+    got = one([":int (if TRUE then 2 else 3)"], b)
+    check("if/then/else", str(got.get("value")) == "2", str(got))
+    got = one([":int (let x = 2; y = 3 in PLUS x y)"], b)
+    check("multi-binding let", str(got.get("value")) == "5", str(got))
+    got = one([":int (HEAD [7, 8])"], b)
+    check("list literal", str(got.get("value")) == "7", str(got))
+
+    # 4. manual reduction back/goto
+    outs = run([":begin (\\x.x) 1", ":step", ":back", ":goto 0", ":goto 1"], b)
+    check("manual step/back/goto",
+          outs[1][0].get("kind") == "step"
+          and outs[2][0].get("back") is True
+          and outs[3][0].get("step") == 0
+          and outs[4][0].get("code") == "step_out_of_range",
+          str(outs))
+
+    # 5. :def / :search / :reload
+    outs = run([":def PLUS", ":search PLU"], b)
+    check(":def shows a definition",
+          outs[0][0].get("kind") == "define" and outs[0][0].get("name") == "PLUS",
+          str(outs[0]))
+    check(":search finds names",
+          outs[1][0].get("kind") == "search"
+          and any(r.get("name") == "PLUS" for r in outs[1][0].get("rows", [])),
+          str(outs[1]))
+    with tempfile.TemporaryDirectory() as td:
+        path = Path(td) / "reload.lam"
+        path.write_text("RELOADED = 42\n", encoding="utf-8")
+        outs = run([f":load {path}", ":reload", ":def RELOADED"], b)
+        check(":reload re-reads the file",
+              outs[-1][0].get("kind") == "define"
+              and outs[-1][0].get("name") == "RELOADED", str(outs[-1]))
+
+    # 6. timing statistics
+    got = one([":bench 2 PLUS ONE TWO"], b)
+    for key in ("elapsedMs", "elapsedMedianMs", "elapsedStddevMs", "elapsedMinMs"):
+        check(f"bench field {key}", key in got, str(got))
+    got = one([":time 2 PLUS ONE TWO"], b)
+    check(":time N runs", got.get("runs") == 2, str(got))
+
+    # 7. extended library
+    outs = run([":load lib/prelude.lam", ":fast on", ":int (FACT 5)"], b)
+    check("lib/prelude.lam FACT", str(outs[-1][0].get("value")) == "120", str(outs[-1]))
+
+    # 8. annotation diagnostics
+    got = one([":type \\x.x : a -> b"], b)
+    check("annotation mismatch details",
+          got.get("matches") is False and "expected" in got and "actual" in got,
+          str(got))
+
+
+def test_property_extensions(b: Path) -> None:
+    """Additional randomized properties for the new syntax and commands."""
+    rng = random.Random(20261109)
+    terms = []
+    for _ in range(6):
+        a, c = rng.randint(0, 4), rng.randint(0, 4)
+        terms.append(rng.choice([
+            f"PLUS {a} {c}",
+            f"let x = {a}; y = {c} in PLUS x y",
+            f"if LEQ {a} {c} then {a} else {c}",
+            f"(\\x.x) {a}",
+        ]))
+    cmds = [":nf " + t for t in terms]
+    outs = run(cmds, b)
+    for t, objs in zip(terms, outs):
+        term = objs[0].get("term") if objs else None
+        check(f"nf produced a term for {t}", bool(term), str(objs))
+        if term:
+            again = one([":nf " + term], b).get("term")
+            check(f"nf idempotent {t}", again == term, f"{term!r} vs {again!r}")
+
+    eqs = [f":eq {t} , {t}" for t in terms]
+    for t, objs in zip(terms, run(eqs, b)):
+        check(f"eq reflexive {t}", objs and objs[0].get("equal") is True, str(objs))
+
+    for n in [0, 1, 3, 7]:
+        got = one([f":church {n}"], b)
+        decoded = one([f":int ({got.get('term')})"], b)
+        check(f"church/int roundtrip {n}", decoded.get("value") == n, str(decoded))
+
+    with tempfile.TemporaryDirectory() as td:
+        src = Path(td) / "source.lam"
+        dst = Path(td) / "saved.lam"
+        src.write_text("ROUNDTRIP = let x = 2; y = 3 in PLUS x y\n", encoding="utf-8")
+        outs = run([f":load {src}", f":save {dst}", ":reset",
+                    f":load {dst}", ":def ROUNDTRIP"], b)
+        check("save/load roundtrip keeps a definition",
+              outs[-1] and outs[-1][0].get("kind") == "define",
+              str(outs[-1]))
+        check("saved file is parser-readable", dst.is_file(), str(dst))
+
+
+def test_web_stream_and_storage(b: Path) -> None:
+    try:
+        import flask  # noqa: F401
+    except ImportError:
+        return
+    import sys as _sys
+    web_dir = str(ROOT / "web")
+    if web_dir not in _sys.path:
+        _sys.path.insert(0, web_dir)
+    import app as webapp  # noqa: WPS433
+
+    client = webapp.app.test_client()
+    sid = client.post("/api/session").get_json()["session"]
+    try:
+        r = client.post("/api/eval/stream",
+                        json={"session": sid, "line": "PLUS ONE TWO"})
+        body = r.data.decode("utf-8", "replace")
+        check("stream is SSE", r.status_code == 200
+              and r.mimetype == "text/event-stream", r.content_type)
+        check("stream frames decode", "data: " in body and '"kind": "result"' in body,
+              body[:400])
+        check("stream ends with done", '"kind": "done"' in body, body[-400:])
+    finally:
+        client.delete(f"/api/session/{sid}")
+
+    # Share persistence: switch to a temp file, store, clear memory, reload
+    old_db = webapp.SHARE_DB
+    with tempfile.TemporaryDirectory() as td:
+        webapp.SHARE_DB = str(Path(td) / "shares.json")
+        try:
+            r = client.post("/api/share", json={"code": ["PLUS ONE TWO"]})
+            sid_share = r.get_json()["id"]
+            webapp._shares.clear()
+            webapp._load_shares()
+            check("share survives reload", sid_share in webapp._shares,
+                  str(list(webapp._shares)))
+        finally:
+            webapp.SHARE_DB = old_db
+
+    # Rate limiter is off by default; enable briefly and check 429
+    old_rate = webapp.RATE_LIMIT
+    webapp.RATE_LIMIT = 1
+    webapp._rate_buckets.clear()
+    try:
+        first = client.post("/api/eval", json={"line": "\\x.x"})
+        second = client.post("/api/eval", json={"line": "\\x.x"})
+        check("rate limit returns 429", first.status_code != 429
+              and second.status_code == 429
+              and second.get_json().get("code") == "rate_limited",
+              f"{first.status_code}/{second.status_code}")
+    finally:
+        webapp.RATE_LIMIT = old_rate
+        webapp._rate_buckets.clear()
+
+
+TESTS.append(test_web_stream_and_storage)
+
+
+TESTS.append(test_property_extensions)
+
+
+TESTS.append(test_new_features)
 
 
 def main() -> int:

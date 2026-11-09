@@ -1,29 +1,53 @@
 # AGENTS.md
 
-Two independent, single-file Haskell interpreters for pure lambda calculus. No
-Cabal/Stack project or linter; `ghc` compilation plus the end-to-end test suite
+Two independent, single-file Haskell interpreters for pure lambda calculus. The
+primary build is direct `ghc` compilation of two standalone files; a Cabal
+package and GitHub Actions CI are also provided. There is no external linter:
+`ghc -Wall`, the style checks in the test suite, and the end-to-end test suite
 are the checks. Documentation and user-facing text are **bilingual
 Chinese/English**.
 
 ## Build, run, test
 
-- Windows: `.\build.bat`; Unix: `./build.sh`. Both call `ghc` directly and
-  produce `main`/`extension` (`main.exe`/`extension.exe` on Windows). A Cabal
-  file (`cabal build all`) packages the same two executables; the files stay
-  standalone by design.
-- `build.bat` also passes `-package containers -package haskeline -package
-  directory`; keep those flags if adding Windows build steps.
+- Windows: `.\build.bat`; Unix: `./build.sh`. Both call `ghc` directly with
+  `-O2 -Wall -threaded -rtsopts -package containers -package haskeline
+  -package directory -package process` and produce `main`/`extension`
+  (`main.exe`/`extension.exe` on Windows). A Cabal file (`cabal build all`)
+  packages the same two executables; the files stay standalone by design.
+  `System.Process` is used only by `:edit`.
+- The scripts are split by platform: `build.sh` keeps the GNU ld link flags
+  (`-split-sections -optl-Wl,--gc-sections -optl-s`) on Linux only (via
+  `uname -s`), treats `-optlc-march=native` as opt-in under `LAMBDA_NATIVE=1`,
+  and stays portable on macOS; `build.bat` uses no GNU ld flags and no
+  `-march=native`. Both pass the same four `-package` flags; keep them in sync
+  when adding build steps on either platform.
 - **Tests:** `.\test.bat` / `./test.sh`, or
   `python tests/run_tests.py [--bin path]`. The suite drives the compiled
-  `extension --batch --json` binary end-to-end (32 groups), including a
-  `main`/`extension` differential test. Run it after any core change; it is the
-  regression net for `main.hs` and `extension.hs`.
+  `extension --batch --json` binary end-to-end (48 groups), including a
+  `main`/`extension` differential test, the web API (when Flask is installed),
+  SSE streaming, share persistence, rate limiting, and the Node UI smoke test.
+  Run it after any core change; it is the regression net for `main.hs` and
+  `extension.hs`. `python tools/check_core_sync.py` compares the shared core;
+  `--fix` copies differing shared declarations from `extension.hs` to `main.hs`.
 - `./main` — minimal REPL (`:q` to quit).
 - `./extension [file...] [-h|--help] [-v|--version] [--lang zh|en|both] [--lang=zh]
-  [--timeout 秒] [--batch] [--json]` — full REPL with definitions. REPL commands: `:help`, `:load`, `:save`, `:let`,
-  `:env`, `:del`, `:reset`, `:strategy`, `:steps`, `:eta`, `:fast`, `:trace`,
-  `:ast`, `:db`, `:type`, `:eq`, `:conv`, `:nf`, `:whnf`, `:int`, `:church`,
-  `:begin`, `:step [n]`, `:run`, `:end`, `:lang`, `:q`.
+  [--timeout 秒] [--batch] [--json] [-e|--eval cmd] [--check file]
+  [--strategy s] [--steps n] [--eta[=on|off]] [--fast[=on|off]]
+  [--max-term-size n]` — full REPL
+  with definitions. `-e` may repeat, `--check` exits 0/1. REPL commands:
+  `:help`, `:load`, `:save`, `:let`, `:env`, `:del`, `:reset`, `:strategy`,
+  `:steps`, `:eta`, `:fast`, `:trace`, `:ast`, `:db`, `:type`, `:eq`, `:conv`,
+  `:nf`, `:whnf`, `:int`, `:church`, `:begin`, `:step [n]`, `:run`, `:end`,
+  `:back`, `:goto <n>`, `:def`, `:search`, `:reload`, `:edit`, `:time [n]`,
+  `:bench`, `:lang`, `:q`. `:help <cmd>` shows per-command help.
+- `VERSION` is the single source of truth for the version (cabal, both
+  binaries and the test suite must match it). All `error`/`fail`/`warn` JSON
+  carries a `code`; cycle detection additionally emits `cycle_detected`.
+- Expressions accept `let x = e1; y = e2 in e3`, `if c then t else f`, list
+  literals `[a, b, c]`, `(expr : T)` annotations (erased during reduction;
+  verify with `:type expr : T`), trailing `--`/`#` comments, and REPL
+  continuation on a trailing `\` or unclosed parentheses. `.lam` files also
+  accept settings commands and replay query commands.
 - `test.lam` is a sample definitions file. Its `ERR` and `ERROR` lines are
   intentionally malformed to exercise load-error reporting; do not "fix" them.
 
@@ -62,15 +86,23 @@ Chinese/English**.
 - `POST /api/session/<sid>/lang` switches language in the running process;
   `GET /api/health` reports sessions and interpreter availability.
   `POST /api/share` stores a state payload and `GET /api/share/<id>` returns it
-  for the short `#s=<id>` links. All are covered by tests.
+  for the short `#s=<id>` links. Shares persist to `web/shares.json`
+  (`LAMBDA_SHARE_DB` overrides, `off` = memory only).
+- `POST /api/eval/stream` returns SSE frames (`start`, output objects,
+  `heartbeat`, `done`); the frontend uses it when `ReadableStream` exists and
+  falls back to `/api/eval`. The interpreter reader thread feeds a per-line
+  queue while streaming, so a long reduction is not killed by the normal
+  request timeout. `LAMBDA_RATE_LIMIT=<n>` adds a per-IP token bucket
+  (default off); the Docker image serves the app with `waitress` and a
+  `HEALTHCHECK`, and remains single-process because sessions live in memory.
 - `index.html` uses `<base href="./">` so it works at `/` and behind the
   production `/lambda/` prefix (Caddy `handle_path` strips it). Fonts are served
   by Flask at `/fonts/<file>`; the favicon is `web/icon.svg`.
-- Every `Command` has a UI entry: manual reduction controls (`:begin`/`:step`/
-  `:run`/`:end`), the step-limit input (`:steps`), Env **load** (`:load`) and
-  **reset** (`:reset`), the **Tools** tab (`:eq`/`:conv`/`:nf`/`:whnf`/`:int`/
-  `:church`/`:eta`/recursive `rec`/`:save`), and the redex buttons
-  (`:step <n>`). Keep it that way when adding commands.
+- Every `Command` has a UI entry: manual reduction controls (`:begin`/
+  `:back`/`:goto 0`/`:step`/`:run`/`:end`), the step-limit input (`:steps`), Env
+  **load** (`:load`) and **reset** (`:reset`), the **Tools** tab (`:eq`/`:conv`/
+  `:nf`/`:whnf`/`:int`/`:church`/`:eta`/recursive `rec`/`:save`), and the redex
+  buttons (`:step <n>`). Keep it that way when adding commands.
 - Do not use native `select`, `prompt`, `confirm` or `alert`: use the custom
   `.sel` menus and the `dialog()` helper so popups match the wireframe theme.
 - The desktop layout is a fixed `100vh` flex column: terminal and inspector share
@@ -112,7 +144,9 @@ Chinese/English**.
 
 - `main.hs` and `extension.hs` are deliberately standalone. The core (`Expr`,
   `freeVars`, `freshVar`, substitution, `stepOnce`, `eval`, parser) is duplicated:
-  apply core/reduction fixes to both files.
+  apply core/reduction fixes to both files, or run
+  `python tools/check_core_sync.py --fix` to copy the shared declarations from
+  `extension.hs` (the single source) into `main.hs`.
 - `extension.hs` adds `Env` (`Data.Map`), macro expansion (`expand`/`expandTop`,
   with an expansion fuel), definitions, file loading/saving, `:env`, numeric
   literals, types, and wider identifier characters.
@@ -140,8 +174,12 @@ Chinese/English**.
   `stepAtIndex`. JSON emits `redexes` (≤200) and exact `redexCount`.
 - Definitions are stored already expanded (`expandTop` at definition time), so
   a later redefinition does not retroactively change earlier definitions.
-  Recursive definitions are `Y (λname. body)`; `prettyDef`/`sourceDef` restore
-  the `rec` form for display and saving.
+  Recursive definitions are `Z (λname. body)` (the call-by-value fixed point);
+  `prettyDef`/`sourceDef` restore the `rec` form for display and saving.
+  `Y` remains available as a user-facing combinator.
+- Syntax sugar is parser-only: `if c then t else f` becomes `IF c t f`, list
+  literals become `CONS`/`NIL`, and multiple `let` bindings nest. The shared
+  `parseIf`/`parseList`/`parseLet` declarations are in the core-sync manifest.
 - `.lam` loading: `logicalLines` skips `--`/`#` comments and blanks, joins
   continuation lines while parentheses are open or the next line is indented;
   original file line numbers are preserved in errors. `:strategy`, `:steps`,

@@ -2,6 +2,80 @@
 
 ## Unreleased
 
+### Added
+
+- CLI one-shot modes: repeatable `-e/--eval <cmd>`, `--check <file>` (exit 0/1),
+  and `--strategy` / `--steps` / `--eta[=on|off]` / `--fast[=on|off]`.
+- Surface syntax: `if c then t else f`, multiple sequential
+  `let x = e1; y = e2 in e3` bindings, and list literals `[a, b, c]`.
+- REPL commands `:back`, `:goto <n>`, `:def <name>`, `:search <substring>`,
+  `:reload`, and `:edit [file]`, plus filename completion for
+  `:load`/`:save`/`:edit`.
+- Manual reduction keeps a history; the web UI adds back/start buttons.
+- `:time [n] <expr>` and `:bench` now report min/max and median/stddev.
+- Prelude additions: `I K S B C W`, `XOR NAND MIN MAX DIV MOD`, and
+  `APPEND REV LENGTH MAP FILTER FOLD RANGE ZIP`.
+- `lib/prelude.lam` teaching library (`FACT`, `FIB`, `SUM`, `SORT`, `TAKE`,
+  `DROP`, `ZIPWITH`, and more).
+- Web: `POST /api/eval/stream` (SSE output plus heartbeats), persistent short
+  shares in `web/shares.json`, optional `LAMBDA_RATE_LIMIT`, JSON/LaTeX trace
+  export, and `waitress` + `HEALTHCHECK` in the Docker image.
+- `--max-term-size <n>` (and `LAMBDA_MAX_TERM_SIZE` for the web backend) rejects
+  input expressions above a node budget with `code: "term_too_large"`.
+- `:type expr : T` now reports `expected`/`actual` with a readable mismatch.
+- `tools/check_core_sync.py --fix` copies shared declarations from
+  `extension.hs` into `main.hs`.
+
+### Changed
+
+- `rec` definitions use the call-by-value `Z` combinator, so simple recursion
+  also works under applicative order when the branch does not need lazy `if`.
+- The test suite grew to 47 groups and covers the CLI modes, new syntax,
+  prelude/library, rewind commands, timing fields, SSE, share persistence and
+  rate limiting.
+
+### Fixed
+
+- `:int` evaluates with normal order, so Church arithmetic is not affected by
+  the selected strict strategy.
+- `:type` annotation mismatch text no longer omits the expected and actual
+  types in JSON.
+
+## 2.1.0 — 2026-11-08
+
+### Added
+
+- Expression syntax: `let x = e1 in e2` (with expression-level let-polymorphism
+  in `:type`), `(expr : T)` type annotations, and `--` comments at the end of
+  any line.
+- REPL multi-line input: a trailing `\` or unclosed parentheses automatically
+  continue onto the next line.
+- `.lam` files now accept more commands: `:eta`, `:fast`, `:trace`, `:ast`,
+  `:db`, `:del`, `:reset`, `:let`, and `rec` definitions.
+- New commands `:time <expr>` (reports elapsed time; JSON gains `elapsedMs`),
+  `:bench <n> <expr>` (mean elapsed time over `n` runs), and `:help <cmd>`
+  (per-command help).
+- Bounded cycle detection: a repeated whole term during reduction produces a
+  bilingual `warn`, and the JSON carries `code: "cycle_detected"`.
+- A machine-readable `code` field on every `error` / `fail` / `warn` JSON
+  object.
+- Web API: `POST /api/session/<sid>/cancel`; `/api/health` now reports
+  `version`, `uptime`, `shares` and `sessionsMax`; share payloads are checked
+  against a command allow-list; idle sessions are reaped in the background; and
+  error responses are unified JSON with a `code`.
+- Web editor: syntax highlighting, bracket matching, line numbers, undo/redo, a
+  command palette (Ctrl+K), categorised examples and progressive exercises,
+  clickable error locations, focus-preserving trace playback, and ARIA /
+  focus-trap / reduced-motion support.
+- `tools/check_core_sync.py` verifies that the shared core stays in sync between
+  `main.hs` and `extension.hs`, and is wired into CI.
+- A multi-stage `Dockerfile` (ghc:9.6 → python:3.13-slim), `CONTRIBUTING.md`,
+  and the `VERSION` file as the single source of truth for the version.
+- CI sets up Node 22 so `tests/ui_smoke.mjs` actually runs, adds
+  `macos-latest` to the matrix, and runs `cabal build all`,
+  `python tools/check_core_sync.py` and
+  `python -m compileall -q web tests tools`, with a 20-minute job timeout.
+
 ### Fixed
 
 - Parser diagnostics recognise `→` and `->` when reporting a missing lambda
@@ -34,7 +108,41 @@
   and a missing interpreter binary returns a clear 500 instead of an unhandled
   one.
 - Tests now include regression coverage for each fix and a Node + minimal-DOM
-  web UI test (32 groups).
+  web UI test. The suite grew from 32 to 45 groups: the new groups cover
+  `let` / annotations, timing and topic help, error codes, cycle detection and
+  macro fuel, eta redex selection, recursive type environments, extended file
+  commands, version sources, core sync, random terms, a performance budget,
+  style conventions, and the 2.1.0 web API (cancel, 408, concurrency, TTL).
+- Documentation fact fixes: the "no Cabal/Stack project" and Windows
+  `-package` claims in README.md / README-CN.md / AGENTS.md, the "all three"
+  screenshot wording in `tools/screenshot.py`, and the `video/` ignore note
+  (now truly ignored via `.gitignore`).
+
+### Changed
+
+- Build scripts are split by platform: `build.sh` gains a shebang and `set -eu`,
+  keeps the GNU ld flags (`-split-sections -optl-Wl,--gc-sections -optl-s`) on
+  Linux only (via `uname -s`), and makes `-optlc-march=native` opt-in under
+  `LAMBDA_NATIVE=1`; `build.bat` uses `@echo off` / `setlocal`, checks for
+  `ghc` and `errorlevel`, and carries no `-march=native` or GNU ld flags. Both
+  keep `-O2 -Wall -threaded -rtsopts -package containers -package haskeline
+  -package directory`, matching the Cabal `ghc-options`.
+- `VERSION` is now the single source of truth for the version; the Cabal
+  package moves to 2.1.0 and lists `VERSION`, `CONTRIBUTING.md` and `Dockerfile`
+  in `extra-source-files`.
+- `.gitignore` adds `/video/`, `/docs/screenshots/`, `*.mp4`, `/out/` and
+  `.workbuddy/` (local agent notes) without dropping existing entries; the
+  promo video no longer relies only on `.git/info/exclude`.
+
+### Performance
+
+- Bounded cycle detection stops divergent reductions at the first repeated
+  whole term instead of consuming the full step budget.
+- Background reaping of idle web sessions bounds the number of live
+  `extension --batch --json` processes.
+- Linux builds keep the section-stripping link flags for smaller binaries,
+  while `-optlc-march=native` is opt-in via `LAMBDA_NATIVE=1` so default
+  artifacts stay portable.
 
 ## 2.0.0 — 2026-11-03
 

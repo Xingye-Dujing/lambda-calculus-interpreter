@@ -1,0 +1,52 @@
+-- ===========================================================================
+-- 扩展教材库 / Extended teaching library
+--
+-- 用法 / Usage:
+--   :load lib/prelude.lam
+--
+-- 递归定义与 Church 布尔的 IF 在应用序下可能不终止；配合
+-- :strategy normal 或 :fast on 使用。内置的 APPEND/REV/MAP 等已带 Z 组合子，
+-- 但 IF 仍然不是惰性的，所以列表递归同样建议正规序或快速模式
+-- Recursive definitions and Church-boolean IF may diverge under applicative
+-- order; pair this file with :strategy normal or :fast on. The built-in
+-- APPEND/REV/MAP use the Z combinator, but IF is still strict, so recursive
+-- list functions have the same recommendation.
+-- ===========================================================================
+
+-- 组合子 / combinators
+COMPOSE = \f g x. f (g x)
+FLIP = \f a b. f b a
+CONST = \x y. x
+
+-- 数值 / numbers
+rec FACT = \n. if ISZERO n then ONE else MULT n (FACT (PRED n))
+rec FIB = \n. if LEQ n ONE then n else PLUS (FIB (PRED n)) (FIB (PRED (PRED n)))
+ISEVEN = \n. ISZERO (MOD n TWO)
+ISODD = \n. NOT (ISEVEN n)
+
+-- 列表 / lists
+rec SUM = \xs. xs ZERO (\h t. PLUS h (SUM t))
+rec PRODUCT = \xs. xs ONE (\h t. MULT h (PRODUCT t))
+rec CONCAT = \xss. xss NIL (\h t. APPEND h (CONCAT t))
+rec TAKE = \n xs. if ISZERO n then NIL
+                          else xs NIL (\h t. CONS h (TAKE (PRED n) t))
+rec DROP = \n xs. if ISZERO n then xs
+                          else xs NIL (\h t. DROP (PRED n) t)
+rec REPEAT = \n x. if ISZERO n then NIL
+                              else CONS x (REPEAT (PRED n) x)
+rec ANY = \p xs. xs FALSE (\h t. OR (p h) (ANY p t))
+rec ALL = \p xs. xs TRUE (\h t. AND (p h) (ALL p t))
+rec ZIPWITH = \f xs ys.
+  xs NIL (\h t. ys NIL (\h2 t2. CONS (f h h2) (ZIPWITH f t t2)))
+
+-- 插入排序 / insertion sort
+rec INSERT = \x xs.
+  xs (CONS x NIL) (\h t.
+    if LEQ x h then CONS x (CONS h t)
+               else CONS h (INSERT x t))
+rec SORT = \xs. xs NIL (\h t. INSERT h (SORT t))
+
+-- 便捷定义 / convenience
+LENGTH2 = \xs. FOLD (\h n. SUCC n) ZERO xs
+rec MAXLIST = \xs. xs ZERO (\h t. MAX h (MAXLIST t))
+rec MINLIST = \xs. xs ZERO (\h t. MIN h (MINLIST t))

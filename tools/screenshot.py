@@ -4,7 +4,7 @@
 
 用法 / Usage
 ------------
-    python tools/screenshot.py                 # 截三张：主界面、AST、环境 / all three
+    python tools/screenshot.py                 # 截四张：主界面、AST、环境、指引 / all four (main, AST, env, guide)
     python tools/screenshot.py --only main     # 只截一张 / one shot
     python tools/screenshot.py --url http://127.0.0.1:8081/ --out docs/screenshots
 

@@ -14,7 +14,7 @@ import Control.Exception (catch, SomeException, AsyncException(..), throwIO)
 import Control.Monad (void, when, unless, forM_)
 import Control.Monad.IO.Class (liftIO)
 import Data.Char (isAlpha, isDigit, isSpace)
-import Data.List (elemIndex, stripPrefix, isPrefixOf)
+import Data.List (elemIndex, stripPrefix, isPrefixOf, foldl')
 import System.Directory (getHomeDirectory)
 import System.Environment (getArgs)
 import System.Exit (exitFailure)
@@ -23,7 +23,7 @@ import System.Console.Haskeline
 import Text.ParserCombinators.ReadP
 
 versionString :: String
-versionString = "lambda-calculus-interpreter 2.0.0 (minimal)"
+versionString = "lambda-calculus-interpreter 2.1.0 (minimal)"
 
 -- ---------------------------------------------------------------------------
 -- 双语支持 Bilingual support
@@ -52,7 +52,7 @@ renderMsg lang (zh, en) = tr lang zh en
 -- 表达式 Expression
 -- ---------------------------------------------------------------------------
 data Expr = Var String | Lam String Expr | App Expr Expr
-  deriving (Eq, Show)
+  deriving (Eq, Ord, Show)
 
 freeVars :: Expr -> Set.Set String
 freeVars (Var x)      = Set.singleton x
@@ -85,7 +85,8 @@ substRename x v fvV body =
         in Just (App f' a', renamed)
     go (Lam y inner)
       | x == y                = Nothing
-      | y `Set.notMember` fvV = fmap (\(b, r) -> (Lam y b, r)) (go inner)
+      | y `Set.notMember` fvV =
+          fmap (\(b, r) -> (Lam y b, r)) (go inner)
       | otherwise             =
           -- x 不在体内时无需替换，也无需 α-重命名
           -- If x is not free in the body there is nothing to substitute and
@@ -100,9 +101,6 @@ substRename x v fvV body =
                                  Just (b, _) -> b
                                  Nothing     -> b1
                  in Just (Lam y' b2, True)
-
-subst :: String -> Expr -> Expr -> Expr
-subst x v = fst . substRename x v (freeVars v)
 
 -- ---------------------------------------------------------------------------
 -- 求值策略 Evaluation strategies
@@ -132,16 +130,25 @@ parseStrategy s = lookup (map lower s)
   where lower c = if c >= 'A' && c <= 'Z' then toEnum (fromEnum c + 32) else c
 
 -- ---------------------------------------------------------------------------
--- 单步归约 One-step reduction
+-- 单步归约 One-Step Reduction
+-- 每一步都返回“整个项”的新形态，方便前端做前后对比
+-- Each step rewrites the whole term, so the frontend can diff before/after.
 -- ---------------------------------------------------------------------------
-data Reduction = Reduction { redNote :: String, redTerm :: Expr }
-data StepOut   = StepOut { soWhole :: Expr, soRed :: Reduction }
+data Reduction = Reduction
+  { redRule :: String   -- β / β+α
+  , redNote :: String   -- 人类可读说明 / human-readable note
+  , redTerm :: Expr     -- 归约后的项 / resulting term
+  }
+
+data StepOut = StepOut { soWhole :: Expr, soRed :: Reduction }
 
 betaStep :: String -> Expr -> Expr -> Reduction
 betaStep x body arg =
-  let after = subst x arg body
-      note  = "β 归约 β-reduction: (λ" ++ x ++ ". …) " ++ shorten 42 (pretty arg)
-  in Reduction note after
+  let (after, renamed) = substRename x arg (freeVars arg) body
+      rule   = if renamed then "β+α" else "β"
+      note   = "β 归约 β-reduction: (λ" ++ x ++ ". …) " ++ shorten 42 (pretty arg)
+               ++ (if renamed then "  （先 α-重命名 α-rename 避免变量捕获 capture）" else "")
+  in Reduction rule note after
 
 -- 四种策略由四个开关描述，避免复制四份遍历
 -- One traversal driven by four flags instead of four copies.
@@ -193,23 +200,35 @@ stepOnce strat = go
 etaRoot :: Expr -> Maybe Reduction
 etaRoot (Lam x (App f (Var y)))
   | x == y && x `Set.notMember` freeVars f =
-      Just (Reduction ("η 归约 η-reduction: λ" ++ x ++ ". … " ++ x ++ " → …") f)
+      Just (Reduction "η"
+        ("η 归约 η-reduction: λ" ++ x ++ ". … " ++ x ++ " → …") f)
 etaRoot _ = Nothing
 
 etaStep :: Strategy -> Expr -> Maybe StepOut
 etaStep strat = go
   where
-    under = strat `elem` [Applicative, Normal]
+    -- 与扩展版一致：用同一张 Order 表驱动，并遵守弱策略的参数规则
+    -- Match the extended version: drive by the same Order table and honour
+    -- the weak-strategy argument rules.
+    Order{..} = orderOf strat
     go e@(Lam x b) =
       case etaRoot e of
         Just r -> Just (StepOut (redTerm r) r)
         Nothing
-          | under -> do s <- go b; return s { soWhole = Lam x (soWhole s) }
+          | underLambda -> do
+              s <- go b
+              return s { soWhole = Lam x (soWhole s) }
           | otherwise -> Nothing
     go (App f a) =
-      (do s <- go f; return s { soWhole = App (soWhole s) a })
-      <|> (do s <- go a; return s { soWhole = App f (soWhole s) })
+      case go f of
+        Just s  -> Just s { soWhole = App (soWhole s) a }
+        Nothing
+          | argsIfLam, not (isLam f) -> Nothing
+          | Just s <- go a -> Just s { soWhole = App f (soWhole s) }
+          | otherwise -> Nothing
     go _ = Nothing
+    isLam (Lam _ _) = True
+    isLam _         = False
 
 stepFor :: Bool -> Strategy -> Expr -> Maybe StepOut
 stepFor eta strat e =
@@ -229,10 +248,11 @@ headSpine = go []
     go acc h         = (h, acc)
 
 data TraceStep = TraceStep
-  { tsIndex :: Int, tsAfter :: Expr, tsNote :: String }
+  { tsIndex :: Int, tsAfter :: Expr, tsRule :: String, tsNote :: String }
 
 data EvalResult = EvalResult
-  { erFinal :: Expr, erSteps :: [TraceStep], erCount :: Int, erLimitHit :: Bool }
+  { erFinal :: Expr, erSteps :: [TraceStep], erCount :: Int
+  , erLimitHit :: Bool, erCycle :: Bool }
 
 defaultLimit :: Int
 defaultLimit = 10000
@@ -242,22 +262,36 @@ defaultLimit = 10000
 traceLimit :: Int
 traceLimit = 500
 
+-- 有界循环检测：只记住前若干步里的小项（与扩展版一致）
+-- Bounded cycle detection: remember small whole terms for the first steps,
+-- matching the extended interpreter.
+cycleCheckLimit :: Int
+cycleCheckLimit = 2000
+
+cycleTermLimit :: Int
+cycleTermLimit = 400
+
 -- 求值循环：keepTrace 为 False 时不保留轨迹（省内存）
 -- Evaluation loop; with keepTrace=False the trace is dropped (saves memory).
 evalUntil :: Bool -> Bool -> Int -> Strategy -> (Expr -> Bool) -> Expr -> EvalResult
-evalUntil eta keepTrace limit strat done e0 = loop 1 e0 []
+evalUntil eta keepTrace limit strat done e0 =
+  loop 1 e0 [] (Set.singleton e0) False
   where
-    loop !n e !acc
-      | n > limit = EvalResult e (reverse acc) (n - 1) True
-      | done e    = EvalResult e (reverse acc) (n - 1) False
+    loop !n e !acc !seen !cyc
+      | n > limit = EvalResult e (reverse acc) (n - 1) True cyc
+      | done e    = EvalResult e (reverse acc) (n - 1) False cyc
       | otherwise = case stepFor eta strat e of
           Just s ->
-            let red  = soRed s
+            let e'   = soWhole s
+                red  = soRed s
                 acc' = if keepTrace && n <= traceLimit
-                         then TraceStep n (soWhole s) (redNote red) : acc
+                         then TraceStep n e' (redRule red) (redNote red) : acc
                          else acc
-            in loop (n + 1) (soWhole s) acc'
-          Nothing -> EvalResult e (reverse acc) (n - 1) False
+                track = n <= cycleCheckLimit && exprSize e' <= cycleTermLimit
+                cyc'  = cyc || (track && Set.member e' seen)
+                seen' = if track then Set.insert e' seen else seen
+            in loop (n + 1) e' acc' seen' cyc'
+          Nothing -> EvalResult e (reverse acc) (n - 1) False cyc
 
 evalWith :: Bool -> Bool -> Int -> Strategy -> Expr -> EvalResult
 evalWith eta keepTrace limit strat =
@@ -270,7 +304,7 @@ evalFinal :: Bool -> Int -> Strategy -> Expr -> EvalResult
 evalFinal eta = evalWith eta False
 
 evalWHNF :: Bool -> Int -> Strategy -> Expr -> EvalResult
-evalWHNF eta limit strat = evalUntil eta False limit strat isWHNF
+evalWHNF eta limit strat = evalUntil eta True limit strat isWHNF
 
 -- ---------------------------------------------------------------------------
 -- 语义提示 Semantic hints
@@ -366,7 +400,7 @@ ident = do
   return (c : cs)
 
 parseExpr :: ReadP Expr
-parseExpr = spaces *> (parseLam <++ parseApp)
+parseExpr = spaces *> (parseLet <++ parseIf <++ parseLam <++ parseApp)
 
 -- 分隔符接受 `.`、`→` 和 `->`
 -- The delimiter accepts `.`, `→` and `->`.
@@ -393,6 +427,76 @@ lamIdent = do
           (ch :) <$> go
         _ -> return []
 
+
+-- `in`、`then`、`else` 是保留字；遇到它们时原子解析失败
+-- `in`, `then` and `else` are reserved: an atom fails there, ending the
+-- enclosing expression.
+notKeyword :: String -> ReadP ()
+notKeyword kw = do
+  r <- look
+  let (pre, post) = splitAt (length kw) r
+      boundary = null post || isSpace (head post)
+              || head post `elem` ("().=,;" :: String)
+  if pre == kw && boundary then pfail else return ()
+
+-- if c then t else f 脱糖为 IF c t f
+-- if c then t else f desugars to IF c t f.
+parseIf :: ReadP Expr
+parseIf = do
+  _ <- string "if"
+  _ <- munch1 isSpace
+  c <- parseExpr
+  spaces
+  _ <- string "then"
+  _ <- munch1 isSpace
+  t <- parseExpr
+  spaces
+  _ <- string "else"
+  _ <- munch1 isSpace
+  f <- parseExpr
+  return (App (App (App (Var "IF") c) t) f)
+
+-- let x = e1; y = e2 in e3 支持顺序多绑定
+-- let x = e1; y = e2 in e3 supports sequential multiple bindings.
+parseLet :: ReadP Expr
+parseLet = do
+  _ <- string "let"
+  _ <- munch1 isSpace
+  binds <- parseBind `sepBy1` (spaces *> char ';' <* spaces)
+  spaces
+  _ <- string "in"
+  _ <- munch1 isSpace
+  b <- parseExpr
+  return (foldr (\(x, v) acc -> App (Lam x acc) v) b binds)
+  where
+    parseBind = do
+      x <- ident
+      spaces
+      _ <- char '='
+      spaces
+      v <- parseExpr
+      return (x, v)
+
+-- 类型标注只做语法检查，归约时擦除；可用 :type expr : T 校验
+-- A type annotation is syntax-checked and erased; :type expr : T verifies it.
+typeTextP :: ReadP String
+typeTextP = do
+  a <- atom
+  (do spaces
+      void (string "->" <|> string "→")
+      spaces
+      b <- typeTextP
+      return (a ++ " -> " ++ b)) <++ return a
+  where
+    atom =
+      (do _ <- char '('
+          spaces
+          t <- typeTextP
+          spaces
+          _ <- char ')'
+          return ("(" ++ t ++ ")"))
+      <++ munch1 (\c -> isAlpha c || isDigit c || c `elem` ("_'" :: String))
+
 parseLam :: ReadP Expr
 parseLam = do
   void $ char '\\' <|> char 'λ'
@@ -406,13 +510,31 @@ parseApp :: ReadP Expr
 parseApp = foldl App <$> parseAtom <*> many (spaces *> parseAtom)
 
 parseAtom :: ReadP Expr
-parseAtom = parseVar <++ parseParens
+parseAtom = notKeyword "in" *> notKeyword "then" *> notKeyword "else"
+            *> (parseVar <++ parseList <++ parseParens)
 
 parseVar :: ReadP Expr
 parseVar = Var <$> ident
 
+-- 列表字面量 [a, b] 脱糖为 CONS a (CONS b NIL)
+-- List literal [a, b] desugars to CONS a (CONS b NIL).
+parseList :: ReadP Expr
+parseList = between (char '[') (char ']') $ do
+  spaces
+  es <- parseExpr `sepBy` (spaces *> char ',' <* spaces)
+  return (foldr (\h t -> App (App (Var "CONS") h) t) (Var "NIL") es)
+
 parseParens :: ReadP Expr
-parseParens = between (char '(') (char ')') $ spaces *> parseExpr <* spaces
+parseParens = between (char '(') (char ')') $ do
+  spaces
+  e <- parseExpr
+  spaces
+  (do _ <- char ':'
+      spaces
+      _ <- typeTextP
+      spaces
+      return e) <++ return e
+
 
 data ParseError = ParseError { pePos :: Int, peMsg :: Msg }
   deriving (Show)
@@ -466,6 +588,20 @@ unmatchedParen s = go [] (zip [1..] s)
 -- ---------------------------------------------------------------------------
 -- 命令 Commands
 -- ---------------------------------------------------------------------------
+-- 行尾 `--` / `#` 注释：只在空白之后才算注释，避免切掉标识符里的运算符
+-- Trailing `--` / `#` comments: only after whitespace, so operator names survive.
+stripTrailingComment :: String -> String
+stripTrailingComment = go []
+  where
+    go acc [] = reverse acc
+    go acc ('-':'-':cs)
+      | null acc || isSpace (head acc) = reverse acc
+      | otherwise = go ('-':acc) ('-':cs)
+    go acc ('#':cs)
+      | null acc || isSpace (head acc) = reverse acc
+      | otherwise = go ('#':acc) cs
+    go acc (c:cs) = go (c:acc) cs
+
 trim :: String -> String
 trim = dropWhile isSpace . reverse . dropWhile isSpace . reverse
 
@@ -526,7 +662,7 @@ parseCommand raw
       , "Unknown command " ++ takeWhile (not . isSpace) s ++ "; type :help for the full list" ))
   | otherwise = Eval <$> runParserFull parseExpr s
   where
-    s = trim raw
+    s = trim (stripTrailingComment raw)
     lower c = if c >= 'A' && c <= 'Z' then toEnum (fromEnum c + 32) else c
     parseExpr' src = case runParserFull parseExpr (trim src) of
       Left e  -> Left e { pePos = pePos e + (length s - length (trim src)) }
@@ -561,11 +697,15 @@ printEval st res = do
       stepTxt = if steps > 0
                   then "  (" ++ say st (show steps ++ " 步") (show steps ++ " steps") ++ ")"
                   else ""
+      cycTxt = if erCycle res
+                 then say st "（检测到重复项，疑似发散）"
+                            " (a repeated term was detected; likely divergent)"
+                 else ""
   if erLimitHit res
-    then emit "warn" (pretty final ++ stepTxt ++ say st
+    then emit "warn" (pretty final ++ stepTxt ++ cycTxt ++ say st
            (" —— 已达到 " ++ show (rsLimit st) ++ " 步上限，归约未完成")
            (" -- step limit " ++ show (rsLimit st) ++ " reached, reduction incomplete"))
-    else emit "result" (pretty final ++ stepTxt ++ valueHint final)
+    else emit "result" (pretty final ++ stepTxt ++ valueHint final ++ cycTxt)
 
 runCommand :: ReplState -> Command -> IO (Maybe ReplState)
 runCommand st (Eval expr) = do
@@ -578,7 +718,7 @@ runCommand st (Trace expr) = do
     ("Reduction trace (" ++ strategyLabelEn (rsStrategy st) ++ ", " ++ show (erCount res) ++ " steps)")
   putStrLn $ "  0. " ++ pretty expr
   forM_ (erSteps res) $ \s -> do
-    putStrLn $ "  " ++ show (tsIndex s) ++ ". " ++ tsNote s
+    putStrLn $ "  " ++ show (tsIndex s) ++ ". [" ++ tsRule s ++ "] " ++ tsNote s
     putStrLn $ "       " ++ pretty (tsAfter s)
   when (erCount res > length (erSteps res)) $ putStrLn (say st
     "  ⚠ 轨迹较长，只显示前 500 步" "  ⚠ Long trace: only the first 500 steps are shown")
@@ -639,6 +779,10 @@ helpMessage lang = unlines $ map (renderMsg lang)
   , ("", "")
   , ("抽象: λx.body、λx → body 或 \\x -> body；应用: f a（左结合）；括号: (expr)",
      "Abstraction: λx.body, λx → body or \\x -> body; application: f a (left-assoc); grouping: (expr)")
+  , ("let: let x = e1 in e2；类型标注: (e : T)；行尾 -- / # 注释",
+     "let: let x = e1 in e2; annotation: (e : T); trailing -- / # comments")
+  , ("REPL 中行尾 \\ 或括号未闭合会续行",
+     "A trailing \\ or open parens continue the REPL line")
   ]
 
 -- ---------------------------------------------------------------------------
@@ -668,9 +812,38 @@ historyPath = do
              (\(e :: SomeException) -> return (Left (show e)))
   return $ either (const Nothing) (Just . (++ "/.lambda_history")) r
 
+-- REPL 多行输入：行尾反斜杠或括号未闭合时继续读下一行
+-- Multi-line REPL input: a trailing backslash or open parens continue the line.
+parenBalance :: String -> Int
+parenBalance = foldl' step 0
+  where
+    step d '(' = d + 1
+    step d ')' = d - 1
+    step d _   = d
+
+readReplLine :: InputT IO (Maybe String)
+readReplLine = go [] 0 (0 :: Int)
+  where
+    go acc depth n
+      | n >= 20 = return (Just (unwords (reverse acc)))
+      | otherwise = do
+          m <- getInputLine (if null acc then "λ> " else "  … ")
+          case m of
+            Nothing -> return Nothing
+            Just raw ->
+              let t    = reverse (dropWhile isSpace (reverse (stripTrailingComment raw)))
+                  (body, cont) = case reverse t of
+                                   ('\\':rest) -> (reverse rest, True)
+                                   _           -> (t, False)
+                  acc'   = trim body : acc
+                  depth' = depth + parenBalance body
+              in if cont || depth' > 0
+                   then go acc' depth' (n + 1)
+                   else return (Just (unwords (reverse acc')))
+
 repl :: ReplState -> InputT IO ()
 repl st = do
-  minput <- getInputLine "λ> "
+  minput <- readReplLine
   case minput of
     Nothing    -> return ()
     Just input -> do

@@ -1,0 +1,31 @@
+# 构建上下文排除：只保留源码与 web/ 资源
+# Build-context exclusions: keep only sources and web/ assets
+.git
+.gitignore
+.github/
+.git/info/
+video/
+docs/
+dist-newstyle/
+*.o
+*.hi
+*.dyn_o
+*.dyn_hi
+*.p_o
+*.p_hi
+*.hie
+/main
+/main.exe
+/extension
+/extension.exe
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.workbuddy/
+.openchamber/
+out/
+node_modules/
+web/shares.json
+web/shares.json.tmp
