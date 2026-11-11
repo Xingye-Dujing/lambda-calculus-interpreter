@@ -579,15 +579,22 @@ def _load_shares() -> None:
     if not isinstance(data, dict):
         return
     now = time.time()
+    # 文件可能被手工改大；只保留未过期的最新若干条，避免启动时无限增长
+    # The file may be edited by hand; keep only the newest unexpired entries so
+    # startup memory stays bounded.
+    candidates: list[tuple[float, str, dict]] = []
+    for sid, entry in data.items():
+        if not isinstance(entry, dict) or not isinstance(sid, str):
+            continue
+        created = entry.get("created")
+        payload = entry.get("payload")
+        if (isinstance(created, (int, float)) and isinstance(payload, dict)
+                and now - created <= SHARE_TTL):
+            candidates.append((float(created), sid, payload))
+    candidates.sort(key=lambda item: item[0], reverse=True)
     with _shares_lock:
-        for sid, entry in data.items():
-            if not isinstance(entry, dict):
-                continue
-            created = entry.get("created")
-            payload = entry.get("payload")
-            if isinstance(created, (int, float)) and isinstance(payload, dict):
-                if now - created <= SHARE_TTL:
-                    _shares[sid] = {"payload": payload, "created": float(created)}
+        for created, sid, payload in candidates[:MAX_SHARES]:
+            _shares[sid] = {"payload": payload, "created": created}
 
 
 def _save_shares_locked() -> None:
