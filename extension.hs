@@ -1922,7 +1922,7 @@ data LoadOutcome = LoadOutcome
   { loEnv      :: Env
   , loTypeEnv  :: TypeEnv
   , loOk       :: [(String, Expr)]
-  , loFail     :: [(Int, String, Msg)]
+  , loFail     :: [(Int, String, Msg, String)]
   , loStrategy :: Maybe Strategy
   , loLimit    :: Maybe Int
   , loLang     :: Maybe Lang
@@ -1970,8 +1970,9 @@ logicalLines content = go (zip [1..] (lines content))
     startsIndented (c:_) = isSpace c
     startsIndented []    = False
 
-loadDefinitionsFromFile :: Env -> TypeEnv -> FilePath -> IO (Either String LoadOutcome)
-loadDefinitionsFromFile env0 tenv0 path = do
+loadDefinitionsFromFile :: Maybe Int -> Env -> TypeEnv -> FilePath
+                        -> IO (Either String LoadOutcome)
+loadDefinitionsFromFile maxTerm env0 tenv0 path = do
   contentOrErr <- readFileSafe path
   case contentOrErr of
     Left err -> return (Left err)
@@ -1980,28 +1981,49 @@ loadDefinitionsFromFile env0 tenv0 path = do
                                 Nothing []
       return (Right (foldl' processLine start (logicalLines content)))
   where
+    sizeError e = case maxTerm of
+      Just cap | exprSize e > cap ->
+        Just ( "表达式过大（节点上限 " ++ show cap ++ "）"
+             , "Expression too large (node limit " ++ show cap ++ ")" )
+      _ -> Nothing
     processLine acc (n, line) =
       case parseCommand line of
-        Left err -> failLine acc n line (peMsg err)
+        Left err -> failLine acc n line (peMsg err) "parse_error"
         Right (Define var expr) ->
-          let expr' = expandTop (loEnv acc) expr
-              env'  = Map.insert var expr' (loEnv acc)
-              tenv' = case inferScheme (loTypeEnv acc) expr of
-                Right sc -> Map.insert var sc (loTypeEnv acc)
-                Left _   -> Map.delete var (loTypeEnv acc)
-          in acc { loEnv = env', loTypeEnv = tenv', loOk = (var, expr') : loOk acc }
+          case sizeError expr of
+            Just msg -> failLine acc n line msg "term_too_large"
+            Nothing ->
+              let expr' = expandTop (loEnv acc) expr
+              in case sizeError expr' of
+                   Just msg -> failLine acc n line msg "term_too_large"
+                   Nothing ->
+                     let env'  = Map.insert var expr' (loEnv acc)
+                         tenv' = case inferScheme (loTypeEnv acc) expr of
+                           Right sc -> Map.insert var sc (loTypeEnv acc)
+                           Left _   -> Map.delete var (loTypeEnv acc)
+                     in acc { loEnv = env', loTypeEnv = tenv'
+                            , loOk = (var, expr') : loOk acc }
         Right (DefineRec var expr) ->
-          let body  = expandTop (Map.delete var (loEnv acc)) expr
-              expr' = App zComb (Lam var body)
-              env'  = Map.insert var expr' (loEnv acc)
-              -- 递归定义（不动点编码）在简单类型系统中不可类型化，必须清掉旧方案
-              -- A recursive definition has no simple type, so drop the old scheme.
-              tenv' = Map.delete var (loTypeEnv acc)
-          in acc { loEnv = env', loTypeEnv = tenv', loOk = (var, expr') : loOk acc }
+          case sizeError expr of
+            Just msg -> failLine acc n line msg "term_too_large"
+            Nothing ->
+              let body = expandTop (Map.delete var (loEnv acc)) expr
+              in case sizeError body of
+                   Just msg -> failLine acc n line msg "term_too_large"
+                   Nothing ->
+                     let expr' = App zComb (Lam var body)
+                         env'  = Map.insert var expr' (loEnv acc)
+                         -- 递归定义（不动点编码）在简单类型系统中不可类型化，必须清掉旧方案
+                         -- A recursive definition has no simple type, so drop the old scheme.
+                         tenv' = Map.delete var (loTypeEnv acc)
+                     in acc { loEnv = env', loTypeEnv = tenv'
+                            , loOk = (var, expr') : loOk acc }
         Right (DeleteDef name) -> acc
           { loEnv = Map.delete name (loEnv acc)
-          , loTypeEnv = Map.delete name (loTypeEnv acc) }
-        Right ResetEnv -> acc { loEnv = initEnv, loTypeEnv = initTypeEnv }
+          , loTypeEnv = Map.delete name (loTypeEnv acc)
+          , loOk = filter ((/= name) . fst) (loOk acc) }
+        Right ResetEnv -> acc
+          { loEnv = initEnv, loTypeEnv = initTypeEnv, loOk = [] }
         Right (SetStrategy s) -> acc { loStrategy = Just s }
         Right (SetSteps k)    -> acc { loLimit = Just k }
         Right (SetLang l)     -> acc { loLang = Just l }
@@ -2010,7 +2032,9 @@ loadDefinitionsFromFile env0 tenv0 path = do
         Right c | isQueryCommand c -> acc { loEcho = loEcho acc ++ [line] }
         Right _ -> failLine acc n line
           ("定义文件不支持该命令", "Command not supported in a definition file")
-    failLine acc n line msg = acc { loFail = (n, line, msg) : loFail acc }
+          "unsupported_command"
+    failLine acc n line msg code =
+      acc { loFail = (n, line, msg, code) : loFail acc }
 
 -- 查询类命令在加载完定义后按原样执行，输出仍走各自的 reporter
 -- Query commands are replayed after load so their output uses their reporter.
@@ -2337,7 +2361,7 @@ runCommand st (DefineRec var expr) = do
     , "rec"   .= JBool True ]
   return (Just st { rsEnv = env', rsTypeEnv = tenv' })
 runCommand st (LoadFile path) = do
-  res <- loadDefinitionsFromFile (rsEnv st) (rsTypeEnv st) path
+  res <- loadDefinitionsFromFile (rsMaxTerm st) (rsEnv st) (rsTypeEnv st) path
   case res of
     Left err -> do
       emitL st "fail" ("文件加载错误: " ++ err) ("File load error: " ++ err)
@@ -2346,19 +2370,19 @@ runCommand st (LoadFile path) = do
     Right out -> do
       let st' = applyLoadOutcome st out
       forM_ (reverse (loOk out)) $ \(name, ex) ->
-        emitL st "define"
+        emitL st' "define"
           ("已定义 " ++ prettyDef name ex)
           ("defined " ++ prettyDef name ex)
           [ "name" .= JStr name
           , "value" .= JStr (pretty ex) ]
-      forM_ (reverse (loFail out)) $ \(n, line, msg) ->
-        emitL st "error"
-          ("解析错误: 第 " ++ show n ++ " 行: " ++ shorten 60 line
+      forM_ (reverse (loFail out)) $ \(n, line, msg, code) ->
+        emitL st' "error"
+          ("第 " ++ show n ++ " 行: " ++ shorten 60 line
             ++ " — " ++ fst msg)
-          ("Parse error on line " ++ show n ++ ": " ++ shorten 60 line
+          ("Line " ++ show n ++ ": " ++ shorten 60 line
             ++ " -- " ++ snd msg)
-          [ "line" .= JNum n, "code" .= JStr "parse_error" ]
-      emitL st "info"
+          [ "line" .= JNum n, "code" .= JStr code ]
+      emitL st' "info"
         ("成功加载 " ++ show (length (loOk out)) ++ " 个定义，失败 " ++ show (length (loFail out)) ++ " 行")
         ("Loaded " ++ show (length (loOk out)) ++ " definitions, " ++ show (length (loFail out)) ++ " lines failed")
         [ "loaded" .= JNum (length (loOk out))
@@ -3247,12 +3271,12 @@ applyCliOptions o st = st
 -- Load one startup file; failures are reported but do not stop later files.
 loadStartupFile :: ReplState -> FilePath -> IO ReplState
 loadStartupFile st path = do
-  res <- loadDefinitionsFromFile (rsEnv st) (rsTypeEnv st) path
+  res <- loadDefinitionsFromFile (rsMaxTerm st) (rsEnv st) (rsTypeEnv st) path
   case res of
     Left err -> do
       emitL st "fail" ("文件加载错误: " ++ err) ("File load error: " ++ err)
         [ "code" .= JStr "load_error" ]
-      return st
+      return st { rsLastFile = Just path }
     Right out -> do
       let st' = applyLoadOutcome st out
       unless (null (loOk out)) $
@@ -3260,12 +3284,12 @@ loadStartupFile st path = do
           ("成功加载 " ++ show (length (loOk out)) ++ " 个定义")
           ("Loaded " ++ show (length (loOk out)) ++ " definitions")
           [ "loaded" .= JNum (length (loOk out)) ]
-      forM_ (reverse (loFail out)) $ \(n, line, msg) ->
+      forM_ (reverse (loFail out)) $ \(n, line, msg, code) ->
         emitL st' "error"
-          ("第 " ++ show n ++ " 行解析失败: " ++ shorten 60 line ++ " — " ++ fst msg)
-          ("Line " ++ show n ++ " failed to parse: " ++ shorten 60 line
+          ("第 " ++ show n ++ " 行加载失败: " ++ shorten 60 line ++ " — " ++ fst msg)
+          ("Line " ++ show n ++ " failed to load: " ++ shorten 60 line
             ++ " -- " ++ snd msg)
-          [ "line" .= JNum n, "code" .= JStr "parse_error" ]
+          [ "line" .= JNum n, "code" .= JStr code ]
       forM_ (loStrategy out) $ \s -> emitL st' "info"
         ("求值策略：" ++ strategyLabel s) ("Strategy: " ++ strategyLabelEn s)
         [ "strategy" .= JStr (strategyId s) ]
@@ -3282,7 +3306,8 @@ loadStartupFile st path = do
         (if on then "η 归约：开启" else "η 归约：关闭")
         (if on then "Eta reduction: on" else "Eta reduction: off")
         [ "eta" .= JBool on ]
-      replayEcho st' (loEcho out)
+      stAfter <- replayEcho st' (loEcho out)
+      return stAfter { rsLastFile = Just path }
 
 main :: IO ()
 main = do
@@ -3336,7 +3361,7 @@ runCheck st0 files = go st0 True files
   where
     go _ ok [] = return ok
     go st ok (path:rest) = do
-      res <- loadDefinitionsFromFile (rsEnv st) (rsTypeEnv st) path
+      res <- loadDefinitionsFromFile (rsMaxTerm st) (rsEnv st) (rsTypeEnv st) path
       case res of
         Left err -> do
           emitL st "fail"
@@ -3358,12 +3383,12 @@ runCheck st0 files = go st0 True files
             [ "file" .= JStr path, "ok" .= JBool okHere
             , "loaded" .= JNum (length (loOk out))
             , "failed" .= JNum (length (loFail out)) ]
-          forM_ (reverse (loFail out)) $ \(n, line, msg) ->
+          forM_ (reverse (loFail out)) $ \(n, line, msg, code) ->
             emitL st' "error"
               ("第 " ++ show n ++ " 行: " ++ shorten 60 line ++ " — " ++ fst msg)
               ("Line " ++ show n ++ ": " ++ shorten 60 line ++ " -- " ++ snd msg)
               [ "file" .= JStr path, "line" .= JNum n
-              , "code" .= JStr "parse_error" ]
+              , "code" .= JStr code ]
           go st' (ok && okHere) rest
 
 -- --eval：依次执行命令行给出的命令；解析失败时返回 False
