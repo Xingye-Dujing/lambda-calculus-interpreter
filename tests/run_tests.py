@@ -1764,6 +1764,24 @@ def test_web_stream_and_storage(b: Path) -> None:
             webapp._load_shares()
             check("share survives reload", sid_share in webapp._shares,
                   str(list(webapp._shares)))
+            # 损坏或手动扩大的存储文件不能让启动时无限加载
+            # A damaged or manually enlarged store must not load without bound.
+            old_max = webapp.MAX_SHARES
+            webapp.MAX_SHARES = 2
+            try:
+                now = webapp.time.time()
+                db = Path(webapp.SHARE_DB)
+                db.write_text(json.dumps({
+                    "a": {"created": now - 3, "payload": {"code": ["A"]}},
+                    "b": {"created": now - 2, "payload": {"code": ["B"]}},
+                    "c": {"created": now - 1, "payload": {"code": ["C"]}},
+                }), encoding="utf-8")
+                webapp._shares.clear()
+                webapp._load_shares()
+                check("share store capped", set(webapp._shares) == {"b", "c"},
+                      str(list(webapp._shares)))
+            finally:
+                webapp.MAX_SHARES = old_max
         finally:
             webapp.SHARE_DB = old_db
 
