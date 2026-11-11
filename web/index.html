@@ -1874,7 +1874,12 @@
   async function newSession(){
     var r = await api("api/session", {lang: state.lang});
     if (r.data && r.data.session){ state.session = r.data.session; setConn(true); }
-    else { state.session = null; setConn(false); }
+    else {
+      state.session = null; setConn(false);
+      // 会话创建失败时给出提示，不能只让界面显示“未连接”
+      // Report a failed session; the connection badge alone is not enough.
+      if (r.data && r.data.error) addLine("fail", String(r.data.error));
+    }
   }
 
   function setConn(ok){
