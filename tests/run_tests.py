@@ -300,6 +300,13 @@ def test_types(b: Path) -> None:
     r = one(["rec g = \\x.x", ":type g"], b)
     check("type of rec fails", r.get("kind") == "fail", str(r))
 
+    # 无简单类型的定义出现在更大的表达式里时也必须拒绝
+    # An untypable definition used inside a larger expression must be rejected too.
+    r = one([":type Y x"], b)
+    check("untyped name inside expression fails", r.get("kind") == "fail", str(r))
+    r = one([":type PLUS Y"], b)
+    check("untyped prelude name inside expression fails", r.get("kind") == "fail", str(r))
+
     # 多态定义可以在两种类型下使用
     # A polymorphic definition may be used at two different types.
     r = one(["id = \\x.x", ":type (\\f.f) id"], b)
@@ -328,6 +335,14 @@ def test_environment(b: Path) -> None:
     rows = {r["name"] for r in results[-1][0].get("rows", [])}
     check("reset drops user defs", "x" not in rows, str(rows))
     check("reset keeps prelude", "TRUE" in rows, str(rows))
+
+    # 重定义预定义名字后应显示新定义的类型，而不是继续隐藏
+    # A redefined prelude name must show the new definition's type.
+    rows = {r["name"]: r for r in run(["TRUE = \\a.\\b.b", ":env"], b)[-1][0].get("rows", [])}
+    check("redefined prelude keeps type", bool(rows.get("TRUE", {}).get("type")),
+          str(rows.get("TRUE")))
+    out = one(["TRUE = \\a.\\b.b", ":def TRUE"], b)
+    check(":def redefined prelude keeps type", bool(out.get("type")), str(out))
 
 
 def test_load_file(b: Path) -> None:
@@ -486,6 +501,15 @@ def test_main_binary() -> None:
     )
     out = proc.stdout.decode("utf-8", "replace")
     check("main evaluates", "⇒ a" in out, out[:200])
+
+    # 多行列表按方括号深度继续读取，不能把第二行当成新命令
+    # A multi-line list continues by bracket depth instead of splitting the input.
+    proc = subprocess.run(
+        [str(exe), "--lang", "en"], input=b"[a,\n b]\n:q\n",
+        capture_output=True, timeout=30, cwd=str(ROOT),
+    )
+    out = proc.stdout.decode("utf-8", "replace")
+    check("main list continuation", "CONS a" in out, out[:200])
 
     # 大项的 :ast 必须被上限拦截，不能卡死
     # A huge :ast must be capped instead of hanging.
@@ -774,6 +798,53 @@ def test_file_features(b: Path) -> None:
         check("multiple files loaded", {"a1", "b2"} <= rows, str(rows))
         check("in-file strategy applied", "y" in terms, str(terms))
 
+        # 文件内 :del / :reset 之后不能再报告已删除的定义
+        # A file's :del / :reset must not keep reporting removed definitions.
+        logfile = Path(td) / "log.lam"
+        logfile.write_text(
+            "aa = \\x.x\n:del aa\nbb = \\y.y\n:reset\ncc = \\z.z\n",
+            encoding="utf-8",
+        )
+        outs = run([f":load {logfile}"], b)
+        names = [o.get("name") for o in outs[-1] if o.get("kind") == "define"]
+        check("load log drops deleted/reset defs", names == ["cc"], str(names))
+        info = next((o for o in outs[-1]
+                     if o.get("kind") == "info" and "loaded" in o), {})
+        check("load summary counts live defs",
+              info.get("loaded") == 1 and info.get("failed") == 0, str(info))
+
+        # 文件内的 :lang 要作用到同一次加载的后续输出
+        # A file's :lang applies to later output from the same load.
+        langfile = Path(td) / "lang.lam"
+        langfile.write_text(":lang zh\nzhid = \\x.x\n", encoding="utf-8")
+        outs = run([f":load {langfile}"], b)
+        check("file language applies to load output",
+              any(o.get("kind") == "define" and o.get("text", "").startswith("已定义")
+                  for o in outs[-1]), str(outs[-1]))
+        check("file language field", any(o.get("lang") == "zh" for o in outs[-1]),
+              str(outs[-1]))
+
+        # 未缩进的列表续行也应按括号深度拼接
+        # A list continued without indentation joins by bracket depth too.
+        listfile = Path(td) / "list.lam"
+        listfile.write_text("xs = [1,\n2]\n", encoding="utf-8")
+        outs = run([f":load {listfile}", ":env"], b)
+        rows = {r["name"] for r in outs[-1][0].get("rows", [])}
+        check("bracket continuation in file", "xs" in rows, str(rows))
+
+        # 启动时加载的文件也要被 :reload 记住
+        # A startup file must be remembered by :reload.
+        proc = subprocess.run(
+            [str(b), str(f1), "--batch", "--json", "--lang", "en"],
+            input=b":reload\n:def a1\n", capture_output=True, timeout=60, cwd=str(ROOT),
+        )
+        text = proc.stdout.decode("utf-8", "replace")
+        objs = [json.loads(line) for chunk in text.split(RS)[:-1]
+                for line in chunk.splitlines() if line.strip()]
+        check("startup file can be reloaded",
+              any(o.get("kind") == "define" and o.get("name") == "a1" for o in objs),
+              str(objs)[:300])
+
 
 # ---------------------------------------------------------------------------
 # CLI 选项与轨迹上限 / CLI options and the trace cap
@@ -840,7 +911,10 @@ def test_web_extras(b: Path) -> None:
     r = client.get("/api/health")
     data = r.get_json()
     check("health", r.status_code == 200 and data.get("ok") is True and data.get("available") is True, str(data))
-    check("prelude extended", "Y" in client.get("/api/prelude").get_json(), "")
+    prelude = client.get("/api/prelude").get_json()
+    check("prelude extended", "Y" in prelude, "")
+    check("prelude complete", {"XOR", "NAND", "ZIP", "FOLD", "LENGTH"} <= set(prelude),
+          str(prelude))
     icon = client.get("/icon.svg")
     check("icon served", icon.status_code == 200 and "svg" in icon.content_type, icon.content_type)
 
@@ -1468,6 +1542,20 @@ def test_new_features(b: Path) -> None:
           p.returncode == 0 and b'"value":3' in p.stdout,
           p.stdout.decode("utf-8", "replace")[:200])
 
+    # --max-term-size 也必须约束 :load，而不是只约束 REPL 输入
+    # --max-term-size must also bound :load, not just REPL input.
+    with tempfile.TemporaryDirectory() as td:
+        big = Path(td) / "big.lam"
+        big.write_text("big = 9999\n", encoding="utf-8")
+        p = run_cli("--max-term-size", "50", "--json", "--batch",
+                    input_text=f":load {big}\n:env\n", )
+        out = p.stdout.decode("utf-8", "replace")
+        check("--max-term-size bounds :load",
+              "term_too_large" in out and '"name":"big"' not in out, out[:300])
+        p = run_cli("--max-term-size", "50", "--check", str(big), "--lang", "en")
+        check("--max-term-size applies to --check", p.returncode == 1,
+              p.stdout.decode("utf-8", "replace")[:240])
+
     # 2. combinators, numeric and list library
     cases = [
         (":int (I 4)", "4"),
@@ -1613,6 +1701,22 @@ def test_web_stream_and_storage(b: Path) -> None:
         check("stream frames decode", "data: " in body and '"kind": "result"' in body,
               body[:400])
         check("stream ends with done", '"kind": "done"' in body, body[-400:])
+
+        # 流式接口的空行处理必须与 /api/eval 一致，不能把整段输入重复成一条
+        # Streaming must split blank lines like /api/eval, not replay the whole input.
+        r = client.post("/api/eval/stream", json={"session": sid, "line": "a\n\nb"})
+        frames = [json.loads(line[6:]) for line in
+                  r.data.decode("utf-8", "replace").splitlines()
+                  if line.startswith("data: ")]
+        kinds = [f.get("kind") for f in frames]
+        check("stream keeps blank line as one command",
+              kinds.count("result") == 2 and kinds.count("error") == 1, str(kinds))
+        r = client.post("/api/eval/stream", json={"session": sid, "line": ""})
+        frames = [json.loads(line[6:]) for line in
+                  r.data.decode("utf-8", "replace").splitlines()
+                  if line.startswith("data: ")]
+        check("stream empty line is a parse error",
+              any(f.get("kind") == "error" for f in frames), str(frames)[:300])
     finally:
         client.delete(f"/api/session/{sid}")
 
