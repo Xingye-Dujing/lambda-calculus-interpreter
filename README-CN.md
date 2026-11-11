@@ -20,7 +20,7 @@
 - **任选 redex**：`:begin` 列出全部 β-redex，`:step <n>` 归约指定的一项；网页端直接点击。
 - **等价判断**：`:eq a , b` 判断 α 等价，`:conv a , b` 判断 β 等价（两边都归约到正规形后比较）。
 - **更丰富的表达式**：`let x = e1; y = e2 in e3`（`:type` 支持表达式内 let 多态）、`if c then t else f`、列表字面量 `[a, b, c]`、`(expr : T)` 类型标注，以及任意行尾的 `--` 注释。
-- **REPL 多行输入**：行尾 `\` 或括号未闭合时自动续行。
+- **REPL 多行输入**：行尾 `\`、圆括号或方括号未闭合时自动续行。
 - **计时与帮助**：`:time [n] <表达式>` 输出耗时与最小/最大值，`:bench <n> <表达式>` 给出平均/中位/标准差，`:help <cmd>` 显示分项帮助。
 - **CLI 一次性模式**：`-e/--eval <命令>` 执行后退出，`--check <文件>` 校验 `.lam` 并以 0/1 退出，`--strategy/--steps/--eta/--fast` 无需文件即可配置一次运行。
 - **手动回退**：`:back` 与 `:goto <n>` 在已保存的手动归约历史中移动；网页端也有对应按钮。
@@ -33,7 +33,7 @@
 - **教材库**：`lib/prelude.lam` 提供 `FACT`、`FIB`、`ISEVEN`、`SUM`、`PRODUCT`、`CONCAT`、`TAKE`、`DROP`、`REPEAT`、`ANY`、`ALL`、`ZIPWITH`、`SORT`、`MAXLIST`、`MINLIST` 等。
 - **简单类型**：Hindley–Milner 推断，支持 let 泛化（`:type`），含表达式级 let 多态与 `(expr : T)` 标注。
 - **定义环境**：`name = expr`、递归定义 `rec name = expr`、`:let`、`:load`、`:save`、`:env`、`:del`、`:reset`。
-- **定义文件**：`--` 或 `#` 注释、缩进/括号续行，以及文件内命令 `:strategy`、`:steps`、`:lang`、`:fast`、`:eta`、`:trace`、`:ast`、`:db`、`:del`、`:reset`、`:let` 与 `rec` 定义。
+- **定义文件**：`--` 或 `#` 注释、缩进或圆括号/方括号续行，以及文件内命令 `:strategy`、`:steps`、`:lang`、`:fast`、`:eta`、`:trace`、`:ast`、`:db`、`:del`、`:reset`、`:let` 与 `rec` 定义。
 - **整数互转**：`:int <expr>` 解码邱奇数，`:church <n>` 编码 0–9999。
 - **两种视图**：语法树（`:ast`）、网页端可折叠的结构化 AST、de Bruijn 索引（`:db`）。
 - **中英双语**：所有面向用户的文本都有中英两种形式；用 `--lang zh|en|both` 或 `:lang` 切换（默认 `both`）。
@@ -147,8 +147,8 @@ cabal run extension -- --help
 - 数字：`0`…`9999` 自动转为邱奇数。
 - 定义：`name = expression`；递归：`rec name = expression`。
 - 等价命令用逗号分隔两个表达式：`:eq \a.a , \b.b`。
-- `.lam` 文件支持 `--` 或 `#` 注释行、缩进/括号续行，以及命令 `:strategy`、`:steps`、`:lang`、`:fast`、`:eta`、`:trace`、`:ast`、`:db`、`:del`、`:reset`、`:let` 与 `rec` 定义。
-- REPL 多行输入：行尾 `\` 或括号未闭合时自动续行到下一行。
+- `.lam` 文件支持 `--` 或 `#` 注释行、缩进或圆括号/方括号续行，以及命令 `:strategy`、`:steps`、`:lang`、`:fast`、`:eta`、`:trace`、`:ast`、`:db`、`:del`、`:reset`、`:let` 与 `rec` 定义。
+- REPL 多行输入：行尾 `\`、圆括号或方括号未闭合时自动续行到下一行。
 
 ### 示例
 
