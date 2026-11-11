@@ -32,6 +32,7 @@ import base64
 import json
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -64,6 +65,13 @@ CANDIDATES = [
     "/usr/bin/chromium-browser",
     "/usr/bin/microsoft-edge",
 ]
+
+
+def _free_port() -> int:
+    """Pick an unused loopback port for the DevTools endpoint."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
 
 
 def find_chrome() -> str:
@@ -213,7 +221,7 @@ class Shooter:
 def capture(url: str, out: Path, only: str | None,
             width: int, height: int, scale: float) -> None:
     profile = tempfile.mkdtemp(prefix="lambda-shot-")
-    port = 9333
+    port = _free_port()
     proc = subprocess.Popen(
         [find_chrome(), "--headless=new", "--disable-gpu", "--hide-scrollbars",
          "--no-first-run", "--no-default-browser-check",
