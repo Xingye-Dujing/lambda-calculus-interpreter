@@ -979,6 +979,11 @@ def test_web_extras(b: Path) -> None:
         r = client.post("/api/eval", json={"session": sid, "line": ":save blocked.lam"})
         check("web save disabled", r.status_code == 400 and "disabled" in r.get_json().get("error", ""),
               str(r.get_json()))
+        for repl_only in (":q", ":quit", ":edit", ":edit README.md"):
+            r = client.post("/api/eval", json={"session": sid, "line": repl_only})
+            check(f"web rejects {repl_only.split()[0]}",
+                  r.status_code == 400 and "CLI" in r.get_json().get("error", ""),
+                  str(r.get_json()))
 
         out = client.post("/api/eval", json={"session": sid, "line": ":fast on"}).get_json()["outputs"][0]
         check("web fast ack", out.get("fast") is True, str(out)[:160])
