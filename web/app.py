@@ -485,6 +485,7 @@ class Interpreter:
                 except queue.Empty:
                     break
             self._streaming = True
+            completed = False
             started = time.monotonic()
             try:
                 self.proc.stdin.write((line + "\n").encode("utf-8"))
@@ -507,10 +508,18 @@ class Interpreter:
                     if item is None:
                         if not self.alive:
                             raise RuntimeError("interpreter exited")
+                        completed = True
                         break
                     yield item
             finally:
                 self._streaming = False
+                # 客户端中途断开时命令仍在运行，输出无法再对齐；直接回收会话，
+                # 避免下一条命令读到上一条的残留结果或让子进程继续空转
+                # On an early client disconnect the command is still running and
+                # its output can no longer be aligned; kill the session instead of
+                # letting the next command read the stale result or burn CPU.
+                if not completed and self.alive:
+                    self.kill()
 
     def kill(self) -> None:
         # 先标记失效，再回收子进程，避免留下僵尸进程与泄漏的文件描述符；
