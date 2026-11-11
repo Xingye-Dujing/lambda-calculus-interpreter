@@ -2829,17 +2829,25 @@ runCommand st (EditFile mpath) =
       return (Just st)
     Just path -> do
       ed <- lookupEnv "EDITOR"
-      let editor = fromMaybe (if os == "mingw32" then "notepad" else "vi") ed
-      r <- catch (Right <$> callProcess editor [path])
-                 (\(e :: SomeException) -> return (Left (show e)))
-      case r of
-        Left err -> emitL st "fail"
-          ("无法启动编辑器 " ++ editor ++ "：" ++ err)
-          ("Could not start editor " ++ editor ++ ": " ++ err) []
-        Right () -> emitL st "info"
-          ("已用 " ++ editor ++ " 打开 " ++ path ++ "；用 :reload 重新加载。")
-          ("Opened " ++ path ++ " with " ++ editor ++ "; use :reload to load it again.")
-          [ "file" .= JStr path, "editor" .= JStr editor ]
+      let editor = trim (fromMaybe (if os == "mingw32" then "notepad" else "vi") ed)
+      case words editor of
+        [] -> do
+          emitL st "fail"
+            "EDITOR 为空，无法启动编辑器。"
+            "EDITOR is empty; no editor can be started." []
+        exe:args -> do
+          -- EDITOR 常带参数（如 "code --wait"），按词拆分后再启动
+          -- $EDITOR often carries arguments (e.g. "code --wait"); split it first.
+          r <- catch (Right <$> callProcess exe (args ++ [path]))
+                     (\(e :: SomeException) -> return (Left (show e)))
+          case r of
+            Left err -> emitL st "fail"
+              ("无法启动编辑器 " ++ editor ++ "：" ++ err)
+              ("Could not start editor " ++ editor ++ ": " ++ err) []
+            Right () -> emitL st "info"
+              ("已用 " ++ editor ++ " 打开 " ++ path ++ "；用 :reload 重新加载。")
+              ("Opened " ++ path ++ " with " ++ editor ++ "; use :reload to load it again.")
+              [ "file" .= JStr path, "editor" .= JStr editor ]
       return (Just st)
 runCommand st RunCmd = case rsCurrent st of
   Nothing -> do
