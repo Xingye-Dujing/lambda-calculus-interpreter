@@ -947,6 +947,19 @@ def test_web_extras(b: Path) -> None:
     finally:
         webapp.INTERP_BIN = saved_bin
 
+    # 旧的一次性接口也要遵守表达式上限，不能绕过会话接口的保护
+    # The legacy one-shot endpoint must honour the same term cap.
+    old_cap = webapp.MAX_TERM_SIZE
+    webapp.MAX_TERM_SIZE = "20"
+    try:
+        big_term = "\\x." + " ".join(["x"] * 40)
+        r = client.post("/api/eval", json={"code": big_term})
+        outs = r.get_json().get("outputs", [])
+        check("legacy eval respects term cap",
+              any(o.get("code") == "term_too_large" for o in outs), str(outs)[:200])
+    finally:
+        webapp.MAX_TERM_SIZE = old_cap
+
     # 短链分享：服务端保存状态并可按 id 取回
     payload = {"v": 2, "code": ["PLUS ONE TWO"], "strategy": "normal",
                "limit": 42, "theme": "dark", "lang": "en", "eta": False}
