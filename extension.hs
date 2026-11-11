@@ -1947,11 +1947,13 @@ parenDelta :: String -> Int
 parenDelta = foldl' step 0
   where
     step d '(' = d + 1
+    step d '[' = d + 1
     step d ')' = d - 1
+    step d ']' = d - 1
     step d _   = d
 
--- 逻辑行：跳过空行/注释，括号未闭合时自动续行
--- Logical lines: skip blanks/comments, join continuation lines while parentheses stay open.
+-- 逻辑行：跳过空行/注释，圆括号或方括号未闭合时自动续行
+-- Logical lines: skip blanks/comments, join continuation lines while parentheses or brackets stay open.
 logicalLines :: String -> [(Int, String)]
 logicalLines content = go (zip [1..] (lines content))
   where
@@ -2979,8 +2981,8 @@ helpMessage lang = unlines $ map (renderMsg lang) helpLines
       , ("", "")
       , ("参数:", "Arguments:")
       , ("  文件              启动时按顺序加载多个文件", "  files             loaded in order at startup")
-      , ("                    每行 `name = expr`；支持 -- 注释、括号未闭合时续行"
-        , "                    one `name = expr` per line; -- comments; open parens continue the line")
+      , ("                    每行 `name = expr`；支持 -- 注释、圆括号/方括号未闭合时续行"
+        , "                    one `name = expr` per line; -- comments; open parentheses/brackets continue the line")
       , ("                    也可包含 :strategy / :steps / :lang / :fast / :eta / :del / :reset 及查询命令"
         , "                    :strategy / :steps / :lang / :fast / :eta / :del / :reset and queries")
       , ("", "")
@@ -2999,8 +3001,8 @@ helpMessage lang = unlines $ map (renderMsg lang) helpLines
         , "  - abstraction: λx.body, λx → body or \\x -> body; multiple params as λx y.body")
       , ("  - let: let x = e1; y = e2 in e3；if c then t else f；列表 [a, b, c]；标注 (e : T)"
         , "  - let: let x = e1; y = e2 in e3; if c then t else f; lists [a, b, c]; annotation (e : T)")
-      , ("  - 行尾 -- / # 注释；REPL 中行尾 \\ 或括号未闭合会续行"
-        , "  - trailing -- / # comments; a trailing \\ or open parens continue the REPL line")
+      , ("  - 行尾 -- / # 注释；REPL 中行尾 \\ 或圆括号/方括号未闭合会续行"
+        , "  - trailing -- / # comments; a trailing \\ or open parentheses/brackets continue the REPL line")
       , ("  - 应用: f a，左结合", "  - application: f a, left-associative")
       , ("  - 括号: (expr)", "  - grouping: (expr)")
       , ("  - 邱奇数: 直接输入数字 (0-9999) 自动转为 Church 编码"
@@ -3107,13 +3109,15 @@ historyPath = do
              (\(e :: SomeException) -> return (Left (show e)))
   return $ either (const Nothing) (Just . (++ "/.lambda_history")) r
 
--- REPL 多行输入：行尾反斜杠或括号未闭合时继续读下一行
--- Multi-line REPL input: a trailing backslash or open parens continue the line.
+-- REPL 多行输入：行尾反斜杠或圆括号/方括号未闭合时继续读下一行
+-- Multi-line REPL input: a trailing backslash or open parentheses/brackets continue the line.
 parenBalance :: String -> Int
 parenBalance = foldl' step 0
   where
     step d '(' = d + 1
+    step d '[' = d + 1
     step d ')' = d - 1
+    step d ']' = d - 1
     step d _   = d
 
 readReplLine :: InputT IO (Maybe String)

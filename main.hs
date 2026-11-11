@@ -781,8 +781,8 @@ helpMessage lang = unlines $ map (renderMsg lang)
      "Abstraction: λx.body, λx → body or \\x -> body; application: f a (left-assoc); grouping: (expr)")
   , ("let: let x = e1 in e2；类型标注: (e : T)；行尾 -- / # 注释",
      "let: let x = e1 in e2; annotation: (e : T); trailing -- / # comments")
-  , ("REPL 中行尾 \\ 或括号未闭合会续行",
-     "A trailing \\ or open parens continue the REPL line")
+  , ("REPL 中行尾 \\ 或圆括号/方括号未闭合会续行",
+     "A trailing \\ or open parentheses/brackets continue the REPL line")
   ]
 
 -- ---------------------------------------------------------------------------
@@ -812,13 +812,15 @@ historyPath = do
              (\(e :: SomeException) -> return (Left (show e)))
   return $ either (const Nothing) (Just . (++ "/.lambda_history")) r
 
--- REPL 多行输入：行尾反斜杠或括号未闭合时继续读下一行
--- Multi-line REPL input: a trailing backslash or open parens continue the line.
+-- REPL 多行输入：行尾反斜杠或圆括号/方括号未闭合时继续读下一行
+-- Multi-line REPL input: a trailing backslash or open parentheses/brackets continue the line.
 parenBalance :: String -> Int
 parenBalance = foldl' step 0
   where
     step d '(' = d + 1
+    step d '[' = d + 1
     step d ')' = d - 1
+    step d ']' = d - 1
     step d _   = d
 
 readReplLine :: InputT IO (Maybe String)
