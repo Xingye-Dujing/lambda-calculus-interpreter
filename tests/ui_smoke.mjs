@@ -26,7 +26,7 @@ let script = match[1];
 const marker = "})();";
 const idx = script.lastIndexOf(marker);
 if (idx < 0) { console.error("IIFE end not found"); process.exit(1); }
-script = script.slice(0, idx) + "window.__test = { state: state };\n" + script.slice(idx);
+script = script.slice(0, idx) + "window.__test = { state: state, findBracketPair: findBracketPair, highlight: highlight };\n" + script.slice(idx);
 
 function makeEl(tag = "div") {
   const el = {
@@ -156,10 +156,29 @@ async function typeAndEnter(line) {
 await sleep(120); // let boot() settle
 
 const state = sandbox.window.__test.state;
+const findBracketPair = sandbox.window.__test.findBracketPair;
+const highlight = sandbox.window.__test.highlight;
 const failures = [];
 function check(name, cond, detail) {
   if (!cond) failures.push(`${name}: ${detail}`);
 }
+
+// 编辑器括号匹配同时支持圆括号与方括号 / editor matching covers both pairs.
+check("bracket pair parens",
+      JSON.stringify(findBracketPair("([a])", 1)) === "[0,4]",
+      JSON.stringify(findBracketPair("([a])", 1)));
+check("bracket pair square",
+      JSON.stringify(findBracketPair("[a]", 1)) === "[0,2]",
+      JSON.stringify(findBracketPair("[a]", 1)));
+check("bracket pair closing",
+      JSON.stringify(findBracketPair("([a])", 5)) === "[0,4]",
+      JSON.stringify(findBracketPair("([a])", 5)));
+check("bracket pair mismatch",
+      findBracketPair("(a]", 1) === null,
+      JSON.stringify(findBracketPair("(a]", 1)));
+check("highlight marks square bracket",
+      String(highlight("[a]", [0, 2])).includes("tok-paren-match"),
+      highlight("[a]", [0, 2]));
 
 // Crafted share state must be validated field by field.
 check("share code filtered",
