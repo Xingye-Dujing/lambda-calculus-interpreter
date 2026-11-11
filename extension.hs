@@ -2273,6 +2273,53 @@ forceTerm st e = do
 fmtMs :: Double -> String
 fmtMs d = showFFloat (Just 3) d ""
 
+-- 仅当定义与预定义值相同时才把它当作预定义项 / treat a name as a prelude entry only when its value still matches
+isPreludeDef :: String -> Expr -> Bool
+isPreludeDef n e = Map.lookup n initEnv == Just e
+
+typeOfExpr :: ReplState -> Expr -> Maybe String -> IO (Maybe ReplState)
+typeOfExpr st expr mAnn = do
+  case inferScheme (rsTypeEnv st) expr of
+    Left err0 -> do
+      let err = scrubTyNames err0
+      emitL st "fail" ("无法类型化：" ++ err) ("Cannot type: " ++ err)
+        [ "code" .= JStr "type_error" ]
+      return (Just st)
+    Right sc@(Forall _ rawTy) -> do
+      let ty = prettySchemeMsg sc
+          ann = mAnn >>= parseTyText
+          matches = fmap (\t -> normalizeNames t == normalizeNames rawTy) ann
+          annText = fmap (prettyTy . normalizeNames) ann
+          noteZh = case matches of
+            Just True  -> "；标注匹配"
+            Just False -> case annText of
+              Just a  -> "；标注不匹配（期望 " ++ a ++ "，实际 "
+                          ++ prettyTy (normalizeNames rawTy) ++ "）"
+              Nothing -> "；标注不匹配"
+            Nothing    -> ""
+          noteEn = case matches of
+            Just True  -> "; annotation matches"
+            Just False -> case annText of
+              Just a  -> "; annotation does not match (expected " ++ a
+                          ++ ", got " ++ prettyTy (normalizeNames rawTy) ++ ")"
+              Nothing -> "; annotation does not match"
+            Nothing    -> ""
+          tyZh = "类型：" ++ fst ty
+          tyEn = "Type: " ++ snd ty
+          fields = [ "type"   .= JStr (renderMsg (rsLang st) ty)
+                   , "typeZh" .= JStr (fst ty)
+                   , "typeEn" .= JStr (snd ty)
+                   , "freeVars" .= JArr (map JStr (Set.toList (freeVars expr))) ]
+                   ++ [ "annotation" .= JStr a | Just a <- [mAnn] ]
+                   ++ [ "matches" .= JBool b | Just b <- [matches] ]
+                   ++ [ "expected" .= JStr a | Just a <- [annText] ]
+                   ++ [ "actual" .= JStr (prettyTy (normalizeNames rawTy))
+                      | Just _ <- [ann] ]
+      if rsJson st
+        then emitL st "type" (fst ty ++ noteZh) (snd ty ++ noteEn) fields
+        else putStrLn (renderMsg (rsLang st) (tyZh ++ noteZh, tyEn ++ noteEn))
+      return (Just st)
+
 runCommand :: ReplState -> Command -> IO (Maybe ReplState)
 runCommand st (TimeOf n expr) = do
   runs <- forM [1 .. n] $ \_ -> do
@@ -2412,9 +2459,8 @@ runCommand st (LoadFile path) = do
       stAfter <- replayEcho st' (loEcho out)
       return (Just stAfter { rsLastFile = Just path })
 runCommand st (SaveFile path) = do
-  let userDefs n e = Map.lookup n initEnv /= Just e
-      defs = [ sourceDef n e
-             | (n, e) <- Map.toList (rsEnv st), userDefs n e ]
+  let defs = [ sourceDef n e
+             | (n, e) <- Map.toList (rsEnv st), not (isPreludeDef n e) ]
       body = unlines defs
   res <- writeFileUtf8 path body
   case res of
@@ -2428,10 +2474,10 @@ runCommand st (SaveFile path) = do
 runCommand st ShowEnv = do
   -- 预定义项的推断类型往往很长，环境面板只显示用户定义的类型
   -- Prelude schemes are long; show types for user definitions only.
-  let tyOf n
-        | Map.member n initEnv = ("", "")
+  let tyOf n e
+        | isPreludeDef n e = ("", "")
         | otherwise = maybe ("", "") prettySchemeMsg (Map.lookup n (rsTypeEnv st))
-      rows = [(n, pretty e, tyOf n) | (n, e) <- Map.toList (rsEnv st)]
+      rows = [(n, pretty e, tyOf n e) | (n, e) <- Map.toList (rsEnv st)]
   if null rows
     then emitL st "info" "当前环境为空。" "The environment is empty." []
     else if rsJson st
@@ -2541,47 +2587,21 @@ runCommand st (TypeOf (Var name) _)
         ("Cannot type: " ++ name ++ " has no simple type")
         [ "code" .= JStr "type_error" ]
       return (Just st)
-runCommand st (TypeOf expr mAnn) = do
-  case inferScheme (rsTypeEnv st) expr of
-    Left err0 -> do
-      let err = scrubTyNames err0
-      emitL st "fail" ("无法类型化：" ++ err) ("Cannot type: " ++ err)
+runCommand st (TypeOf expr mAnn)
+  -- 表达式中引用了已定义但没有简单类型的名字时，不能把它们当自由变量推断
+  -- A defined name with no simple type must not be inferred as a free variable.
+  | not (null untyped) = do
+      emitL st "fail"
+        ("无法类型化：" ++ intercalate "、" untyped ++ " 在简单类型系统中没有类型")
+        ("Cannot type: " ++ intercalate ", " untyped ++ " has/have no simple type")
         [ "code" .= JStr "type_error" ]
       return (Just st)
-    Right sc@(Forall _ rawTy) -> do
-      let ty = prettySchemeMsg sc
-          ann = mAnn >>= parseTyText
-          matches = fmap (\t -> normalizeNames t == normalizeNames rawTy) ann
-          annText = fmap (prettyTy . normalizeNames) ann
-          noteZh = case matches of
-            Just True  -> "；标注匹配"
-            Just False -> case annText of
-              Just a  -> "；标注不匹配（期望 " ++ a ++ "，实际 "
-                          ++ prettyTy (normalizeNames rawTy) ++ "）"
-              Nothing -> "；标注不匹配"
-            Nothing    -> ""
-          noteEn = case matches of
-            Just True  -> "; annotation matches"
-            Just False -> case annText of
-              Just a  -> "; annotation does not match (expected " ++ a
-                          ++ ", got " ++ prettyTy (normalizeNames rawTy) ++ ")"
-              Nothing -> "; annotation does not match"
-            Nothing    -> ""
-          tyZh = "类型：" ++ fst ty
-          tyEn = "Type: " ++ snd ty
-          fields = [ "type"   .= JStr (renderMsg (rsLang st) ty)
-                   , "typeZh" .= JStr (fst ty)
-                   , "typeEn" .= JStr (snd ty)
-                   , "freeVars" .= JArr (map JStr (Set.toList (freeVars expr))) ]
-                   ++ [ "annotation" .= JStr a | Just a <- [mAnn] ]
-                   ++ [ "matches" .= JBool b | Just b <- [matches] ]
-                   ++ [ "expected" .= JStr a | Just a <- [annText] ]
-                   ++ [ "actual" .= JStr (prettyTy (normalizeNames rawTy))
-                      | Just _ <- [ann] ]
-      if rsJson st
-        then emitL st "type" (fst ty ++ noteZh) (snd ty ++ noteEn) fields
-        else putStrLn (renderMsg (rsLang st) (tyZh ++ noteZh, tyEn ++ noteEn))
-      return (Just st)
+  | otherwise = typeOfExpr st expr mAnn
+  where
+    untyped = [ n | n <- Set.toList (freeVars expr)
+                  , Map.member n (rsEnv st)
+                  , Map.notMember n (rsTypeEnv st) ]
+
 runCommand st (EqExpr a b) = do
   let a' = expandTop (rsEnv st) a
       b' = expandTop (rsEnv st) b
@@ -2768,7 +2788,7 @@ runCommand st (ShowDef name) =
         [ "code" .= JStr "unknown_name" ]
       return (Just st)
     Just e -> do
-      let ty = if Map.member name initEnv then ("", "")
+      let ty = if isPreludeDef name e then ("", "")
                else maybe ("", "") prettySchemeMsg (Map.lookup name (rsTypeEnv st))
       emit st "define" (prettyDef name e)
         ([ "name" .= JStr name, "value" .= JStr (pretty e) ]
@@ -2988,10 +3008,15 @@ helpMessage lang = unlines $ map (renderMsg lang) helpLines
       , ("  - :eq / :conv 用逗号分隔两个表达式，例如 :eq \\a.a , \\b.b"
         , "  - :eq / :conv take two expressions separated by a comma, e.g. :eq \\a.a , \\b.b")
       , ("", "")
-      , ("预定义环境: TRUE FALSE NOT AND OR IF ZERO ONE TWO THREE SUCC PLUS MULT EXP PRED SUB"
-        , "Prelude: TRUE FALSE NOT AND OR IF ZERO ONE TWO THREE SUCC PLUS MULT EXP PRED SUB")
-      , ("             ISZERO LEQ EQ PAIR FST SND NIL CONS HEAD TAIL Y"
-        , "         ISZERO LEQ EQ PAIR FST SND NIL CONS HEAD TAIL Y")
+      , ("预定义环境:", "Prelude:")
+      , ("  TRUE FALSE NOT AND OR XOR NAND IF I K S B C W"
+        , "  TRUE FALSE NOT AND OR XOR NAND IF I K S B C W")
+      , ("  ZERO ONE TWO THREE SUCC PLUS MULT EXP PRED SUB ISZERO LEQ EQ"
+        , "  ZERO ONE TWO THREE SUCC PLUS MULT EXP PRED SUB ISZERO LEQ EQ")
+      , ("  MIN MAX DIV MOD PAIR FST SND NIL CONS HEAD TAIL"
+        , "  MIN MAX DIV MOD PAIR FST SND NIL CONS HEAD TAIL")
+      , ("  APPEND REV LENGTH MAP FILTER FOLD RANGE ZIP Y"
+        , "  APPEND REV LENGTH MAP FILTER FOLD RANGE ZIP Y")
       ]
 
 -- ---------------------------------------------------------------------------
