@@ -440,6 +440,10 @@ class Interpreter:
         except Exception:  # noqa: BLE001
             pass
         finally:
+            # 读线程结束说明子进程已退出；标记会话不可用，流式请求不会把截断当成成功
+            # The reader ending means the child is gone; mark the session dead so a
+            # streaming request cannot mistake a truncated reply for success.
+            self.alive = False
             if self._streaming:
                 self._stream_q.put(None)
             self._q.put(None)
@@ -667,22 +671,25 @@ def _valid_share(payload) -> bool:
 
 def _prune_sessions() -> None:
     now = time.time()
-    doomed: list[tuple[str, dict]] = []
+    doomed: list[tuple[str, dict, str]] = []
     with _sessions_lock:
         stale = [sid for sid, s in _sessions.items()
                  if now - s["used"] > SESSION_IDLE or not s["interp"].alive]
         for sid in stale:
-            doomed.append((sid, _sessions.pop(sid)))
+            doomed.append((sid, _sessions.pop(sid), "idle/dead"))
         # 超出上限时丢弃最久未使用的会话
         # Evict the least recently used session when over the limit.
         while len(_sessions) > MAX_SESSIONS:
             oldest = min(_sessions, key=lambda k: _sessions[k]["used"])
-            doomed.append((oldest, _sessions.pop(oldest)))
+            doomed.append((oldest, _sessions.pop(oldest), "limit"))
     # kill 会等待子进程退出，放在锁外，避免阻塞其它会话
     # kill waits for the child process, so run it outside the lock.
-    for sid, entry in doomed:
+    for sid, entry, reason in doomed:
         entry["interp"].kill()
-        log.info("session reaped (idle/dead) sid=%s / 空闲会话已回收", sid)
+        if reason == "limit":
+            log.info("session evicted (limit) sid=%s / 超限会话已淘汰", sid)
+        else:
+            log.info("session reaped (idle/dead) sid=%s / 空闲会话已回收", sid)
 
 
 def get_session(sid: str | None, lang: str = "both",
