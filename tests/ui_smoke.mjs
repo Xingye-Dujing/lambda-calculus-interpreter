@@ -26,7 +26,7 @@ let script = match[1];
 const marker = "})();";
 const idx = script.lastIndexOf(marker);
 if (idx < 0) { console.error("IIFE end not found"); process.exit(1); }
-script = script.slice(0, idx) + "window.__test = { state: state, findBracketPair: findBracketPair, highlight: highlight, I18N: I18N };\n" + script.slice(idx);
+script = script.slice(0, idx) + "window.__test = { state: state, findBracketPair: findBracketPair, highlight: highlight, I18N: I18N, newSession: newSession };\n" + script.slice(idx);
 
 function makeEl(tag = "div") {
   const el = {
@@ -229,6 +229,15 @@ await sleep(40);
 check("network error handled", unhandled === 0, "unhandled=" + unhandled);
 check("network error shown", outEl.children.length > beforeLines,
       "lines " + beforeLines + " -> " + outEl.children.length);
+
+// 会话创建失败必须给出提示，不能只显示“未连接”
+// A failed session must be reported, not only shown as a dead connection.
+const beforeSessionFail = outEl.children.length;
+await sandbox.window.__test.newSession();
+check("session failure reported",
+      outEl.children.length > beforeSessionFail && state.session === null,
+      "lines " + beforeSessionFail + " -> " + outEl.children.length +
+      " session=" + state.session);
 
 // 清空界面时仍在进行的旧请求，返回后不能覆盖新会话
 // A stale request that returns after clearing must not overwrite the new session.
