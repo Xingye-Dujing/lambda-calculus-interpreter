@@ -2115,6 +2115,40 @@
       applyTranscriptLang();
     }
 
+    // :load 里的 :strategy/:steps/:eta/:fast/:lang 也要同步到界面
+    // Settings inside a loaded file must also reach the UI state.
+    var seen = {strategy: null, limit: null, eta: null, fast: null, lang: null};
+    outputs.forEach(function(o){
+      if (validStrategy(o.strategy)) seen.strategy = o.strategy;
+      if (typeof o.limit === "number" && o.limit > 0) seen.limit = o.limit;
+      if (typeof o.eta === "boolean") seen.eta = o.eta;
+      if (typeof o.fast === "boolean") seen.fast = o.fast;
+      if (validLang(o.lang)) seen.lang = o.lang;
+    });
+    if (seen.strategy){
+      $("strategy").value = seen.strategy;
+      $("st-strategy").textContent = strategyText(seen.strategy);
+    }
+    if (seen.limit){
+      state.limit = seen.limit;
+      $("st-limit").value = state.limit;
+    }
+    if (seen.eta != null){
+      state.eta = seen.eta;
+      if (state.tab === "tools") renderPanel();
+    }
+    if (seen.fast != null){
+      state.fast = seen.fast;
+      applyFastButton();
+      if (state.tab === "tools") renderPanel();
+    }
+    if (seen.lang && seen.lang !== state.lang){
+      state.lang = seen.lang;
+      $("lang").value = state.lang;
+      applyStaticTexts();
+      applyTranscriptLang();
+    }
+
     var last = outputs.filter(function(o){ return o.kind === "result" || o.kind === "warn"; }).pop();
     if (last){
       // 协议提供 typeZh/typeEn，切语言时由 refreshStType 重新取值
@@ -2591,6 +2625,7 @@
   function validLang(v){ return v === "zh" || v === "en" || v === "both"; }
   function validTheme(v){ return v === "light" || v === "dark"; }
   function validLimit(v){ return typeof v === "number" && isFinite(v) && v > 0; }
+  function validStrategy(v){ return typeof v === "string" && !!STRATEGY_LABELS[v]; }
 
   function applySharePayload(payload){
     if (!payload) return;
