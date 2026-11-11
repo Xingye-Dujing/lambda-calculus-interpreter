@@ -181,6 +181,11 @@ def _check_path(line: str) -> str | None:
 
 
 def validate_line(line: str) -> str | None:
+    # Web 会话必须保持存活，且不能让 API 直接拉起服务器上的编辑器
+    # A web session must stay alive, and the API must not launch a server editor.
+    text = line.strip()
+    if text in (":q", ":quit") or text == ":edit" or text.startswith(":edit "):
+        return ("该命令仅在命令行可用 / this command is only available in the CLI")
     return _check_path(line)
 
 
