@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- `.lam` loading reports the right definitions and errors: `:del`/`:reset`
+  remove entries from the load summary, every failure carries its own `code`,
+  `--max-term-size` also bounds loaded definitions, and `:reload` works after
+  startup files. Multi-line logical lines continue while square brackets stay
+  open, and the REPL does the same.
+- `:type` rejects expressions that mention a defined name without a simple type
+  instead of treating it as a free variable, and a redefined prelude name keeps
+  its inferred scheme in `:env`, `:def` and `:save` instead of being hidden as a
+  built-in. Help lists the full prelude.
+- `:lang` and the language acknowledgement from a loaded file include the new
+  language, so the web UI can follow file settings.
+- Web UI: warnings keep their reason text, definition/delete/reset/load refresh
+  the environment once instead of per line, and settings from `:load` update the
+  controls. Web backend: environment limits are clamped, rate-limit buckets are
+  bounded, reaped sessions are killed outside the session lock, and streaming
+  line splitting matches `/api/eval`.
+
 ## 2.2.1 — 2026-11-09
 
 ### Fixed
