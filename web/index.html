@@ -1216,9 +1216,13 @@
     if (silent) return;
 
     if (obj.kind === "result" || obj.kind === "warn"){
-      var bodyText = obj.term || objText(obj);
-      var el = addLine(obj.kind, bodyText, resultMeta(obj), source,
-                       obj.term || obj.textZh, obj.term || obj.textEn);
+      // 警告行必须保留“步数上限 / 发散”等原因，不能只显示未完成的项
+      // A warning must keep its reason (limit/divergence), not just the partial term.
+      var isWarn = obj.kind === "warn";
+      var bodyText = isWarn ? objText(obj) : (obj.term || objText(obj));
+      var el = addLine(obj.kind, bodyText, isWarn ? null : resultMeta(obj), source,
+                       isWarn ? obj.textZh : (obj.term || obj.textZh),
+                       isWarn ? obj.textEn : (obj.term || obj.textEn));
       el._metaObj = obj;
       addActions(el, obj, source);
       if (obj.redexes) { state.redexes = obj.redexes; renderRedexes(); }
@@ -1276,7 +1280,6 @@
         ? (obj.term || objText(obj)) : objText(obj);
       var line = addLine(obj.kind, body, null, source,
                          obj.textZh || body, obj.textEn || body);
-      if (obj.kind === "define") { if (!state.replaying) refreshEnv(); }
       if (obj.kind === "term"){ setManual(true, obj.term); }
       if (obj.kind === "term" || obj.kind === "step"){
         if (obj.term) state.manualTerm = obj.term;
@@ -2073,8 +2076,12 @@
 
     if (/^:end\b/.test(trimmed)) setManual(false);
     if (/^:run\b/.test(trimmed)) setManual(false);
-    if (/^:reset\b/.test(trimmed)){ setManual(false); if (!state.replaying) await refreshEnv(); }
-    if (/^:del\b/.test(trimmed) || /^:load\b/.test(trimmed)){ if (!state.replaying) await refreshEnv(); }
+    if (/^:reset\b/.test(trimmed)) setManual(false);
+    // 定义、删除、重置与 :load 之后只刷新一次环境，避免逐条定义重复请求
+    // Refresh the environment once after definitions/deletes/load, not per definition.
+    var needsEnv = outputs.some(function(o){ return o.kind === "define"; }) ||
+                   /^:(reset|del|load)\b/.test(trimmed);
+    if (needsEnv && !state.replaying) await refreshEnv();
 
     var stratMatch = trimmed.match(/^:strategy\s+(\S+)/);
     if (stratMatch && STRATEGY_LABELS[stratMatch[1]]){
