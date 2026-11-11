@@ -1717,6 +1717,19 @@ def test_web_stream_and_storage(b: Path) -> None:
                   if line.startswith("data: ")]
         check("stream empty line is a parse error",
               any(f.get("kind") == "error" for f in frames), str(frames)[:300])
+
+        # 子进程退出后读线程必须把会话标记为失效，避免流式接口把截断当成 done
+        # A child exit must mark the session dead so streaming cannot report a
+        # truncated reply as done.
+        sid2 = client.post("/api/session").get_json()["session"]
+        try:
+            entry = webapp._sessions[sid2]
+            entry["interp"].proc.kill()
+            entry["interp"]._reader.join(5)
+            check("reader marks a dead session", not entry["interp"].alive,
+                  str(entry["interp"].alive))
+        finally:
+            client.delete(f"/api/session/{sid2}")
     finally:
         client.delete(f"/api/session/{sid}")
 
