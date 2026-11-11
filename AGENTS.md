@@ -50,7 +50,7 @@ Chinese/English**.
 - Expressions accept `let x = e1; y = e2 in e3`, `if c then t else f`, list
   literals `[a, b, c]`, `(expr : T)` annotations (erased during reduction;
   verify with `:type expr : T`), trailing `--`/`#` comments, and REPL
-  continuation on a trailing `\` or unclosed parentheses. `.lam` files also
+  continuation on a trailing `\` or unclosed parentheses/brackets. `.lam` files also
   accept settings commands and replay query commands.
 - `test.lam` is a sample definitions file. Its `ERR` and `ERROR` lines are
   intentionally malformed to exercise load-error reporting; do not "fix" them.
@@ -201,7 +201,7 @@ Chinese/English**.
   literals become `CONS`/`NIL`, and multiple `let` bindings nest. The shared
   `parseIf`/`parseList`/`parseLet` declarations are in the core-sync manifest.
 - `.lam` loading: `logicalLines` skips `--`/`#` comments and blanks, joins
-  continuation lines while parentheses are open or the next line is indented;
+  continuation lines while parentheses or brackets are open or the next line is indented;
   original file line numbers are preserved in errors. `:strategy`, `:steps`,
   `:lang` and `:fast` inside a file are applied by `LoadOutcome`.
 - Types are inferred with Hindley–Milner and let-generalisation. Prelude types

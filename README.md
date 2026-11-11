@@ -36,8 +36,8 @@ around the same compiled `extension` binary.
 - **Richer expressions** — `let x = e1; y = e2 in e3` (with expression-level
   let-polymorphism in `:type`), `if c then t else f`, list literals `[a, b, c]`,
   `(expr : T)` type annotations, and a `--` comment at the end of any line.
-- **Multi-line REPL** — a trailing `\` or unclosed parentheses automatically
-  continue the input onto the next line.
+- **Multi-line REPL** — a trailing `\` or unclosed parentheses/brackets
+  automatically continue the input onto the next line.
 - **Timing and help** — `:time [n] <expr>` reports elapsed time and a min/max
   range, `:bench <n> <expr>` reports average/median/standard deviation, and
   `:help <cmd>` shows per-command help.
@@ -67,10 +67,10 @@ around the same compiled `extension` binary.
   including expression-level `let` polymorphism and `(expr : T)` annotations.
 - **Definitions** — `name = expr`, recursive `rec name = expr`, `:let`, `:load`,
   `:save`, `:env`, `:del`, `:reset`.
-- **Definition files** — comments (`--` or `#`), indented/parenthesised
-  continuation lines, and in-file commands `:strategy`, `:steps`, `:lang`,
-  `:fast`, `:eta`, `:trace`, `:ast`, `:db`, `:del`, `:reset`, `:let` plus `rec`
-  definitions.
+- **Definition files** — comments (`--` or `#`), indented or
+  parenthesised/bracketed continuation lines, and in-file commands `:strategy`,
+  `:steps`, `:lang`, `:fast`, `:eta`, `:trace`, `:ast`, `:db`, `:del`, `:reset`,
+  `:let` plus `rec` definitions.
 - **Integer bridge** — `:int <expr>` decodes a Church numeral, `:church <n>`
   encodes 0–9999.
 - **Views** — pretty syntax tree (`:ast`), structured/collapsible AST in the web
@@ -207,12 +207,12 @@ file, reports failures and exits 0/1 without starting the REPL.
 - Definitions: `name = expression`; recursion: `rec name = expression`.
 - Equivalence commands separate the two expressions with a comma:
   `:eq \a.a , \b.b`.
-- `.lam` files accept `--` or `#` comment lines, indented/parenthesised
-  continuation lines, and commands `:strategy`, `:steps`, `:lang`, `:fast`,
-  `:eta`, `:trace`, `:ast`, `:db`, `:del`, `:reset`, `:let` plus `rec`
-  definitions.
-- REPL multi-line input: a line ending in `\` or with unclosed parentheses
-  continues onto the next line.
+- `.lam` files accept `--` or `#` comment lines, indented or
+  parenthesised/bracketed continuation lines, and commands `:strategy`, `:steps`,
+  `:lang`, `:fast`, `:eta`, `:trace`, `:ast`, `:db`, `:del`, `:reset`, `:let`
+  plus `rec` definitions.
+- REPL multi-line input: a line ending in `\` or with unclosed parentheses or
+  brackets continues onto the next line.
 
 ### Examples
 
