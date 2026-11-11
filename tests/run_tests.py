@@ -1730,6 +1730,21 @@ def test_web_stream_and_storage(b: Path) -> None:
                   str(entry["interp"].alive))
         finally:
             client.delete(f"/api/session/{sid2}")
+        # 客户端中途关闭流式请求时必须终止解释器，不能留下仍在运行的命令
+        # Closing a stream early must stop the interpreter, not leave a command running.
+        sid3 = client.post("/api/session").get_json()["session"]
+        try:
+            interp3 = webapp._sessions[sid3]["interp"]
+            gen = interp3.send_stream("PLUS ONE TWO")
+            try:
+                next(gen)
+            except StopIteration:
+                pass
+            gen.close()
+            check("early stream close kills session", not interp3.alive,
+                  str(interp3.alive))
+        finally:
+            client.delete(f"/api/session/{sid3}")
     finally:
         client.delete(f"/api/session/{sid}")
 
