@@ -16,8 +16,8 @@
 - `:lang` and the language acknowledgement from a loaded file include the new
   language, so the web UI can follow file settings.
 - Web UI: warnings keep their reason text, definition/delete/reset/load refresh
-  the environment once instead of per line, and settings from `:load` update the
-  controls. Web backend: environment limits are clamped, rate-limit buckets are
+  the environment once instead of per line, settings from `:load` update the
+  controls, and editor bracket matching covers square brackets. Web backend: environment limits are clamped, rate-limit buckets are
   bounded, reaped sessions are killed outside the session lock, and streaming
   line splitting matches `/api/eval`.
 
