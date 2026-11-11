@@ -26,7 +26,7 @@ let script = match[1];
 const marker = "})();";
 const idx = script.lastIndexOf(marker);
 if (idx < 0) { console.error("IIFE end not found"); process.exit(1); }
-script = script.slice(0, idx) + "window.__test = { state: state, findBracketPair: findBracketPair, highlight: highlight };\n" + script.slice(idx);
+script = script.slice(0, idx) + "window.__test = { state: state, findBracketPair: findBracketPair, highlight: highlight, I18N: I18N };\n" + script.slice(idx);
 
 function makeEl(tag = "div") {
   const el = {
@@ -179,6 +179,15 @@ check("bracket pair mismatch",
 check("highlight marks square bracket",
       String(highlight("[a]", [0, 2])).includes("tok-paren-match"),
       highlight("[a]", [0, 2]));
+
+// 界面文案必须有中英文两套 / every UI string needs both languages.
+const I18N = sandbox.window.__test.I18N;
+const usedKeys = Array.from(new Set((html.match(/\bt\("([A-Za-z0-9_]+)"\)/g) || [])
+  .map((m) => m.slice(3, -2))));
+const missingKeys = usedKeys.filter((k) => !I18N[k]);
+check("i18n keys complete", missingKeys.length === 0, missingKeys.join(","));
+const untranslated = usedKeys.filter((k) => I18N[k] && (!I18N[k].zh || !I18N[k].en));
+check("i18n strings bilingual", untranslated.length === 0, untranslated.join(","));
 
 // Crafted share state must be validated field by field.
 check("share code filtered",
