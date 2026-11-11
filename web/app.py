@@ -778,8 +778,13 @@ def run_interpreter(code: str, lang: str = "both", timeout: float = EVAL_TIMEOUT
     """把整段 code 喂给批处理解释器，返回全部输出对象"""
     if not code.endswith("\n"):
         code += "\n"
+    args = [str(INTERP_BIN), "--batch", "--json", "--lang", lang]
+    # 旧接口也要遵守同一表达式上限，否则可绕过会话接口的大小保护
+    # The legacy endpoint must honour the same term cap as the session path.
+    if MAX_TERM_SIZE.isdigit() and int(MAX_TERM_SIZE) > 0:
+        args += ["--max-term-size", MAX_TERM_SIZE]
     proc = subprocess.run(
-        [str(INTERP_BIN), "--batch", "--json", "--lang", lang],
+        args,
         input=code.encode("utf-8"),
         capture_output=True,
         timeout=timeout,
