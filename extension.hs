@@ -52,6 +52,11 @@ type Msg = (String, String)
 renderMsg :: Lang -> Msg -> String
 renderMsg lang (zh, en) = tr lang zh en
 
+langId :: Lang -> String
+langId Zh = "zh"
+langId En = "en"
+langId Both = "both"
+
 -- ---------------------------------------------------------------------------
 -- 表达式定义 Expression Definitions
 -- ---------------------------------------------------------------------------
@@ -2393,8 +2398,9 @@ runCommand st (LoadFile path) = do
       forM_ (loLimit out) $ \n -> emitL st' "info"
         ("归约步数上限：" ++ show n) ("Reduction step limit: " ++ show n)
         [ "limit" .= JNum n ]
-      forM_ (loLang out) $ \_ -> emitL st' "info"
-        "语言已切换。" "Language switched." []
+      forM_ (loLang out) $ \l -> emitL st' "info"
+        "语言已切换。" "Language switched."
+        [ "lang" .= JStr (langId l) ]
       forM_ (loFast out) $ \on -> emitL st' "info"
         (if on then "快速模式：开启" else "快速模式：关闭")
         (if on then "Fast mode: on" else "Fast mode: off")
@@ -2827,7 +2833,8 @@ runCommand st EndCmd = do
   emitL st "info" "已结束手动归约。" "Manual reduction ended." []
   return $ Just st { rsCurrent = Nothing, rsTrail = [] }
 runCommand st (SetLang l) = do
-  emitL st "info" "语言已切换。" "Language switched." []
+  emitL st "info" "语言已切换。" "Language switched."
+    [ "lang" .= JStr (langId l) ]
   return $ Just st { rsLang = l }
 runCommand st (Help (Just topic)) = do
   let key = case trim topic of
@@ -3296,8 +3303,9 @@ loadStartupFile st path = do
       forM_ (loLimit out) $ \n -> emitL st' "info"
         ("归约步数上限：" ++ show n) ("Reduction step limit: " ++ show n)
         [ "limit" .= JNum n ]
-      forM_ (loLang out) $ \_ -> emitL st' "info"
-        "语言已切换。" "Language switched." []
+      forM_ (loLang out) $ \l -> emitL st' "info"
+        "语言已切换。" "Language switched."
+        [ "lang" .= JStr (langId l) ]
       forM_ (loFast out) $ \on -> emitL st' "info"
         (if on then "快速模式：开启" else "快速模式：关闭")
         (if on then "Fast mode: on" else "Fast mode: off")
