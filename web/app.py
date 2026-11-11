@@ -65,22 +65,24 @@ APP_DIR = (Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent)) / "we
            if getattr(sys, "frozen", False)
            else Path(__file__).resolve().parent)
 RS = "\x1e"                     # 与前端的记录分隔符保持一致 / keep in sync with the frontend
-EVAL_TIMEOUT = float(os.environ.get("LAMBDA_EVAL_TIMEOUT", "10"))
-SESSION_IDLE = float(os.environ.get("LAMBDA_SESSION_IDLE", "1800"))
-MAX_SESSIONS = int(os.environ.get("LAMBDA_MAX_SESSIONS", "32"))
+# 环境变量可能是 0 或负数；统一夹到可用范围，避免 queue/sleep 收到非法值
+# Env values may be zero or negative; clamp them so queue/sleep never see bad values.
+EVAL_TIMEOUT = max(0.1, float(os.environ.get("LAMBDA_EVAL_TIMEOUT", "10")))
+SESSION_IDLE = max(1.0, float(os.environ.get("LAMBDA_SESSION_IDLE", "1800")))
+MAX_SESSIONS = max(0, int(os.environ.get("LAMBDA_MAX_SESSIONS", "32")))
 ALLOWED_LANGS = {"zh", "en", "both"}
-SHARE_TTL = float(os.environ.get("LAMBDA_SHARE_TTL", "604800"))   # 7 days
-MAX_SHARES = int(os.environ.get("LAMBDA_MAX_SHARES", "500"))
+SHARE_TTL = max(0.0, float(os.environ.get("LAMBDA_SHARE_TTL", "604800")))   # 7 days
+MAX_SHARES = max(0, int(os.environ.get("LAMBDA_MAX_SHARES", "500")))
 MAX_SHARE_BYTES = 64 * 1024
 # 分享短链的持久化文件；设为 off 可恢复纯内存模式
 # Persistence file for short share links; set to off for memory-only mode.
 SHARE_DB = os.environ.get("LAMBDA_SHARE_DB", str(APP_DIR / "shares.json"))
 # 限制请求体大小，避免公开部署时一个巨大请求耗尽内存
 # Cap the request body so a huge request cannot exhaust memory in production.
-MAX_BODY = int(os.environ.get("LAMBDA_MAX_BODY", str(1024 * 1024)))
+MAX_BODY = max(1024, int(os.environ.get("LAMBDA_MAX_BODY", str(1024 * 1024))))
 # 可选的每 IP 每分钟请求上限；0 表示关闭（默认关闭，避免影响本地与测试）
 # Optional per-IP requests/minute cap; 0 disables it (default, so local/tests are unaffected).
-RATE_LIMIT = int(os.environ.get("LAMBDA_RATE_LIMIT", "0"))
+RATE_LIMIT = max(0, int(os.environ.get("LAMBDA_RATE_LIMIT", "0")))
 # 可选的表达式节点上限，传给解释器的 --max-term-size
 # Optional AST node cap forwarded to the interpreter as --max-term-size.
 MAX_TERM_SIZE = os.environ.get("LAMBDA_MAX_TERM_SIZE", "").strip()
@@ -91,6 +93,10 @@ MAX_SHARE_LINES = 200
 # 后台回收线程的执行间隔（秒）
 # Interval in seconds between background reaper sweeps.
 REAPER_INTERVAL = 60.0
+# 速率桶数量上限，避免大量来源 IP 让字典无限增长
+# Cap the bucket map so many source IPs cannot grow it without bound.
+RATE_BUCKET_MAX = 4096
+RATE_BUCKET_IDLE = 120.0
 # 进程启动时刻（单调时钟），用于 /api/health 的 uptime
 # Process start on a monotonic clock, used for /api/health uptime.
 _PROCESS_START = time.monotonic()
@@ -106,6 +112,13 @@ def _rate_ok() -> bool:
     now = time.monotonic()
     rate = RATE_LIMIT / 60.0
     with _rate_lock:
+        if len(_rate_buckets) > RATE_BUCKET_MAX:
+            cutoff = now - RATE_BUCKET_IDLE
+            for key in [k for k, v in _rate_buckets.items() if v[1] < cutoff]:
+                _rate_buckets.pop(key, None)
+            while len(_rate_buckets) > RATE_BUCKET_MAX:
+                oldest = min(_rate_buckets, key=lambda k: _rate_buckets[k][1])
+                _rate_buckets.pop(oldest, None)
         tokens, last = _rate_buckets.get(ip, (float(RATE_LIMIT), now))
         tokens = min(float(RATE_LIMIT), tokens + (now - last) * rate)
         if tokens < 1.0:
@@ -202,10 +215,13 @@ except OSError:
 
 # 与 extension.hs 中 initEnv 保持一致
 PRELUDE = [
-    "TRUE", "FALSE", "NOT", "AND", "OR", "IF",
+    "TRUE", "FALSE", "NOT", "AND", "OR", "XOR", "NAND", "IF",
+    "I", "K", "S", "B", "C", "W",
     "ZERO", "ONE", "TWO", "THREE", "SUCC", "PLUS", "MULT",
     "EXP", "PRED", "SUB", "ISZERO", "LEQ", "EQ",
-    "PAIR", "FST", "SND", "NIL", "CONS", "HEAD", "TAIL", "Y",
+    "MIN", "MAX", "DIV", "MOD",
+    "PAIR", "FST", "SND", "NIL", "CONS", "HEAD", "TAIL",
+    "APPEND", "REV", "LENGTH", "MAP", "FILTER", "FOLD", "RANGE", "ZIP", "Y",
 ]
 
 app = Flask(__name__, static_folder=None, static_url_path=None)
@@ -651,18 +667,22 @@ def _valid_share(payload) -> bool:
 
 def _prune_sessions() -> None:
     now = time.time()
+    doomed: list[tuple[str, dict]] = []
     with _sessions_lock:
         stale = [sid for sid, s in _sessions.items()
                  if now - s["used"] > SESSION_IDLE or not s["interp"].alive]
         for sid in stale:
-            _sessions.pop(sid)["interp"].kill()
-            log.info("session reaped (idle/dead) sid=%s / 空闲会话已回收", sid)
+            doomed.append((sid, _sessions.pop(sid)))
         # 超出上限时丢弃最久未使用的会话
         # Evict the least recently used session when over the limit.
         while len(_sessions) > MAX_SESSIONS:
             oldest = min(_sessions, key=lambda k: _sessions[k]["used"])
-            _sessions.pop(oldest)["interp"].kill()
-            log.info("session evicted (limit) sid=%s / 超限会话已淘汰", oldest)
+            doomed.append((oldest, _sessions.pop(oldest)))
+    # kill 会等待子进程退出，放在锁外，避免阻塞其它会话
+    # kill waits for the child process, so run it outside the lock.
+    for sid, entry in doomed:
+        entry["interp"].kill()
+        log.info("session reaped (idle/dead) sid=%s / 空闲会话已回收", sid)
 
 
 def get_session(sid: str | None, lang: str = "both",
@@ -993,9 +1013,11 @@ def api_eval_stream():
     line = data.get("line")
     if line is None:
         return api_error("empty request", 400, "bad_request")
-    lines: list[str] = []
-    for ln in str(line).splitlines():
-        lines.append(ln if ln else str(line))
+    # 与 /api/eval 一致：空字符串仍然是一条命令，内部空行保留为空命令
+    # Match /api/eval: an empty string is one command and inner blank lines stay blank.
+    raw = str(line)
+    parts = raw.splitlines()
+    lines: list[str] = parts if parts else [raw]
     for ln in lines:
         problem = validate_line(ln)
         if problem:
