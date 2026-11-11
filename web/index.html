@@ -2268,25 +2268,33 @@
   // 返回光标附近配对括号的两个下标 / indices of the bracket pair near the caret
   function findBracketPair(src, pos){
     var i, depth, left = src.charAt(pos - 1), right = src.charAt(pos);
-    if (left === "(" || right === "("){
-      var s = left === "(" ? pos - 1 : pos;
+    function isOpen(c){ return c === "(" || c === "["; }
+    function isClose(c){ return c === ")" || c === "]"; }
+    function closer(c){ return c === "(" ? ")" : "]"; }
+    function opener(c){ return c === ")" ? "(" : "["; }
+    if (isOpen(left) || isOpen(right)){
+      var s = isOpen(left) ? pos - 1 : pos;
+      var open = src.charAt(s), want = closer(open);
       depth = 0;
       for (i = s; i < src.length; i++){
-        if (src.charAt(i) === "(") depth++;
-        else if (src.charAt(i) === ")"){ depth--; if (depth === 0) return [s, i]; }
+        var c = src.charAt(i);
+        if (c === open) depth++;
+        else if (c === want){ depth--; if (depth === 0) return [s, i]; }
       }
-    } else if (left === ")"){
+    } else if (isClose(left)){
+      var back = opener(left);
       depth = 0;
       for (i = pos - 1; i >= 0; i--){
-        if (src.charAt(i) === ")") depth++;
-        else if (src.charAt(i) === "("){ depth--; if (depth === 0) return [i, pos - 1]; }
+        var b = src.charAt(i);
+        if (b === left) depth++;
+        else if (b === back){ depth--; if (depth === 0) return [i, pos - 1]; }
       }
     }
     return null;
   }
   // 逐字符 token 化并转义，配对的括号额外标记 / tokenize and escape, mark matched brackets
   function highlight(src, pair){
-    var re = /(:[A-Za-z]+|λ|\\|\d+|[()]|→|->|[A-Za-z_][A-Za-z0-9_']*)/g;
+    var re = /(:[A-Za-z]+|λ|\\|\d+|[()\[\]]|→|->|[A-Za-z_][A-Za-z0-9_']*)/g;
     var htmlOut = "", last = 0, m, idx;
     function isMatch(i){ return pair && (i === pair[0] || i === pair[1]); }
     while ((m = re.exec(src)) !== null){
@@ -2296,7 +2304,7 @@
       if (tok === "λ" || tok === "\\") cls = "tok-lam";
       else if (tok.charAt(0) === ":") cls = "tok-cmd";
       else if (/^\d/.test(tok)) cls = "tok-num";
-      else if (tok === "(" || tok === ")") cls = isMatch(idx) ? "tok-paren-match" : "tok-paren";
+      else if (tok === "(" || tok === ")" || tok === "[" || tok === "]") cls = isMatch(idx) ? "tok-paren-match" : "tok-paren";
       else if (/^[A-Za-z_]/.test(tok)) cls = "tok-var";
       htmlOut += cls ? '<span class="' + cls + '">' + esc(tok) + '</span>' : esc(tok);
       last = idx + tok.length;
