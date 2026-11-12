@@ -1815,6 +1815,15 @@ def test_web_stream_and_storage(b: Path) -> None:
         webapp.RATE_LIMIT = old_rate
         webapp._rate_buckets.clear()
 
+    # 关闭服务器时必须回收所有解释器进程，不能让它们在后台继续运行
+    # Shutting the server down must reap every interpreter process.
+    sid4 = client.post("/api/session").get_json()["session"]
+    interp4 = webapp._sessions[sid4]["interp"]
+    webapp._kill_all_sessions()
+    check("shutdown kills every interpreter",
+          not interp4.alive and not webapp._sessions,
+          f"alive={interp4.alive} sessions={len(webapp._sessions)}")
+
 
 TESTS.append(test_web_stream_and_storage)
 
