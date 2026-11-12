@@ -1908,6 +1908,16 @@
     el.style.color = "var(--ok)";
   }
 
+  // 只有后端的流级失败才算失败；解释器自己的 error 输出只是普通命令结果
+  // Only the backend's stream-level failures count: an interpreter error
+  // object (kind "error" with text and a code) is a normal command output and
+  // must be rendered, not turned into a failed request.
+  function isStreamFailure(obj){
+    if (!obj) return false;
+    if (obj.kind === "timeout" || obj.kind === "expired") return true;
+    return obj.kind === "error" && obj.ok === false;
+  }
+
   async function streamEval(line, signal){
     var opts = {
       method: "POST",
@@ -1934,7 +1944,7 @@
           if (obj.session) session = obj.session;
         } else if (obj.kind === "heartbeat"){
           showRunning(obj.elapsedMs);
-        } else if (obj.kind === "timeout" || obj.kind === "expired" || obj.kind === "error"){
+        } else if (isStreamFailure(obj)){
           failure = obj;
         } else {
           outputs.push(obj);

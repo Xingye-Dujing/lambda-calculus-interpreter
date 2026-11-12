@@ -26,7 +26,7 @@ let script = match[1];
 const marker = "})();";
 const idx = script.lastIndexOf(marker);
 if (idx < 0) { console.error("IIFE end not found"); process.exit(1); }
-script = script.slice(0, idx) + "window.__test = { state: state, findBracketPair: findBracketPair, highlight: highlight, I18N: I18N, newSession: newSession, renderOutput: renderOutput };\n" + script.slice(idx);
+script = script.slice(0, idx) + "window.__test = { state: state, findBracketPair: findBracketPair, highlight: highlight, I18N: I18N, newSession: newSession, renderOutput: renderOutput, isStreamFailure: isStreamFailure, streamEval: streamEval };\n" + script.slice(idx);
 
 function makeEl(tag = "div") {
   const el = {
@@ -101,6 +101,7 @@ const sandbox = {
   document,
   setTimeout, clearTimeout, setInterval, clearInterval,
   Promise, JSON, Math, Date, String, Number, Boolean, Array, Object, RegExp, Error, Set, Map,
+  TextDecoder, TextEncoder,
   encodeURIComponent, decodeURIComponent,
   btoa: (s) => Buffer.from(s, "binary").toString("base64"),
   atob: (s) => Buffer.from(s, "base64").toString("binary"),
@@ -328,6 +329,59 @@ check("timing commands in UI", html.includes(":time") && html.includes(":bench")
       ":time / :bench UI entries missing");
 check("cancel endpoint wired", html.includes("/cancel"), "cancel route missing");
 check("IIFE end marker intact", script.includes("})();"), "IIFE marker missing");
+
+// 流式帧：解释器的 error 输出是普通结果，只有后端的流级失败才算失败
+// In a stream, an interpreter error is a normal output; only the backend's
+// stream-level failure ends the request.
+const isStreamFailure = sandbox.window.__test.isStreamFailure;
+check("interpreter error is not a stream failure",
+      isStreamFailure({ kind: "error", text: "boom", textZh: "boom", textEn: "boom",
+                        code: "parse_error" }) === false, "interpreter error");
+check("backend error is a stream failure",
+      isStreamFailure({ kind: "error", ok: false, error: "boom" }) === true,
+      "backend error");
+check("timeout is a stream failure",
+      isStreamFailure({ kind: "timeout", ok: false, timeout: true }) === true,
+      "timeout");
+check("expired is a stream failure",
+      isStreamFailure({ kind: "expired", ok: false, restart: true }) === true,
+      "expired");
+
+function fakeStreamResponse(frames) {
+  const enc = new TextEncoder();
+  let i = 0;
+  return {
+    ok: true,
+    body: {
+      getReader() {
+        return {
+          read: async () => (i < frames.length
+            ? { done: false, value: enc.encode(frames[i++]) }
+            : { done: true, value: undefined }),
+        };
+      },
+    },
+  };
+}
+const realFetch = sandbox.fetch;
+sandbox.fetch = async () => fakeStreamResponse([
+  'data: {"kind":"start","session":"S"}\n\n',
+  'data: {"kind":"error","text":"parse error","textZh":"x","textEn":"y","code":"parse_error"}\n\n',
+  'data: {"kind":"done","ok":true,"session":"S"}\n\n',
+]);
+const streamed = await sandbox.window.__test.streamEval("\\x");
+check("stream keeps interpreter errors as output",
+      streamed && streamed.status === 200 && streamed.data.outputs.length === 1
+      && streamed.data.outputs[0].code === "parse_error",
+      JSON.stringify(streamed));
+sandbox.fetch = async () => fakeStreamResponse([
+  'data: {"kind":"error","ok":false,"error":"boom"}\n\n',
+]);
+const failed = await sandbox.window.__test.streamEval("\\x");
+check("stream reports a backend failure",
+      failed && failed.status === 500 && failed.data && failed.data.error === "boom",
+      JSON.stringify(failed));
+sandbox.fetch = realFetch;
 
 if (failures.length) {
   console.error("FAILURES:\n  " + failures.join("\n  "));
