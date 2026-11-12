@@ -1230,7 +1230,9 @@
       if (warnCode) el.title = t("errCode") + ": " + warnCode;
       el._metaObj = obj;
       addActions(el, obj, source);
-      if (obj.redexes) { state.redexes = obj.redexes; renderRedexes(); }
+      // 普通结果的 redex 不属于手动归约，不能覆盖手动归约的 redex 列表
+      // A plain result's redexes are not the manual reduction's, so they must
+      // not replace the buttons of the reduction in progress.
       if (!state.selected) selectResult(obj, el, (obj.trace && obj.trace.length) ? "trace" : "ast");
       if (state.tab !== "env" && el.classList.contains("sel")) renderPanel();
       return;
