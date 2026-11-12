@@ -675,7 +675,20 @@ def _prune_shares() -> None:
 # code 会被前端逐条 exec，只放行无害内容：表达式、定义、注释与少量设置命令
 # The client exec's code line by line, so allow only harmless content:
 # expressions, definitions, comments and a few setting commands.
-_SAFE_SHARE_SETTINGS = frozenset({":lang", ":strategy", ":steps", ":eta", ":fast"})
+# 只读查询与定义可以分享；会读文件、改环境或操纵会话的命令不行
+# Read-only queries and definitions may be shared; commands that touch files,
+# change the environment or drive the session may not.
+_SAFE_SHARE_SETTINGS = frozenset({
+    # 设置 / settings
+    ":lang", ":strategy", ":steps", ":eta", ":fast",
+    # 只读查询 / read-only queries
+    ":type", ":trace", ":ast", ":db", ":eq", ":conv", ":nf", ":whnf",
+    ":int", ":church", ":env", ":help", ":def", ":search",
+    # 定义 / definitions
+    ":let",
+    # 手动归约（只影响回放者自己的会话）/ manual reduction (session-local only)
+    ":begin", ":step", ":back", ":goto", ":run", ":end",
+})
 
 # 控制/格式/代理/私有/行段分隔符字符可能让 splitlines 拆行或绕过冒号检查
 # Control, format, surrogate, private-use and line/paragraph separator
@@ -699,12 +712,12 @@ def is_safe_share_command(line: str) -> bool:
     # Blank lines and -- / # comments are ignored by the interpreter.
     if not stripped or stripped.startswith("--") or stripped.startswith("#"):
         return True
-    # 以 : 开头的命令只允许白名单里的无害设置项，其余一律拒绝，
-    # 特别是 :load / :save / :reset / :q / :del / :begin / :step / :run /
-    # :end / :env / :help / :let 等
-    # Colon commands are allowed only from the harmless settings whitelist;
-    # everything else (:load, :save, :reset, :q, :del, :begin, :step, :run,
-    # :end, :env, :help, :let and so on) is rejected.
+    # 以 : 开头的命令只允许白名单里的无害命令，其余一律拒绝，
+    # 特别是 :load / :save / :edit / :reset / :q / :del / :begin / :step /
+    # :run / :end / :back / :goto / :reload 等
+    # Colon commands are allowed only from the harmless whitelist; everything
+    # else (:load, :save, :edit, :reset, :q, :del, :begin, :step, :run, :end,
+    # :back, :goto, :reload and so on) is rejected.
     if stripped.startswith(":"):
         head = stripped.split(None, 1)[0].lower()
         return head in _SAFE_SHARE_SETTINGS
