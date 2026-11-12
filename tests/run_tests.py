@@ -593,9 +593,10 @@ def test_web_api(b: Path) -> None:
     with tempfile.TemporaryDirectory() as td:
         os.environ["LAMBDA_LOAD_ROOT"] = td
         try:
-            err = webapp.validate_line(":load test.lam")
+            found = webapp.validate_line(":load test.lam")
             check("web load custom root relative confined",
-                  err is not None and "restricted" in err, str(err))
+                  found is not None and found[0] == "load_error"
+                  and "restricted" in found[1], str(found))
         finally:
             if saved_root is None:
                 os.environ.pop("LAMBDA_LOAD_ROOT", None)
