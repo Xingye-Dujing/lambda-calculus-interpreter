@@ -1455,6 +1455,20 @@ def test_web_21(b: Path) -> None:
     check("share rejects :save", r.status_code == 400, str(r.get_json()))
     r = client.post("/api/share", json={"code": ["PLUS ONE TWO", ":lang en"]})
     check("share accepts safe payload", r.status_code == 200, str(r.get_json()))
+    # 只读查询与定义可以分享，会话/文件类命令不行
+    # Read-only queries and definitions may be shared; session and file
+    # commands may not.
+    for safe in (":type PLUS ONE TWO", ":trace \\x.x", ":eq \\a.a , \\b.b",
+                 ":nf \\x.x", ":env", ":help", ":let id = \\x.x",
+                 ":begin \\x.x", ":step 1", ":end"):
+        r = client.post("/api/share", json={"code": [safe]})
+        check(f"share accepts {safe.split()[0]}", r.status_code == 200,
+              str(r.get_json()))
+    for unsafe in (":del id", ":reset", ":q", ":edit x.lam", ":reload",
+                   ":load x.lam", ":save x.lam", ":time 5 \\x.x"):
+        r = client.post("/api/share", json={"code": [unsafe]})
+        check(f"share rejects {unsafe.split()[0]}", r.status_code == 400,
+              str(r.get_json()))
     if r.status_code == 200:
         got = client.get(f"/api/share/{r.get_json()['id']}").get_json()
         check("share roundtrip", got.get("ok") is True
