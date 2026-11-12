@@ -18,7 +18,8 @@ import Data.List (elemIndex, stripPrefix, isPrefixOf, foldl')
 import System.Directory (getHomeDirectory)
 import System.Environment (getArgs)
 import System.Exit (exitFailure)
-import System.IO (hSetEncoding, utf8, hIsTerminalDevice, stdout, stdin, stderr, hPutStrLn)
+import System.IO (hSetEncoding, utf8, hIsTerminalDevice, stdout, stdin, stderr, hPutStrLn, hPutStr, hGetLine, hIsEOF)
+import GHC.IO.Encoding (setLocaleEncoding)
 import System.Console.Haskeline
 import Text.ParserCombinators.ReadP
 
@@ -824,12 +825,14 @@ parenBalance = foldl' step 0
     step d _   = d
 
 readReplLine :: InputT IO (Maybe String)
-readReplLine = go [] 0 (0 :: Int)
+readReplLine = do
+  term <- liftIO (hIsTerminalDevice stdin)
+  go term [] 0 (0 :: Int)
   where
-    go acc depth n
+    go term acc depth n
       | n >= 20 = return (Just (unwords (reverse acc)))
       | otherwise = do
-          m <- getInputLine (if null acc then "λ> " else "  … ")
+          m <- readOneLine term (if null acc then "λ> " else "  … ")
           case m of
             Nothing -> return Nothing
             Just raw ->
@@ -840,8 +843,17 @@ readReplLine = go [] 0 (0 :: Int)
                   acc'   = trim body : acc
                   depth' = depth + parenBalance body
               in if cont || depth' > 0
-                   then go acc' depth' (n + 1)
+                   then go term acc' depth' (n + 1)
                    else return (Just (unwords (reverse acc')))
+    -- 管道输入按句柄编码读取：Haskeline 会用控制台代码页解码，UTF-8 会被弄乱
+    -- Piped input is read with the handle's encoding; Haskeline would decode it
+    -- with the console code page and garble UTF-8.
+    readOneLine term prompt
+      | term = getInputLine prompt
+      | otherwise = do
+          liftIO (hPutStr stdout prompt)
+          eof <- liftIO (hIsEOF stdin)
+          if eof then return Nothing else Just <$> liftIO (hGetLine stdin)
 
 repl :: ReplState -> InputT IO ()
 repl st = do
@@ -890,13 +902,19 @@ main = do
       hPutStrLn stderr err
       exitFailure
     Right (lang, help, version) -> do
-      -- 管道 / 重定向时统一用 UTF-8，避免 Windows 代码页问题
-      -- Use UTF-8 when piped or redirected, avoiding Windows code-page issues.
-      term <- hIsTerminalDevice stdout
-      unless term $ do
+      -- 每个流按各自是否为终端决定编码；非交互输入还要设置 locale 编码，
+      -- 因为 Haskeline 用 locale 编码读取管道输入
+      -- Give each stream its own decision: a piped or redirected stream uses
+      -- UTF-8, an interactive one keeps the console code page, and the locale
+      -- encoding follows because Haskeline reads piped input through it.
+      inTerm  <- hIsTerminalDevice stdin
+      outTerm <- hIsTerminalDevice stdout
+      errTerm <- hIsTerminalDevice stderr
+      unless inTerm $ do
         hSetEncoding stdin utf8
-        hSetEncoding stdout utf8
-        hSetEncoding stderr utf8
+        setLocaleEncoding utf8
+      unless outTerm $ hSetEncoding stdout utf8
+      unless errTerm $ hSetEncoding stderr utf8
       if help
         then putStrLn (helpMessage lang)
         else if version

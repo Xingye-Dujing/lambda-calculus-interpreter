@@ -18,6 +18,7 @@ import System.Directory (getHomeDirectory)
 import System.Environment (getArgs, lookupEnv)
 import System.Exit (exitFailure, exitSuccess)
 import System.IO
+import GHC.IO.Encoding (setLocaleEncoding)
 import System.Info (os)
 import System.Process (callProcess)
 import System.Timeout (timeout)
@@ -3139,12 +3140,14 @@ parenBalance = foldl' step 0
     step d _   = d
 
 readReplLine :: InputT IO (Maybe String)
-readReplLine = go [] 0 (0 :: Int)
+readReplLine = do
+  term <- liftIO (hIsTerminalDevice stdin)
+  go term [] 0 (0 :: Int)
   where
-    go acc depth n
+    go term acc depth n
       | n >= 20 = return (Just (unwords (reverse acc)))
       | otherwise = do
-          m <- getInputLine (if null acc then "λ> " else "  … ")
+          m <- readOneLine term (if null acc then "λ> " else "  … ")
           case m of
             Nothing -> return Nothing
             Just raw ->
@@ -3155,8 +3158,17 @@ readReplLine = go [] 0 (0 :: Int)
                   acc'   = trim body : acc
                   depth' = depth + parenBalance body
               in if cont || depth' > 0
-                   then go acc' depth' (n + 1)
+                   then go term acc' depth' (n + 1)
                    else return (Just (unwords (reverse acc')))
+    -- 管道输入按句柄编码读取：Haskeline 会用控制台代码页解码，UTF-8 会被弄乱
+    -- Piped input is read with the handle's encoding; Haskeline would decode it
+    -- with the console code page and garble UTF-8.
+    readOneLine term prompt
+      | term = getInputLine prompt
+      | otherwise = do
+          liftIO (hPutStr stdout prompt)
+          eof <- liftIO (hIsEOF stdin)
+          if eof then return Nothing else Just <$> liftIO (hGetLine stdin)
 
 repl :: ReplState -> InputT IO ()
 repl st = do
@@ -3372,10 +3384,21 @@ main = do
       hPutStrLn stderr err
       exitFailure
     Right opts -> do
-      term <- hIsTerminalDevice stdout
-      when (not term) $ do
-        hSetEncoding stdout utf8
-        hSetEncoding stderr utf8
+      -- 每个流按各自是否为终端决定编码，机器可读模式一律用 UTF-8；
+      -- Haskeline 走 locale 编码，所以非交互输入还要一并设置 locale 编码
+      -- Give each stream its own decision and force UTF-8 in the
+      -- machine-readable modes. Haskeline reads through the locale encoding,
+      -- so a piped input needs that as well.
+      inTerm  <- hIsTerminalDevice stdin
+      outTerm <- hIsTerminalDevice stdout
+      errTerm <- hIsTerminalDevice stderr
+      let machine = optJson opts || optBatch opts ||
+                    not (null (optEval opts)) || optCheck opts
+      when (machine || not inTerm) $ do
+        hSetEncoding stdin utf8
+        setLocaleEncoding utf8
+      when (machine || not outTerm) $ hSetEncoding stdout utf8
+      when (machine || not errTerm) $ hSetEncoding stderr utf8
       if optHelp opts
         then putStrLn (helpMessage (optLang opts))
         else if optVersion opts
@@ -3384,10 +3407,6 @@ main = do
             let json  = optJson opts
                 batch = optBatch opts
                 lang  = optLang opts
-            when (batch || not term || not (null (optEval opts)) || optCheck opts) $ do
-              hSetEncoding stdin utf8
-              hSetEncoding stdout utf8
-              hSetEncoding stderr utf8
             when batch $ hSetBuffering stdout LineBuffering
             let st0 = applyCliOptions opts $
                         ReplState initEnv initTypeEnv Applicative defaultLimit
