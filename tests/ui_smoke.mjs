@@ -26,7 +26,7 @@ let script = match[1];
 const marker = "})();";
 const idx = script.lastIndexOf(marker);
 if (idx < 0) { console.error("IIFE end not found"); process.exit(1); }
-script = script.slice(0, idx) + "window.__test = { state: state, findBracketPair: findBracketPair, highlight: highlight, I18N: I18N, newSession: newSession };\n" + script.slice(idx);
+script = script.slice(0, idx) + "window.__test = { state: state, findBracketPair: findBracketPair, highlight: highlight, I18N: I18N, newSession: newSession, renderOutput: renderOutput };\n" + script.slice(idx);
 
 function makeEl(tag = "div") {
   const el = {
@@ -179,6 +179,24 @@ check("bracket pair mismatch",
 check("highlight marks square bracket",
       String(highlight("[a]", [0, 2])).includes("tok-paren-match"),
       highlight("[a]", [0, 2]));
+
+// 警告与失败行要显示机器可读的错误码 / warnings and failures show their code.
+const outEl2 = document.getElementById("out");
+const beforeCode = outEl2.children.length;
+sandbox.window.__test.renderOutput(
+  { kind: "warn", code: "timeout", text: "timed out", textZh: "超时", textEn: "timed out" },
+  "PLUS ONE TWO", false);
+sandbox.window.__test.renderOutput(
+  { kind: "fail", code: "term_too_large", text: "too large", textZh: "过大", textEn: "too large" },
+  "PLUS ONE TWO", false);
+const warnLine = outEl2.children[beforeCode];
+const failLine = outEl2.children[beforeCode + 1];
+check("warn line shows its code",
+      String(warnLine && warnLine.title || "").includes("timeout"),
+      String(warnLine && warnLine.title));
+check("fail line shows its code",
+      String(failLine && failLine.title || "").includes("term_too_large"),
+      String(failLine && failLine.title));
 
 // 界面文案必须有中英文两套 / every UI string needs both languages.
 const I18N = sandbox.window.__test.I18N;
