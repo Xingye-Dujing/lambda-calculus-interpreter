@@ -32,9 +32,9 @@ def _prepare_environment() -> Path:
     frozen = bool(getattr(sys, "frozen", False))
     bundle = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
     data_dir = Path.home() / ".lambda-calculus-interpreter"
-    data_dir.mkdir(parents=True, exist_ok=True)
 
     if frozen:
+        data_dir.mkdir(parents=True, exist_ok=True)
         # app.py resolves `extension` from APP_DIR.parent (the PyInstaller root).
         os.environ.setdefault("LAMBDA_INTERP_DIR", str(bundle))
         os.environ.setdefault("LAMBDA_INTERP_CWD", str(data_dir))
