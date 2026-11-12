@@ -2830,16 +2830,26 @@ runCommand st (EditFile mpath) =
     Just path -> do
       ed <- lookupEnv "EDITOR"
       let editor = trim (fromMaybe (if os == "mingw32" then "notepad" else "vi") ed)
-      case words editor of
-        [] -> do
+          (exe0, args0) = case words editor of
+                             (e:as) -> (e, as)
+                             []      -> (editor, [])
+          tryEditor exe args =
+            catch (Right <$> callProcess exe (args ++ [path]))
+                  (\(e :: SomeException) -> return (Left (show e)))
+      if null exe0
+        then do
           emitL st "fail"
             "EDITOR 为空，无法启动编辑器。"
             "EDITOR is empty; no editor can be started." []
-        exe:args -> do
-          -- EDITOR 常带参数（如 "code --wait"），按词拆分后再启动
-          -- $EDITOR often carries arguments (e.g. "code --wait"); split it first.
-          r <- catch (Right <$> callProcess exe (args ++ [path]))
-                     (\(e :: SomeException) -> return (Left (show e)))
+        else do
+          -- 先按“命令 + 参数”启动；若命令不存在，再把整串当作带空格的路径
+          -- Try "command + arguments" first; if that fails, use the whole
+          -- string as an executable path (it may contain spaces).
+          r0 <- tryEditor exe0 args0
+          r <- case r0 of
+                 Left err | not (null args0) && "does not exist" `isInfixOf` err ->
+                   tryEditor editor []
+                 _ -> return r0
           case r of
             Left err -> emitL st "fail"
               ("无法启动编辑器 " ++ editor ++ "：" ++ err)
