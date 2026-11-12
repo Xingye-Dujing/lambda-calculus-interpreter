@@ -43,6 +43,10 @@
 - Piped input is read as UTF-8 again: Haskeline decoded a redirected stdin with
   the console code page, so a UTF-8 file piped into the REPL came out garbled.
   Each stream also picks its encoding on its own instead of following stdout.
+- Type inference is skipped for terms above the node budget: every JSON result
+  inferred the type of the expression again, and a 200-element list literal took
+  12 s to evaluate while a 400-element one never finished. `:type` now reports
+  that the inference was skipped.
 - Sessions with `:type`, `:trace`, `:eq` or the manual-reduction controls can be
   shared again: the share allow-list now accepts read-only queries,
   definitions and the manual-reduction commands, and only file, session and
