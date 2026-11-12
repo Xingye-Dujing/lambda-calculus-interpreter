@@ -1504,6 +1504,14 @@ inferScheme tenv e = runTI go (Map.size tenv + 1)
           tv <- freshTy
           return (Map.insert v (Forall [] tv) env)
 
+-- 类型推断的代价随项的大小急剧上升，超过节点上限就跳过，避免大项拖垮解释器
+-- Type inference gets expensive quickly as a term grows, so skip it above the
+-- node budget instead of stalling the interpreter on a large term.
+inferTypeMaybe :: TypeEnv -> Expr -> Maybe Scheme
+inferTypeMaybe tenv e
+  | exprSize e > astBudget = Nothing
+  | otherwise = either (const Nothing) Just (inferScheme tenv e)
+
 -- ---------------------------------------------------------------------------
 -- 预定义环境 Predefined Environment
 -- ---------------------------------------------------------------------------
@@ -2006,9 +2014,9 @@ loadDefinitionsFromFile maxTerm env0 tenv0 path = do
                    Just msg -> failLine acc n line msg "term_too_large"
                    Nothing ->
                      let env'  = Map.insert var expr' (loEnv acc)
-                         tenv' = case inferScheme (loTypeEnv acc) expr of
-                           Right sc -> Map.insert var sc (loTypeEnv acc)
-                           Left _   -> Map.delete var (loTypeEnv acc)
+                         tenv' = case inferTypeMaybe (loTypeEnv acc) expr of
+                           Just sc -> Map.insert var sc (loTypeEnv acc)
+                           Nothing -> Map.delete var (loTypeEnv acc)
                      in acc { loEnv = env', loTypeEnv = tenv'
                             , loOk = (var, expr') : loOk acc }
         Right (DefineRec var expr) ->
@@ -2133,8 +2141,9 @@ emitEvalResult st res mExpr = do
       textZh  = termTxt ++ stepZh ++ fst hintMsg
       textEn  = termTxt ++ stepEn ++ snd hintMsg
       mtyMsg  = case mExpr of
-        Just expr -> either (const ("", "")) prettySchemeMsg
-                           (inferScheme (rsTypeEnv st) expr)
+        Just expr -> case inferTypeMaybe (rsTypeEnv st) expr of
+          Just sc -> prettySchemeMsg sc
+          Nothing -> ("", "")
         Nothing   -> ("", "")
       trail   = erSteps res
       size    = exprSize final
@@ -2193,8 +2202,9 @@ emitFastResult st final mExpr = do
       hintMsg = valueHintMsg final
       size    = exprSize final
       mtyMsg  = case mExpr of
-        Just expr -> either (const ("", "")) prettySchemeMsg
-                           (inferScheme (rsTypeEnv st) expr)
+        Just expr -> case inferTypeMaybe (rsTypeEnv st) expr of
+          Just sc -> prettySchemeMsg sc
+          Nothing -> ("", "")
         Nothing   -> ("", "")
       fields  = [ "term"     .= JStr termTxt
                 , "fast"     .= JBool True
@@ -2281,7 +2291,15 @@ isPreludeDef :: String -> Expr -> Bool
 isPreludeDef n e = Map.lookup n initEnv == Just e
 
 typeOfExpr :: ReplState -> Expr -> Maybe String -> IO (Maybe ReplState)
-typeOfExpr st expr mAnn = do
+typeOfExpr st expr mAnn
+  | exprSize expr > astBudget = do
+      emitL st "warn"
+        ("表达式过大（节点上限 " ++ show astBudget ++ "），已跳过类型推断。")
+        ("The term is too large (node limit " ++ show astBudget
+         ++ "); type inference was skipped.")
+        [ "code" .= JStr "term_too_large", "limit" .= JNum astBudget ]
+      return (Just st)
+  | otherwise = do
   case inferScheme (rsTypeEnv st) expr of
     Left err0 -> do
       let err = scrubTyNames err0
@@ -2389,9 +2407,9 @@ runCommand st (Eval expr)
 runCommand st (Define var expr) = do
   let expr' = expandTop (rsEnv st) expr
       env'  = Map.insert var expr' (rsEnv st)
-      (tenv', mtyMsg) = case inferScheme (rsTypeEnv st) expr of
-        Right sc -> (Map.insert var sc (rsTypeEnv st), Just (prettySchemeMsg sc))
-        Left _   -> (Map.delete var (rsTypeEnv st), Nothing)
+      (tenv', mtyMsg) = case inferTypeMaybe (rsTypeEnv st) expr of
+        Just sc -> (Map.insert var sc (rsTypeEnv st), Just (prettySchemeMsg sc))
+        Nothing -> (Map.delete var (rsTypeEnv st), Nothing)
       fields = [ "name"  .= JStr var
                , "value" .= JStr (pretty expr') ]
                ++ [ "type" .= JStr (renderMsg (rsLang st) ty) | Just ty <- [mtyMsg] ]
@@ -2680,7 +2698,9 @@ runCommand st (IntOf expr)
       return (Just st)
 runCommand st (ChurchOf n) = do
   let e' = churchNumeral n
-      ty = either (const ("", "")) prettySchemeMsg (inferScheme (rsTypeEnv st) e')
+      ty = case inferTypeMaybe (rsTypeEnv st) e' of
+         Just sc -> prettySchemeMsg sc
+         Nothing -> ("", "")
   emit st "church" (pretty e')
     ([ "value" .= JNum (fromIntegral n)
      , "term"  .= JStr (pretty e') ]
