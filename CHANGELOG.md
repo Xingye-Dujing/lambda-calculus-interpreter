@@ -17,9 +17,21 @@
   language, so the web UI can follow file settings.
 - Web UI: warnings keep their reason text, definition/delete/reset/load refresh
   the environment once instead of per line, settings from `:load` update the
-  controls, and editor bracket matching covers square brackets. Web backend: environment limits are clamped, rate-limit buckets are
-  bounded, reaped sessions are killed outside the session lock, and streaming
-  line splitting matches `/api/eval`.
+  controls, editor bracket matching covers square brackets, the environment
+  panel heading is translated, and a session that cannot be created is
+  reported instead of only dimming the connection badge. Web backend:
+  environment limits are clamped, rate-limit buckets are bounded, reaped
+  sessions are killed outside the session lock, and streaming line splitting
+  matches `/api/eval`.
+- The web API refuses terminal-only commands (`:q`, `:quit`, `:edit`) with the
+  new `cli_only` code, so a direct client cannot quit the session or start a
+  server editor.
+- A client that disconnects from a streaming request now ends the session
+  instead of leaving the command running and its output queued for the next
+  request.
+- The share store read from disk keeps only the newest unexpired entries, and
+  the legacy one-shot `{code}` endpoint honours `LAMBDA_MAX_TERM_SIZE`.
+- `$EDITOR` may now carry arguments (`EDITOR="code --wait"`).
 
 ## 2.2.1 — 2026-11-09
 

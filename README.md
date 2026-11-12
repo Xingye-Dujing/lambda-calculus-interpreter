@@ -305,7 +305,9 @@ session and speaks the `--batch --json` protocol.
   command allow-list, idle sessions are reaped in the background, and all error
   responses are unified JSON carrying a machine-readable `code`. A 408 response
   means the term timed out; a 410 means the session expired and the client should
-  replay its history.
+  replay its history. Terminal-only commands (`:q`, `:edit`) are refused with
+  `code: "cli_only"` so the web session stays alive and the server never starts
+  an editor.
 - `:load` is confined to the interpreter directory by default; the Env panel's
   **Load** button prompts for such a relative path. Set `LAMBDA_LOAD_ROOT=*`
   to allow any path (local use only).

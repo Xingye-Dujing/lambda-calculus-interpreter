@@ -135,7 +135,9 @@ Chinese/English**.
 - Share links use a server-side short `#s=<id>` (state stored via `/api/share`);
   the full `#state=` payload and legacy `#code=` forms are still accepted.
 - `:q` is intercepted client-side; the web session must not quit the
-  interpreter. `:clear` is also client-side.
+  interpreter. `:clear` is also client-side. The API refuses terminal-only
+  commands (`:q`, `:quit`, `:edit`) with `code: "cli_only"`, so a direct API
+  client cannot quit the session or start a server editor.
 - `:load` is confined to `INTERP_DIR` by default (`LAMBDA_LOAD_ROOT=*` disables
   the check); `web/app.py` rejects escaping paths with 400. `:save` is disabled
   over the web unless `LAMBDA_ALLOW_SAVE=1`.

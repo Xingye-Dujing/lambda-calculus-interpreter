@@ -209,7 +209,7 @@ cabal run extension -- --help
 - **生产部署**：Docker 镜像改用 `waitress`（单进程多线程，匹配进程内会话模型），并带 `HEALTHCHECK`；`LAMBDA_RATE_LIMIT=<n>` 可开启每 IP 每分钟限流，`LAMBDA_MAX_TERM_SIZE=<n>` 会传给解释器的 `--max-term-size`。
 - **窄屏适配**：宽度不足 900px 时改为单列、整页滚动，终端区保留自身高度上限，标签栏吸顶；不足 600px 时按钮放大到 32px 以上、输入框用 16px 字号（避免 iOS 聚焦自动放大）、标签栏等分整行，触屏上结果行操作常显。
 - 切换语言通过 `POST /api/session/<sid>/lang` 只更新解释器语言，再由前端用服务端返回的 `textZh`/`textEn` 本地重渲染，不重放历史也不重建解释器。
-- 接口：`GET /api/prelude`、`GET /api/health`（现含 `version`、`uptime`、`shares`、`sessionsMax`）、`POST /api/share`、`GET /api/share/<id>`、`POST /api/session`、`POST /api/eval`（`{"session", "line"}`）、`POST /api/eval/stream`（SSE）、`POST /api/session/<sid>/lang`、`POST /api/session/<sid>/cancel`、`DELETE /api/session/<sid>`；旧的 `{"code": "..."}` 仍可用。分享载荷做命令白名单校验，会话在后台回收，所有错误响应统一为带机器可读 `code` 的 JSON。返回 408 表示计算超时；410 表示会话过期，前端应回放历史。
+- 接口：`GET /api/prelude`、`GET /api/health`（现含 `version`、`uptime`、`shares`、`sessionsMax`）、`POST /api/share`、`GET /api/share/<id>`、`POST /api/session`、`POST /api/eval`（`{"session", "line"}`）、`POST /api/eval/stream`（SSE）、`POST /api/session/<sid>/lang`、`POST /api/session/<sid>/cancel`、`DELETE /api/session/<sid>`；旧的 `{"code": "..."}` 仍可用。分享载荷做命令白名单校验，会话在后台回收，所有错误响应统一为带机器可读 `code` 的 JSON。返回 408 表示计算超时；410 表示会话过期，前端应回放历史。仅限终端的命令（`:q`、`:edit`）会以 `code: "cli_only"` 拒绝，保证网页会话不退出、服务器也不会启动编辑器。
 - `:load` 默认只允许解释器目录内的文件；环境面板的“加载”按钮会提示输入相对路径。设置 `LAMBDA_LOAD_ROOT=*` 可放开限制（仅建议本地使用）。
 - `:save` 在 Web 端默认关闭；本地使用可设 `LAMBDA_ALLOW_SAVE=1`。客户端的“导出”不经过服务器。
 - `HOST`、`PORT` 可覆盖默认的 `127.0.0.1:8081`。
