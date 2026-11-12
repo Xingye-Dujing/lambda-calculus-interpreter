@@ -35,6 +35,11 @@
 - A shared link keeps its strategy: the UI applied the strategy reported by
   every evaluation result, so replaying the history overwrote the shared
   setting. Only a loaded file changes the controls now.
+- The web terminal shows the real message again: in the streaming mode every
+  interpreter error was treated as a failed request and displayed as
+  "request failed". Only the backend's stream-level failures end a request.
+- The web editor joins multi-line input like the command line REPL, so a term
+  wrapped over several lines is one command instead of several parse errors.
 - Sessions with `:type`, `:trace`, `:eq` or the manual-reduction controls can be
   shared again: the share allow-list now accepts read-only queries,
   definitions and the manual-reduction commands, and only file, session and
