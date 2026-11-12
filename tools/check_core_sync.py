@@ -5,13 +5,18 @@
 `main.hs` 与 `extension.hs` 刻意各自独立编译，因此两者的核心实现是复制的。
 复制最容易出现的故障是“只改了一边”。本脚本提取两边同名的顶层声明，
 去掉注释与空白后逐字比对；同时确认新增语法片段在两边都存在。
+归约循环（evalUntil）与共享解析器也会比对：它们不参与 `--fix` 复制，
+因为形态依赖各自文件的类型；evalUntil 只忽略一处已知差异（TraceStep 字段数）。
 它不依赖 Cabal，也不需要 GHC，CI 里直接 `python tools/check_core_sync.py`。
 
 Both interpreters are deliberately standalone, so their core is duplicated.
 The classic failure mode is a fix that lands in only one of them. This script
 extracts same-named top-level declarations, strips comments and whitespace and
 compares them verbatim; it also checks that the shared syntax fragments exist
-in both files. No Cabal and no GHC needed: CI just runs this file.
+in both files. The evaluation loop (evalUntil) and the shared parser are
+compared as well: they are not copied by `--fix`, because their shape depends on
+the types of their own file, and evalUntil ignores one known difference (the
+number of TraceStep fields). No Cabal and no GHC needed: CI just runs this file.
 """
 
 from __future__ import annotations
@@ -43,11 +48,27 @@ MUST_MATCH = (
     "freeVars", "freshVar", "substRename", "orderOf", "stepOnce",
     "etaRoot", "etaStep", "stepFor", "isWHNF", "headSpine",
     "betaStep", "defaultLimit", "traceLimit",
-    "cycleCheckLimit", "cycleTermLimit",
+    "cycleCheckLimit", "cycleTermLimit", "evalWith",
     "parseLet", "notKeyword", "typeTextP", "parseParens", "trim",
     "parseIf", "parseList",
     "stripTrailingComment", "parenBalance", "readReplLine",
 )
+
+# 这些声明也必须一致，但不参与 --fix 复制：它们的形态依赖各自文件的类型
+# （例如扩展版多一个字段），复制过去反而会编译失败
+# These declarations must match too, but are not copied by --fix: their shape
+# depends on the types of their own file, so a copy would not compile.
+MUST_MATCH_CHECK = (
+    "parseExpr", "parseLam", "parseApp",
+)
+
+# 已知的一处形态差异：最小 REPL 的 TraceStep 只记录归约后的项，
+# 扩展版还记录归约前的项，比较前先把这处差异归一
+# One known shape difference: the minimal REPL's TraceStep records only the
+# term after a step, the extended one also records the term before it.
+MUST_MATCH_MODULO = {
+    "evalUntil": ((re.compile(r"TraceStep\s+n\s+e\s+e'"), "TraceStep n e'"),),
+}
 
 
 def declarations(path: Path) -> dict[str, str]:
@@ -118,6 +139,24 @@ def normalize(text: str) -> str:
     return "\n".join(kept)
 
 
+def compare(name: str, a: dict[str, str], b: dict[str, str],
+            rules: tuple = ()) -> str | None:
+    """Return a problem description when one declaration differs."""
+    if name not in a or name not in b:
+        return None
+    na, nb = normalize(a[name]), normalize(b[name])
+    for pattern, replacement in rules:
+        na = pattern.sub(replacement, na)
+        nb = pattern.sub(replacement, nb)
+    if na == nb:
+        return None
+    return (
+        f"{name} 在两份文件里不一致 / differs between the two files\n"
+        f"    main.hs      : {na[:110]!r}\n"
+        f"    extension.hs: {nb[:110]!r}"
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Check or sync the shared core")
     parser.add_argument("--fix", action="store_true",
@@ -139,15 +178,19 @@ def main(argv: list[str] | None = None) -> int:
             problems.append(f"extension.hs 缺少 {name} / extension.hs is missing {name}")
 
     for name in MUST_MATCH:
-        if name not in a or name not in b:
-            continue
-        na, nb = normalize(a[name]), normalize(b[name])
-        if na != nb:
-            problems.append(
-                f"{name} 在两份文件里不一致 / differs between the two files\n"
-                f"    main.hs      : {na[:110]!r}\n"
-                f"    extension.hs: {nb[:110]!r}"
-            )
+        problem = compare(name, a, b)
+        if problem:
+            problems.append(problem)
+
+    for name in MUST_MATCH_CHECK:
+        problem = compare(name, a, b)
+        if problem:
+            problems.append(problem)
+
+    for name, rules in MUST_MATCH_MODULO.items():
+        problem = compare(name, a, b, rules)
+        if problem:
+            problems.append(problem)
 
     if problems:
         for problem in problems:
@@ -157,8 +200,9 @@ def main(argv: list[str] | None = None) -> int:
         print("Apply the change to both files and retry.")
         return 1
 
+    checked = len(MUST_MATCH) + len(MUST_MATCH_CHECK) + len(MUST_MATCH_MODULO)
     print(f"core sync ok: {len(MUST_EXIST)} shared names present, "
-          f"{len(MUST_MATCH)} declarations identical")
+          f"{checked} declarations identical")
     return 0
 
 
