@@ -31,7 +31,11 @@
   request.
 - The share store read from disk keeps only the newest unexpired entries, and
   the legacy one-shot `{code}` endpoint honours `LAMBDA_MAX_TERM_SIZE`.
-- `$EDITOR` may now carry arguments (`EDITOR="code --wait"`).
+- `$EDITOR` may now carry arguments (`EDITOR="code --wait"`); a path that
+  contains spaces still works.
+- The web backend reaps its interpreter processes when the server shuts down,
+  and the desktop wrapper no longer creates a user directory when it runs from
+  a source checkout.
 
 ## 2.2.1 — 2026-11-09
 
