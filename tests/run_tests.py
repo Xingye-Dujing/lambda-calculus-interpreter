@@ -36,6 +36,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -1393,6 +1394,19 @@ def test_performance_budget(b: Path) -> None:
     r = one([":time PLUS 20 20"], b)
     ms = r.get("elapsedMs", 10 ** 6)
     check("evaluation budget", isinstance(ms, (int, float)) and 0 <= ms < 5000, str(ms))
+
+    # 大项的类型推断代价很高，必须跳过而不是把解释器拖住
+    # Type inference on a large term is expensive, so it must be skipped
+    # instead of stalling the interpreter.
+    big = "[" + ",".join(["1"] * 400) + "]"
+    start = time.monotonic()
+    r = one([big], b)
+    secs = time.monotonic() - start
+    check("large term stays fast", secs < 5, f"{secs:.1f}s")
+    check("large term carries no type", "type" not in r, str(r)[:120])
+    r = one([f":type {big}"], b)
+    check("large term type inference skipped",
+          r.get("code") == "term_too_large", str(r)[:120])
 
 
 def test_style_conventions(b: Path) -> None:
