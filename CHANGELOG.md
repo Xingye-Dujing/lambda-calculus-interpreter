@@ -32,6 +32,13 @@
 - The web API refuses terminal-only commands (`:q`, `:quit`, `:edit`) with the
   new `cli_only` code, so a direct client cannot quit the session or start a
   server editor.
+- A shared link keeps its strategy: the UI applied the strategy reported by
+  every evaluation result, so replaying the history overwrote the shared
+  setting. Only a loaded file changes the controls now.
+- Sessions with `:type`, `:trace`, `:eq` or the manual-reduction controls can be
+  shared again: the share allow-list now accepts read-only queries,
+  definitions and the manual-reduction commands, and only file, session and
+  environment commands stay rejected.
 - A client that disconnects from a streaming request now ends the session
   instead of leaving the command running and its output queued for the next
   request.
