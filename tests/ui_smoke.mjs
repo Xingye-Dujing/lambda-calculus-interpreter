@@ -397,6 +397,17 @@ check("trailing backslash continues",
       === JSON.stringify(["\\x.x y"]),
       JSON.stringify(splitLogicalCommands("\\x.x \\\ny")));
 
+// 普通结果不能覆盖手动归约的 redex 列表
+// A plain result must not replace the redex list of the manual reduction.
+const renderOutput = sandbox.window.__test.renderOutput;
+renderOutput({ kind: "term", term: "(\\x.x) a",
+               redexes: [{ i: 1, path: "root", term: "(\\x.x) a", rule: "β" }] },
+             ":begin (\\x.x) a", false);
+check("manual redex list is set", state.redexes.length === 1, String(state.redexes.length));
+renderOutput({ kind: "result", term: "x", redexes: [] }, "PLUS ONE TWO", false);
+check("manual redex list survives a plain result", state.redexes.length === 1,
+      String(state.redexes.length));
+
 if (failures.length) {
   console.error("FAILURES:\n  " + failures.join("\n  "));
   process.exit(1);
