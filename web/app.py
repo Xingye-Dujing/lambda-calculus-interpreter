@@ -44,11 +44,13 @@ Interpreter lookup order (overridable by environment variables):
 """
 from __future__ import annotations
 
+import atexit
 import json
 import logging
 import os
 import queue
 import re
+import signal
 import subprocess
 import sys
 import threading
@@ -567,6 +569,38 @@ class Interpreter:
 
 _sessions: dict[str, dict] = {}
 _sessions_lock = threading.Lock()
+
+
+def _kill_all_sessions() -> None:
+    """Stop every interpreter process; used when the server shuts down."""
+    with _sessions_lock:
+        entries = list(_sessions.values())
+        _sessions.clear()
+    for entry in entries:
+        try:
+            entry["interp"].kill()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _on_shutdown_signal(signum, frame):  # noqa: ANN001
+    # 退出前先回收子进程，否则解释器会在后台继续跑到步数上限
+    # Reap the children first; otherwise an interpreter keeps running in the
+    # background until it hits its step limit.
+    _kill_all_sessions()
+    signal.signal(signum, signal.SIG_DFL)
+    os.kill(os.getpid(), signum)
+
+
+atexit.register(_kill_all_sessions)
+for _sig_name in ("SIGTERM", "SIGINT"):
+    _sig = getattr(signal, _sig_name, None)
+    if _sig is None:
+        continue
+    try:
+        signal.signal(_sig, _on_shutdown_signal)
+    except (ValueError, OSError):
+        pass  # 只能在主线程安装信号处理器 / only the main thread may install one
 
 # 短链分享：保存前端状态 JSON，返回一个短 id
 # Short share links: keep the client state JSON server-side under a short id.
