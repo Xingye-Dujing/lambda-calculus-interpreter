@@ -185,7 +185,7 @@ def _check_path(line: str) -> str | None:
 _CLI_ONLY_TEXT = "该命令仅在命令行可用 / this command is only available in the CLI"
 
 
-def validate_line_ex(line: str) -> tuple[str, str] | None:
+def validate_line(line: str) -> tuple[str, str] | None:
     """Validate one web command; returns an error code and message."""
     # Web 会话必须保持存活，且不能让 API 直接拉起服务器上的编辑器
     # A web session must stay alive, and the API must not launch a server editor.
@@ -196,11 +196,6 @@ def validate_line_ex(line: str) -> tuple[str, str] | None:
     if problem:
         return ("load_error", problem)
     return None
-
-
-def validate_line(line: str) -> str | None:
-    found = validate_line_ex(line)
-    return None if found is None else found[1]
 
 
 def _resolve_interp() -> Path:
@@ -1014,7 +1009,7 @@ def api_eval():
     if legacy is not None:
         try:
             for ln in str(legacy).splitlines():
-                problem = validate_line_ex(ln)
+                problem = validate_line(ln)
                 if problem:
                     return api_error(problem[1], 400, problem[0])
             if not INTERP_BIN.is_file():
@@ -1045,7 +1040,7 @@ def api_eval():
         lines.extend(parts if parts else [text])
 
     for ln in lines:
-        problem = validate_line_ex(ln)
+        problem = validate_line(ln)
         if problem:
             return api_error(problem[1], 400, problem[0])
 
@@ -1100,7 +1095,7 @@ def api_eval_stream():
     parts = raw.splitlines()
     lines: list[str] = parts if parts else [raw]
     for ln in lines:
-        problem = validate_line_ex(ln)
+        problem = validate_line(ln)
         if problem:
             return api_error(problem[1], 400, problem[0])
     if not INTERP_BIN.is_file():
