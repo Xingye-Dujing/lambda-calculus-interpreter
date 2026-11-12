@@ -287,6 +287,29 @@ if (releaseOld) releaseOld();
 await sleep(40);
 check("clear race keeps new session", state.session === "NEW", "session=" + state.session);
 
+// 普通求值结果里的 strategy/eta 是解释器当前设置，不能覆盖界面上的选择
+// The strategy/eta of an ordinary result are the interpreter's current
+// settings and must not overwrite what the UI shows.
+sandbox.fetch = async (url) => {
+  if (String(url).includes("api/eval")) {
+    return {
+      status: 200,
+      json: async () => ({
+        ok: true, session: "NEW",
+        outputs: [{ kind: "result", term: "x", strategy: "applicative",
+                    eta: false, text: "r", textZh: "r", textEn: "r" }],
+      }),
+    };
+  }
+  return { status: 200, json: async () => ({ ok: true, session: "NEW", outputs: [] }) };
+};
+document.getElementById("strategy").value = "normal";
+await typeAndEnter("PLUS ONE TWO");
+await sleep(40);
+check("result does not override the strategy",
+      document.getElementById("strategy").value === "normal",
+      document.getElementById("strategy").value);
+
 // 静态可访问性与新 UI 入口检查 / static a11y and new-UI-entry checks.
 // 无浏览器时用 HTML 断言兜底，真实交互仍由上面的 DOM 桩覆盖
 // With no browser available, assert on the HTML; the DOM stub covers behaviour.
