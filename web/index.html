@@ -1221,9 +1221,13 @@
       // A warning must keep its reason (limit/divergence), not just the partial term.
       var isWarn = obj.kind === "warn";
       var bodyText = isWarn ? objText(obj) : (obj.term || objText(obj));
-      var el = addLine(obj.kind, bodyText, isWarn ? null : resultMeta(obj), source,
+      // 警告与失败都带机器可读的错误码，和 error 行一样显示出来
+      // Warnings and failures carry a machine-readable code; show it like errors do.
+      var warnCode = isWarn && obj.code ? String(obj.code) : null;
+      var el = addLine(obj.kind, bodyText, isWarn ? warnCode : resultMeta(obj), source,
                        isWarn ? obj.textZh : (obj.term || obj.textZh),
                        isWarn ? obj.textEn : (obj.term || obj.textEn));
+      if (warnCode) el.title = t("errCode") + ": " + warnCode;
       el._metaObj = obj;
       addActions(el, obj, source);
       if (obj.redexes) { state.redexes = obj.redexes; renderRedexes(); }
@@ -1279,8 +1283,10 @@
     if (obj.kind === "fail" || obj.kind === "info" || obj.kind === "define" || obj.kind === "step" || obj.kind === "term"){
       var body = (obj.kind === "step" || obj.kind === "term")
         ? (obj.term || objText(obj)) : objText(obj);
-      var line = addLine(obj.kind, body, null, source,
+      var failCode = (obj.kind === "fail" && obj.code) ? String(obj.code) : null;
+      var line = addLine(obj.kind, body, failCode, source,
                          obj.textZh || body, obj.textEn || body);
+      if (failCode) line.title = t("errCode") + ": " + failCode;
       if (obj.kind === "term"){ setManual(true, obj.term); }
       if (obj.kind === "term" || obj.kind === "step"){
         if (obj.term) state.manualTerm = obj.term;
