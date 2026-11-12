@@ -1323,6 +1323,38 @@ def test_core_sync(b: Path) -> None:
     check("core sync", p.returncode == 0,
           (p.stdout + p.stderr).decode("utf-8", "replace")[-500:])
 
+    # 归约循环也必须被校验：只改一边时工具要报错，两边同改时要通过
+    # The evaluation loop must be checked too: a one-sided change must fail
+    # and the same change on both sides must pass.
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        (root / "tools").mkdir()
+        shutil.copy2(script, root / "tools" / "check_core_sync.py")
+        shutil.copy2(ROOT / "main.hs", root / "main.hs")
+        shutil.copy2(ROOT / "extension.hs", root / "extension.hs")
+        probe = root / "tools" / "check_core_sync.py"
+        old = b"n > limit = EvalResult"
+        new = b"n > limit + 1 = EvalResult"
+
+        def run_probe():
+            return subprocess.run([sys.executable, str(probe)], capture_output=True,
+                                  timeout=60, cwd=str(root))
+
+        ext = root / "extension.hs"
+        data = ext.read_bytes()
+        check("eval loop probe applies", old in data, "")
+        ext.write_bytes(data.replace(old, new))
+        r = run_probe()
+        out = (r.stdout + r.stderr).decode("utf-8", "replace")
+        check("core sync catches a one-sided eval change",
+              r.returncode != 0 and "evalUntil" in out, out[-300:])
+        main_file = root / "main.hs"
+        main_file.write_bytes(main_file.read_bytes().replace(old, new))
+        r = run_probe()
+        out = (r.stdout + r.stderr).decode("utf-8", "replace")
+        check("core sync accepts the same change on both sides",
+              r.returncode == 0, out[-300:])
+
 
 def test_random_terms(b: Path) -> None:
     # 随机生成项，验证 α 自反与归约结果在多种语法形态下都稳定
