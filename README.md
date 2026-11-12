@@ -302,7 +302,13 @@ session and speaks the `--batch --json` protocol.
   `POST /api/eval` (`{"session", "line"}`), `POST /api/session/<sid>/lang`,
   `POST /api/session/<sid>/cancel`, and `DELETE /api/session/<sid>`. The legacy
   `{"code": "..."}` form still works. Share payloads are validated against a
-  command allow-list, idle sessions are reaped in the background, and all error
+  command allow-list: expressions, definitions, the settings (`:lang`,
+  `:strategy`, `:steps`, `:eta`, `:fast`), the read-only queries (`:type`,
+  `:trace`, `:ast`, `:db`, `:eq`, `:conv`, `:nf`, `:whnf`, `:int`, `:church`,
+  `:env`, `:help`, `:def`, `:search`) and the manual-reduction commands may be
+  shared, while file, session and environment commands (`:load`, `:save`,
+  `:edit`, `:reload`, `:reset`, `:del`, `:q`) may not. Idle sessions are reaped
+  in the background, and all error
   responses are unified JSON carrying a machine-readable `code`. A 408 response
   means the term timed out; a 410 means the session expired and the client should
   replay its history. Terminal-only commands (`:q`, `:edit`) are refused with
