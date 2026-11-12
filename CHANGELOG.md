@@ -40,6 +40,9 @@
   "request failed". Only the backend's stream-level failures end a request.
 - The web editor joins multi-line input like the command line REPL, so a term
   wrapped over several lines is one command instead of several parse errors.
+- Piped input is read as UTF-8 again: Haskeline decoded a redirected stdin with
+  the console code page, so a UTF-8 file piped into the REPL came out garbled.
+  Each stream also picks its encoding on its own instead of following stdout.
 - Sessions with `:type`, `:trace`, `:eq` or the manual-reduction controls can be
   shared again: the share allow-list now accepts read-only queries,
   definitions and the manual-reduction commands, and only file, session and
