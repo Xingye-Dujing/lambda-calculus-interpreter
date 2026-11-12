@@ -4,6 +4,12 @@
 
 ### Fixed
 
+- The core-sync check now compares the reduction loop (`evalUntil`) and the
+  shared parser between `main.hs` and `extension.hs`; before, only their
+  existence was verified, so a one-sided change to the evaluation loop went
+  unnoticed. The one known difference (the minimal REPL's `TraceStep` has no
+  "before" term) is normalised, and the test suite proves that a one-sided
+  change fails while the same change on both sides passes.
 - `.lam` loading reports the right definitions and errors: `:del`/`:reset`
   remove entries from the load summary, every failure carries its own `code`,
   `--max-term-size` also bounds loaded definitions, and `:reload` works after
