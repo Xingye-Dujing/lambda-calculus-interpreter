@@ -437,6 +437,15 @@ def test_bilingual(b: Path) -> None:
     results = run([":lang zh", "\\x"], b)
     check("runtime lang switch", "解析错误" in results[-1][0].get("text", ""), str(results[-1]))
 
+    # 管道输入的 UTF-8 标识符必须原样读入（REPL 模式，不是 --batch）
+    # A piped UTF-8 identifier must survive: the REPL reads through the locale
+    # encoding, which has to follow the redirected input.
+    piped = ":let 名字 = \\x.x\n名字\n".encode("utf-8")
+    proc = subprocess.run([str(b)], input=piped, capture_output=True, timeout=60,
+                          cwd=str(ROOT))
+    text = proc.stdout.decode("utf-8", "replace")
+    check("piped utf-8 identifier survives", "名字" in text, text[:200])
+
 
 # ---------------------------------------------------------------------------
 # 协议与稳健性 / Protocol and robustness
