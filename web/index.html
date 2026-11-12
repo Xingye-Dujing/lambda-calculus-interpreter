@@ -2129,36 +2129,43 @@
 
     // :load 里的 :strategy/:steps/:eta/:fast/:lang 也要同步到界面
     // Settings inside a loaded file must also reach the UI state.
-    var seen = {strategy: null, limit: null, eta: null, fast: null, lang: null};
-    outputs.forEach(function(o){
-      if (validStrategy(o.strategy)) seen.strategy = o.strategy;
-      if (typeof o.limit === "number" && o.limit > 0) seen.limit = o.limit;
-      if (typeof o.eta === "boolean") seen.eta = o.eta;
-      if (typeof o.fast === "boolean") seen.fast = o.fast;
-      if (validLang(o.lang)) seen.lang = o.lang;
-    });
-    if (seen.strategy){
-      $("strategy").value = seen.strategy;
-      $("st-strategy").textContent = strategyText(seen.strategy);
-    }
-    if (seen.limit){
-      state.limit = seen.limit;
-      $("st-limit").value = state.limit;
-    }
-    if (seen.eta != null){
-      state.eta = seen.eta;
-      if (state.tab === "tools") renderPanel();
-    }
-    if (seen.fast != null){
-      state.fast = seen.fast;
-      applyFastButton();
-      if (state.tab === "tools") renderPanel();
-    }
-    if (seen.lang && seen.lang !== state.lang){
-      state.lang = seen.lang;
-      $("lang").value = state.lang;
-      applyStaticTexts();
-      applyTranscriptLang();
+    // 普通求值结果里的 strategy/eta 是解释器“当前”的设置，不能拿来覆盖界面，
+    // 否则分享链接里的策略会在回放时被结果冲掉
+    // The strategy/eta of an ordinary result are the interpreter's current
+    // settings; only a loaded file may change the UI, otherwise a shared
+    // link's strategy would be overwritten while the history replays.
+    if (/^:load\b/.test(trimmed)){
+      var seen = {strategy: null, limit: null, eta: null, fast: null, lang: null};
+      outputs.forEach(function(o){
+        if (validStrategy(o.strategy)) seen.strategy = o.strategy;
+        if (typeof o.limit === "number" && o.limit > 0) seen.limit = o.limit;
+        if (typeof o.eta === "boolean") seen.eta = o.eta;
+        if (typeof o.fast === "boolean") seen.fast = o.fast;
+        if (validLang(o.lang)) seen.lang = o.lang;
+      });
+      if (seen.strategy){
+        $("strategy").value = seen.strategy;
+        $("st-strategy").textContent = strategyText(seen.strategy);
+      }
+      if (seen.limit){
+        state.limit = seen.limit;
+        $("st-limit").value = state.limit;
+      }
+      if (seen.eta != null){
+        state.eta = seen.eta;
+        if (state.tab === "tools") renderPanel();
+      }
+      if (seen.fast != null){
+        state.fast = seen.fast;
+        applyFastButton();
+        if (state.tab === "tools") renderPanel();
+      }
+      if (seen.lang && seen.lang !== state.lang){
+        state.lang = seen.lang;
+        $("lang").value = state.lang;
+        applyStaticTexts();
+        applyTranscriptLang();
+      }
     }
 
     var last = outputs.filter(function(o){ return o.kind === "result" || o.kind === "warn"; }).pop();
