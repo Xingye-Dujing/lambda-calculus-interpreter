@@ -2377,6 +2377,36 @@
   function setEditorValue(v){ cmd.value = v; syncEditor(); }
   function editorUndo(){ if (edHistIdx > 0){ edHistIdx--; setEditorValue(edHist[edHistIdx]); } }
   function editorRedo(){ if (edHistIdx < edHist.length - 1){ edHistIdx++; setEditorValue(edHist[edHistIdx]); } }
+
+  // 多行输入：未闭合的括号/方括号或行尾反斜杠表示续行，与命令行一致
+  // Multi-line input: an unclosed parenthesis/bracket or a trailing backslash
+  // continues the line, exactly like the command line REPL.
+  function needsContinuation(line){
+    if (/\\\s*$/.test(line)) return true;
+    var depth = 0;
+    for (var i = 0; i < line.length; i++){
+      var c = line.charAt(i);
+      if (c === "(" || c === "[") depth++;
+      else if (c === ")" || c === "]") depth--;
+    }
+    return depth > 0;
+  }
+  function splitLogicalCommands(text){
+    var lines = String(text == null ? "" : text).split(/\r?\n/);
+    var out = [], cur = null;
+    for (var i = 0; i < lines.length; i++){
+      var line = lines[i].trim();
+      if (!line) continue;
+      // 行尾反斜杠是续行标记，去掉后与下一行拼接
+      // A trailing backslash marks a continuation and is dropped.
+      var continued = /\\\s*$/.test(line);
+      if (continued) line = line.replace(/\\\s*$/, "").trim();
+      cur = (cur == null) ? line : (cur + " " + line);
+      if (!continued && !needsContinuation(cur)){ out.push(cur); cur = null; }
+    }
+    if (cur != null) out.push(cur);
+    return out;
+  }
   // 命令面板复用 dialog 的 list 模式 / the palette reuses dialog's list mode
   function openCommandPalette(){
     return dialog({
@@ -2419,7 +2449,12 @@
       syncEditor();
       if (v.trim()) state.history.push(v);
       state.hIdx = state.history.length;
-      exec(v);
+      // 与命令行一致：未闭合的括号或行尾反斜杠表示续行，多行输入按一条命令发送
+      // Like the CLI, an unclosed bracket or a trailing backslash continues the
+      // line, so a multi-line term is sent as one command.
+      var cmds = splitLogicalCommands(v);
+      var chain = Promise.resolve();
+      cmds.forEach(function(c){ chain = chain.then(function(){ return exec(c); }); });
       return;
     }
     if (e.key === "ArrowUp" && !cmd.value.includes("\n")){

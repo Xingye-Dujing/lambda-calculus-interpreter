@@ -26,7 +26,7 @@ let script = match[1];
 const marker = "})();";
 const idx = script.lastIndexOf(marker);
 if (idx < 0) { console.error("IIFE end not found"); process.exit(1); }
-script = script.slice(0, idx) + "window.__test = { state: state, findBracketPair: findBracketPair, highlight: highlight, I18N: I18N, newSession: newSession, renderOutput: renderOutput, isStreamFailure: isStreamFailure, streamEval: streamEval };\n" + script.slice(idx);
+script = script.slice(0, idx) + "window.__test = { state: state, findBracketPair: findBracketPair, highlight: highlight, I18N: I18N, newSession: newSession, renderOutput: renderOutput, isStreamFailure: isStreamFailure, streamEval: streamEval, splitLogicalCommands: splitLogicalCommands };\n" + script.slice(idx);
 
 function makeEl(tag = "div") {
   const el = {
@@ -382,6 +382,20 @@ check("stream reports a backend failure",
       failed && failed.status === 500 && failed.data && failed.data.error === "boom",
       JSON.stringify(failed));
 sandbox.fetch = realFetch;
+
+// 多行输入按命令行的规则拼接 / multi-line input joins like the CLI REPL
+const splitLogicalCommands = sandbox.window.__test.splitLogicalCommands;
+check("multi-line term is one command",
+      JSON.stringify(splitLogicalCommands("(\\x.x\ny)")) === JSON.stringify(["(\\x.x y)"]),
+      JSON.stringify(splitLogicalCommands("(\\x.x\ny)")));
+check("separate commands stay separate",
+      JSON.stringify(splitLogicalCommands("PLUS ONE\nPLUS TWO"))
+      === JSON.stringify(["PLUS ONE", "PLUS TWO"]),
+      JSON.stringify(splitLogicalCommands("PLUS ONE\nPLUS TWO")));
+check("trailing backslash continues",
+      JSON.stringify(splitLogicalCommands("\\x.x \\\ny"))
+      === JSON.stringify(["\\x.x y"]),
+      JSON.stringify(splitLogicalCommands("\\x.x \\\ny")));
 
 if (failures.length) {
   console.error("FAILURES:\n  " + failures.join("\n  "));
