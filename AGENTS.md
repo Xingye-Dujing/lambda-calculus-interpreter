@@ -168,7 +168,10 @@ Chinese/English**.
   `freeVars`, `freshVar`, substitution, `stepOnce`, `eval`, parser) is duplicated:
   apply core/reduction fixes to both files, or run
   `python tools/check_core_sync.py --fix` to copy the shared declarations from
-  `extension.hs` (the single source) into `main.hs`.
+  `extension.hs` (the single source) into `main.hs`. The evaluation loop
+  (`evalUntil`) and the shared parser are compared but never copied: their
+  shape depends on each file's own types, and `evalUntil` ignores the one known
+  difference (the minimal REPL's `TraceStep` has no "before" term).
 - `extension.hs` adds `Env` (`Data.Map`), macro expansion (`expand`/`expandTop`,
   with an expansion fuel), definitions, file loading/saving, `:env`, numeric
   literals, types, and wider identifier characters.
