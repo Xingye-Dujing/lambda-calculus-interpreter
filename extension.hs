@@ -1364,7 +1364,8 @@ parseTyText s =
 
 data Scheme = Forall [String] Ty
 
-data TISt = TISt { tiSeed :: Int, tiNext :: Int, tiSub :: Map.Map String Ty }
+data TISt = TISt { tiSeed :: Int, tiNext :: Int, tiSub :: Map.Map String Ty
+                     , tiSteps :: Int }
 
 newtype TI a = TI { unTI :: TISt -> Either String (a, TISt) }
 
@@ -1394,6 +1395,12 @@ freshTy = TI $ \s ->
 getSub :: TI (Map.Map String Ty)
 getSub = TI $ \s -> Right (tiSub s, s)
 
+getState :: TI TISt
+getState = TI $ \s -> Right (s, s)
+
+putState :: TISt -> TI ()
+putState s = TI $ \_ -> Right ((), s)
+
 extendSub :: String -> Ty -> TI ()
 extendSub a t = TI $ \s -> Right ((), s { tiSub = Map.insert a t (tiSub s) })
 
@@ -1417,13 +1424,19 @@ occursIn a t = do
 
 unify :: Ty -> Ty -> TI ()
 unify t1 t2 = do
-  a <- applySub t1
-  b <- applySub t2
-  case a of
-    TVar x -> bindVar x b
-    TArr x1 y1 -> case b of
-      TVar y     -> bindVar y a
-      TArr x2 y2 -> unify x1 x2 >> unify y1 y2
+  st <- getState
+  if tiSteps st > typeBudget
+    then failTI ("类型推断超出预算 / type inference exceeded the budget: "
+                 ++ show typeBudget ++ " steps")
+    else do
+      putState st { tiSteps = tiSteps st + 1 }
+      a <- applySub t1
+      b <- applySub t2
+      case a of
+        TVar x -> bindVar x b
+        TArr x1 y1 -> case b of
+          TVar y     -> bindVar y a
+          TArr x2 y2 -> unify x1 x2 >> unify y1 y2
 
 bindVar :: String -> Ty -> TI ()
 bindVar x t = do
@@ -1433,7 +1446,12 @@ bindVar x t = do
     _ -> do
       occ <- occursIn x t'
       if occ then failTI ("无限类型 infinite type: " ++ x ++ " occurs in " ++ prettyTy t')
-             else extendSub x t'
+             else do
+               let sz = tySizeT t'
+               if sz > typeSizeLimit
+                 then failTI ("类型过大，已停止推断 / the type grew too large to infer ("
+                              ++ show typeSizeLimit ++ " nodes)")
+                 else extendSub x t'
 
 type TypeEnv = Map.Map String Scheme
 
@@ -1484,9 +1502,25 @@ generalize env t = do
   return (Forall (Set.toList (freeTyVars t' `Set.difference` envFree)) t')
 
 runTI :: TI a -> Int -> Either String a
-runTI m seed = case unTI m (TISt seed 0 Map.empty) of
+runTI m seed = case unTI m (TISt seed 0 Map.empty 0) of
   Left e       -> Left e
   Right (a, _) -> Right a
+
+-- 类型推断的步数上限：嵌套 let 的类型会指数增长，没有上限就会把解释器拖垮
+-- Step budget for type inference: nested lets grow the types exponentially,
+-- so without a budget the interpreter would grind forever.
+typeBudget :: Int
+typeBudget = 20000
+
+-- 单个类型的大小上限：嵌套 let 每层都会把类型翻倍，必须限制它
+-- Size limit for a single type: every nested let doubles the type, so the
+-- size of one type has to be bounded.
+typeSizeLimit :: Int
+typeSizeLimit = 1000
+
+tySizeT :: Ty -> Int
+tySizeT (TVar _)   = 1
+tySizeT (TArr a b) = 1 + tySizeT a + tySizeT b
 
 inferScheme :: TypeEnv -> Expr -> Either String Scheme
 inferScheme tenv e = runTI go (Map.size tenv + 1)
