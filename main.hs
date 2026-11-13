@@ -852,8 +852,8 @@ readReplLine = do
       | term = getInputLine prompt
       | otherwise = do
           liftIO (hPutStr stdout prompt)
-          eof <- liftIO (hIsEOF stdin)
-          if eof then return Nothing else Just <$> liftIO (hGetLine stdin)
+          atEof <- liftIO (hIsEOF stdin)
+          if atEof then return Nothing else Just <$> liftIO (hGetLine stdin)
 
 repl :: ReplState -> InputT IO ()
 repl st = do
