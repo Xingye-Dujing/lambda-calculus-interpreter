@@ -8,7 +8,7 @@ import qualified Data.IntMap.Strict as IM
 import qualified Data.Set as Set
 import Control.Applicative ((<|>))
 import Control.Exception (catch, evaluate, mask_, throwIO, SomeException, AsyncException(..))
-import Control.Monad (void, when, unless, forM_, forM, guard, foldM)
+import Control.Monad (void, when, unless, forM_, forM, guard, foldM, replicateM_)
 import Control.Monad.IO.Class (liftIO)
 import Data.Char (isAlpha, isDigit, isSpace, ord, toLower)
 import Data.List (elemIndex, find, stripPrefix, isPrefixOf, isInfixOf, intercalate, foldl', sort)
@@ -730,7 +730,7 @@ deBruijnView e = go [] e ""
 -- 解析器 Parser
 -- ---------------------------------------------------------------------------
 spaces :: ReadP ()
-spaces = skipMany (satisfy isSpace)
+spaces = void (greedyMany (satisfy isSpace))
 
 isOperatorChar :: Char -> Bool
 isOperatorChar ch = ch `elem` ("+*-/%^?!<>|&~#$" :: String)
@@ -738,11 +738,64 @@ isOperatorChar ch = ch `elem` ("+*-/%^?!<>|&~#$" :: String)
 ident :: ReadP String
 ident = do
   c <- satisfy (\ch -> isAlpha ch || isOperatorChar ch)
-  cs <- munch (\ch -> isAlpha ch || isDigit ch || ch `elem` ("_'" :: String) || isOperatorChar ch)
+  cs <- longestP (munch (\ch -> isAlpha ch || isDigit ch || ch `elem` ("_'" :: String) || isOperatorChar ch))
   return (c : cs)
 
+-- ReadP 的 many/sepBy 会为每个前缀产生一个结果，嵌套起来组合数呈指数增长；
+-- 这里只取最长的匹配，保证每个表达式只产生一个结果
+-- ReadP's many/sepBy produce one result per prefix; nesting them multiplies the
+-- alternatives exponentially, so keep only the longest match.
+longestP :: ReadP a -> ReadP a
+longestP p = do
+  s <- look
+  case readP_to_S p s of
+    []    -> pfail
+    (r:_) -> do
+      let (_, rest) = r
+          n = length s - length rest
+      replicateM_ n get
+      return (fst r)
+
+-- 真正的贪心 many：每一步只吸收一个最长匹配，不产生任何分支；
+-- ReadP 内建 many 会枚举每个前缀的结果，嵌套起来数目指数增长
+-- A truly greedy many: every step absorbs one longest match without
+-- branching; ReadP's built-in many enumerates one result per prefix.
+greedyMany :: ReadP a -> ReadP [a]
+greedyMany p = reverse <$> go []
+  where
+    go acc = do
+      s <- look
+      case readP_to_S p s of
+        []           -> return acc
+        ((x, rest) : _) ->
+          let n = length s - length rest
+          in if n <= 0
+               then return acc
+               else do
+                 replicateM_ n get
+                 go (x : acc)
+
+greedySome :: ReadP a -> ReadP [a]
+greedySome p = do
+  x <- p
+  xs <- greedyMany p
+  return (x : xs)
+
+-- greedy 的 `sepBy1`：第一个元素之后重复“sep 之后一个元素”
+-- A greedy sepBy1: first element followed by repetitions of "sep element".
+greedySepBy1 :: ReadP a -> ReadP s -> ReadP [a]
+greedySepBy1 p sep = do
+  x <- p
+  xs <- greedyMany (sep *> p)
+  return (x : xs)
+
+-- greedy 的 `sepBy`：可以为空
+-- A greedy sepBy: may be empty.
+greedySepBy :: ReadP a -> ReadP s -> ReadP [a]
+greedySepBy p sep = greedySepBy1 p sep <++ return []
+
 parseExpr :: ReadP Expr
-parseExpr = spaces *> (parseLet <++ parseIf <++ parseLam <++ parseApp)
+parseExpr = spaces *> longestP (parseLet <++ parseIf <++ parseLam <++ parseApp)
 
 -- 分隔符接受 `.`、`→` 和 `->`
 -- The delimiter accepts `.`, `→` and `->`.
@@ -756,6 +809,8 @@ lambdaSep =
 -- Lambda parameters stop before `->`, so both `\x->x` and `\x -> x` parse.
 lamIdent :: ReadP String
 lamIdent = do
+  s <- look
+  guard (not ("->" `isPrefixOf` s))
   c <- satisfy (\ch -> isAlpha ch || isOperatorChar ch)
   cs <- go
   return (c : cs)
@@ -806,7 +861,7 @@ parseLet :: ReadP Expr
 parseLet = do
   _ <- string "let"
   _ <- munch1 isSpace
-  binds <- parseBind `sepBy1` (spaces *> char ';' <* spaces)
+  binds <- greedySepBy1 parseBind (spaces *> char ';' <* spaces)
   spaces
   _ <- string "in"
   _ <- munch1 isSpace
@@ -844,14 +899,14 @@ typeTextP = do
 parseLam :: ReadP Expr
 parseLam = do
   void $ char '\\' <|> char 'λ'
-  params <- many1 $ lamIdent <* spaces
+  params <- greedySome $ lamIdent <* spaces
   lambdaSep
   spaces
   body <- parseExpr
   return $ foldr Lam body params
 
 parseApp :: ReadP Expr
-parseApp = foldl App <$> parseAtom <*> many (spaces *> parseAtom)
+parseApp = foldl App <$> parseAtom <*> greedyMany (spaces *> parseAtom)
 
 parseAtom :: ReadP Expr
 parseAtom = notKeyword "in" *> notKeyword "then" *> notKeyword "else"
@@ -875,7 +930,7 @@ parseVar = Var <$> ident
 parseList :: ReadP Expr
 parseList = between (char '[') (char ']') $ do
   spaces
-  es <- parseExpr `sepBy` (spaces *> char ',' <* spaces)
+  es <- greedySepBy parseExpr (spaces *> char ',' <* spaces)
   return (foldr (\h t -> App (App (Var "CONS") h) t) (Var "NIL") es)
 
 parseParens :: ReadP Expr

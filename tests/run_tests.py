@@ -1408,6 +1408,16 @@ def test_performance_budget(b: Path) -> None:
     check("large term type inference skipped",
           r.get("code") == "term_too_large", str(r)[:120])
 
+    # 嵌套 let 曾经让解析器指数爆炸；必须在预算内完成
+    # Deeply nested lets used to blow the parser up exponentially;
+    # they must stay fast.
+    nested = "let x = 1 in " * 40 + "x"
+    start = time.monotonic()
+    r = one([f":ast {nested}"], b)
+    secs = time.monotonic() - start
+    check("nested lets stay fast", secs < 5, f"{secs:.1f}s")
+    check("nested lets parse", r.get("kind") != "error", str(r)[:120])
+
 
 def test_style_conventions(b: Path) -> None:
     # 轻量规范检查，代替独立 linter / lightweight convention check instead of a linter.
