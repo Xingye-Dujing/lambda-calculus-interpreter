@@ -26,6 +26,16 @@ import re
 import sys
 from pathlib import Path
 
+# Windows 控制台默认代码页不一定是 UTF-8（CI 上是 cp1252），直接打印中文会抛
+# UnicodeEncodeError；把本进程的输出固定为 UTF-8
+# The Windows console code page is not always UTF-8 (cp1252 on CI), so printing
+# Chinese raises UnicodeEncodeError; pin this process's output to UTF-8.
+for stream in (sys.stdout, sys.stderr):
+    try:
+        stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
+
 ROOT = Path(__file__).resolve().parent.parent
 DECL_START = re.compile(r"^([A-Za-z_][A-Za-z0-9_']*)(?=\s|::|=|$)")
 

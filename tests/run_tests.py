@@ -39,6 +39,16 @@ import tempfile
 import time
 from pathlib import Path
 
+# Windows 控制台默认代码页不一定是 UTF-8（CI 上是 cp1252），打印中文失败详情时
+# 会抛 UnicodeEncodeError；把测试进程的输出固定为 UTF-8
+# The Windows console code page is not always UTF-8 (cp1252 on CI), so printing
+# a Chinese failure detail raises UnicodeEncodeError; pin output to UTF-8.
+for stream in (sys.stdout, sys.stderr):
+    try:
+        stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
+
 ROOT = Path(__file__).resolve().parent.parent
 RS = "\x1e"  # 批处理模式每条命令后的记录分隔符 / record separator
 
@@ -1348,8 +1358,11 @@ def test_core_sync(b: Path) -> None:
         new = b"n > limit + 1 = EvalResult"
 
         def run_probe():
+            # 模拟 CI 的非 UTF-8 控制台：中文失败信息不能把脚本打崩
+            # Mimic CI's non-UTF-8 console: Chinese failure text must not crash.
+            env = dict(os.environ, PYTHONIOENCODING="cp1252")
             return subprocess.run([sys.executable, str(probe)], capture_output=True,
-                                  timeout=60, cwd=str(root))
+                                  timeout=60, cwd=str(root), env=env)
 
         ext = root / "extension.hs"
         data = ext.read_bytes()
