@@ -93,7 +93,7 @@ cabal run extension -- --help
 
 ## 版本
 
-仓库根目录的 `VERSION` 是版本单一来源（当前 2.2.2）；Cabal 包的版本号与
+仓库根目录的 `VERSION` 是版本单一来源（当前 2.2.3）；Cabal 包的版本号与
 `./extension -v|--version` 都以此为准。发布历史见 [CHANGELOG.md](./CHANGELOG.md)。
 
 ## 使用方法

@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.2.3 — 2026-11-14
+
+### Fixed
+
+- The test suite and the core-sync tool write UTF-8 regardless of the
+  console code page, so the Windows CI runner (cp1252) no longer fails
+  while printing a Chinese failure detail.
+
 ## 2.2.2 — 2026-11-13
 
 ### Fixed
