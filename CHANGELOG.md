@@ -1,9 +1,17 @@
 # Changelog
 
-## Unreleased
+## 2.2.2 — 2026-11-13
 
 ### Fixed
 
+- Deeply nested `let` bindings used to blow up the parser: ReadP's built-in
+  `many`/`sepBy` enumerate one candidate per prefix, so the alternatives
+  multiplied until a 30-deep chain never finished and could exhaust memory.
+  The parser now absorbs one longest match per step (greedy combinators) and
+  `\x->x` still parses.
+- Type inference now stops with an error once its step budget is exceeded or a
+  single type grows too large: nested `let`s doubled the type at every level,
+  so `:type` on a deeply nested term could grind forever.
 - The core-sync check now compares the reduction loop (`evalUntil`) and the
   shared parser between `main.hs` and `extension.hs`; before, only their
   existence was verified, so a one-sided change to the evaluation loop went

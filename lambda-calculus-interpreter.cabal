@@ -1,6 +1,6 @@
 cabal-version:      3.0
 name:               lambda-calculus-interpreter
-version:            2.2.1
+version:            2.2.2
 synopsis:           Pure lambda calculus interpreter with traces and a web UI
 description:
   Two standalone executables: a minimal REPL and an extended REPL with
