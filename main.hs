@@ -9,6 +9,7 @@
 -- ---------------------------------------------------------------------------
 
 import qualified Data.Set as Set
+import qualified Data.Sequence as Seq
 import Control.Applicative ((<|>))
 import Control.Exception (catch, SomeException, AsyncException(..), throwIO)
 import Control.Monad (void, when, unless, forM_, replicateM_, guard)
@@ -263,9 +264,9 @@ defaultLimit = 10000
 traceLimit :: Int
 traceLimit = 500
 
--- 有界循环检测：只记住前若干步里的小项（与扩展版一致）
--- Bounded cycle detection: remember small whole terms for the first steps,
--- matching the extended interpreter.
+-- 有界循环检测：在最近 cycleCheckLimit 个小项里查找重复，避免发散项白跑满步数
+-- Bounded cycle detection: look for repeats in a rolling window of small terms,
+-- so a divergent term is reported instead of silently burning the step budget.
 cycleCheckLimit :: Int
 cycleCheckLimit = 2000
 
@@ -276,11 +277,17 @@ cycleTermLimit = 400
 -- Evaluation loop; with keepTrace=False the trace is dropped (saves memory).
 evalUntil :: Bool -> Bool -> Int -> Strategy -> (Expr -> Bool) -> Expr -> EvalResult
 evalUntil eta keepTrace limit strat done e0 =
-  loop 1 e0 [] (Set.singleton e0) False
+  loop 1 e0 [] (Set.singleton e0) (Seq.singleton (0, e0)) False
   where
-    loop !n e !acc !seen !cyc
-      | n > limit = EvalResult e (reverse acc) (n - 1) True cyc
+    loop !n e !acc !seen !window !cyc
       | done e    = EvalResult e (reverse acc) (n - 1) False cyc
+      -- 恰好用满步数且已无 redex 时不算命中上限
+      -- A normal term at the step limit is not a step-limit hit.
+      | n > limit =
+          let more = case stepFor eta strat e of
+                       Nothing -> False
+                       Just _  -> True
+          in EvalResult e (reverse acc) (n - 1) more cyc
       | otherwise = case stepFor eta strat e of
           Just s ->
             let e'   = soWhole s
@@ -288,10 +295,21 @@ evalUntil eta keepTrace limit strat done e0 =
                 acc' = if keepTrace && n <= traceLimit
                          then TraceStep n e' (redRule red) (redNote red) : acc
                          else acc
-                track = n <= cycleCheckLimit && exprSize e' <= cycleTermLimit
+                -- 滚动窗口：在最近 cycleCheckLimit 个小项里找重复
+                -- Rolling window: look for repeats anywhere in the reduction.
+                track = not cyc && exprSize e' <= cycleTermLimit
                 cyc'  = cyc || (track && Set.member e' seen)
-                seen' = if track then Set.insert e' seen else seen
-            in loop (n + 1) e' acc' seen' cyc'
+                (seen', window') =
+                  if track && not cyc'
+                    then let w = window Seq.|> (n, e')
+                         in case Seq.viewl w of
+                              Seq.EmptyL -> (Set.insert e' seen, w)
+                              (_, old) Seq.:< rest
+                                | Seq.length w > cycleCheckLimit ->
+                                    (Set.insert e' (Set.delete old seen), rest)
+                                | otherwise -> (Set.insert e' seen, w)
+                    else (seen, window)
+            in loop (n + 1) e' acc' seen' window' cyc'
           Nothing -> EvalResult e (reverse acc) (n - 1) False cyc
 
 evalWith :: Bool -> Bool -> Int -> Strategy -> Expr -> EvalResult

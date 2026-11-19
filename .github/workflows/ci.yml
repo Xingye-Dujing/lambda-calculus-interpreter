@@ -4,11 +4,15 @@ on:
   push:
   pull_request:
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     name: build and test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -23,10 +27,21 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
+          cache: 'pip'
+          cache-dependency-path: web/requirements.txt
 
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
+
+      - name: Cache Cabal store
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cabal/store
+            dist-newstyle
+          key: cabal-${{ runner.os }}-${{ hashFiles('lambda-calculus-interpreter.cabal') }}
+          restore-keys: cabal-${{ runner.os }}-
 
       - name: Build (Unix)
         if: runner.os != 'Windows'
@@ -51,3 +66,38 @@ jobs:
 
       - name: End-to-end tests
         run: python tests/run_tests.py --require-all
+
+      - name: Upload built binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: bins-${{ matrix.os }}
+          path: |
+            main
+            main.exe
+            extension
+            extension.exe
+          if-no-files-found: warn
+
+  docker:
+    name: Docker build and health
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -t lambda-calculus-interpreter .
+
+      - name: Health check
+        run: |
+          docker run -d --name lci -p 8081:8081 lambda-calculus-interpreter
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8081/api/health > /dev/null; then
+              docker rm -f lci
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs lci
+          docker rm -f lci
+          exit 1

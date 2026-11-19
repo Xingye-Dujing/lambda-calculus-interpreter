@@ -138,6 +138,7 @@ VERSION_FILE = APP_DIR.parent / "VERSION"
 # cannot read arbitrary server files; set LAMBDA_LOAD_ROOT=* to disable.
 LOAD_RE = re.compile(r"^:load\s+(.+)$")
 SAVE_RE = re.compile(r"^:save\s+(.+)$")
+EDIT_RE = re.compile(r"^:edit(\s|$)")
 
 # 写文件在 Web 端默认关闭，避免公开部署时任意覆盖服务器文件
 # Writing files over the web is disabled by default; enable only for local use.
@@ -149,15 +150,29 @@ ALLOW_SAVE = os.environ.get("LAMBDA_ALLOW_SAVE", "0").strip().lower() in (
 def load_root() -> Path | None:
     raw = os.environ.get("LAMBDA_LOAD_ROOT")
     if raw is None:
-        return INTERP_CWD
+        return INTERP_CWD.resolve()
     if raw.strip() in ("", "*"):
         return None
     return Path(raw).expanduser().resolve()
 
 
+def _strip_trailing_comment(text: str) -> str:
+    """去掉行尾 -- / # 注释，与解释器的 stripTrailingComment 保持一致
+    Strip a trailing -- / # comment, matching the interpreter's rules: the
+    marker only starts a comment at the beginning or after whitespace."""
+    out = []
+    for i, c in enumerate(text):
+        if c == "-" and i + 1 < len(text) and text[i + 1] == "-" and (not out or out[-1].isspace()):
+            break
+        if c == "#" and (not out or out[-1].isspace()):
+            break
+        out.append(c)
+    return "".join(out)
+
+
 def _check_path(line: str) -> str | None:
     for regex, verb in ((LOAD_RE, "load"), (SAVE_RE, "save")):
-        match = regex.match(line.strip())
+        match = regex.match(_strip_trailing_comment(line.strip()))
         if not match:
             continue
         if verb == "save" and not ALLOW_SAVE:
@@ -167,6 +182,16 @@ def _check_path(line: str) -> str | None:
         if root is None:
             return None
         raw = match.group(1).strip().strip('"').strip("'")
+        # 拒绝隐藏路径段（.git/.env 等）与非 .lam 文件：加载失败行会回显源文本，
+        # 公开部署下读取仓库内任意文件会造成信息泄露
+        # Reject hidden segments and non-.lam files: failed loads echo source lines,
+        # so reading arbitrary repo files would leak information.
+        parts = [p for p in Path(raw).parts if p not in (".", "..")]
+        if any(p.startswith(".") for p in parts):
+            return (f":{verb} 仅允许非隐藏路径 / :{verb} is restricted "
+                    "to paths without hidden segments")
+        if Path(raw).suffix.lower() != ".lam":
+            return (f":{verb} 仅允许 .lam 文件 / :{verb} is restricted to .lam files")
         try:
             target = Path(raw)
             if not target.is_absolute():
@@ -190,7 +215,7 @@ def validate_line(line: str) -> tuple[str, str] | None:
     # Web 会话必须保持存活，且不能让 API 直接拉起服务器上的编辑器
     # A web session must stay alive, and the API must not launch a server editor.
     text = line.strip()
-    if text in (":q", ":quit") or text == ":edit" or text.startswith(":edit "):
+    if text in (":q", ":quit") or EDIT_RE.match(text):
         return ("cli_only", _CLI_ONLY_TEXT)
     problem = _check_path(line)
     if problem:
@@ -314,6 +339,8 @@ _ERROR_TEXT = {
                  "Internal server error"),
     "cancelled": ("会话已取消",
                   "The session was cancelled"),
+    "rate_limited": ("请求过于频繁，请稍后再试",
+                     "Too many requests; please retry shortly"),
 }
 
 # 其余 HTTP 异常沿用原生状态码，映射到同一套 code 词表
@@ -325,6 +352,7 @@ _HTTP_ERROR_CODE = {
     408: "timeout",
     410: "session_expired",
     413: "payload_too_large",
+    429: "rate_limited",
     500: "internal",
 }
 
@@ -632,7 +660,7 @@ def _load_shares() -> None:
         created = entry.get("created")
         payload = entry.get("payload")
         if (isinstance(created, (int, float)) and isinstance(payload, dict)
-                and now - created <= SHARE_TTL):
+                and now - created <= SHARE_TTL and _valid_share(payload)):
             candidates.append((float(created), sid, payload))
     candidates.sort(key=lambda item: item[0], reverse=True)
     with _shares_lock:
@@ -712,12 +740,11 @@ def is_safe_share_command(line: str) -> bool:
     # Blank lines and -- / # comments are ignored by the interpreter.
     if not stripped or stripped.startswith("--") or stripped.startswith("#"):
         return True
-    # 以 : 开头的命令只允许白名单里的无害命令，其余一律拒绝，
-    # 特别是 :load / :save / :edit / :reset / :q / :del / :begin / :step /
-    # :run / :end / :back / :goto / :reload 等
-    # Colon commands are allowed only from the harmless whitelist; everything
-    # else (:load, :save, :edit, :reset, :q, :del, :begin, :step, :run, :end,
-    # :back, :goto, :reload and so on) is rejected.
+    # 以 : 开头的命令只允许白名单里的无害命令；文件、编辑与会话操纵类命令拒绝
+    # 手动归约命令只影响回放者自己的会话，因此在白名单内
+    # Colon commands must be on the harmless whitelist; file, editor and
+    # session commands are rejected. Manual reduction is session-local, so it
+    # is allowed.
     if stripped.startswith(":"):
         head = stripped.split(None, 1)[0].lower()
         return head in _SAFE_SHARE_SETTINGS
@@ -1138,14 +1165,17 @@ def api_eval_stream():
         except TimeoutError:
             log.warning("stream eval timeout sid=%s / 流式求值超时", sid)
             yield sse({"kind": "timeout", "ok": False, "timeout": True,
-                       "session": sid, "error": _timeout_msg(lang)})
+                       "session": sid, "error": _timeout_msg(lang),
+                       "code": "timeout"})
         except RuntimeError as exc:
             log.warning("stream eval session dead sid=%s: %s", sid, exc)
             yield sse({"kind": "expired", "ok": False, "restart": True,
-                       "session": sid, "error": str(exc)})
+                       "session": sid, "error": str(exc),
+                       "code": "session_expired"})
         except Exception as exc:  # noqa: BLE001
             log.exception("stream eval failed / 流式求值异常: %s", exc)
-            yield sse({"kind": "error", "ok": False, "error": str(exc)})
+            yield sse({"kind": "error", "ok": False, "error": str(exc),
+                       "code": "internal_error"})
 
     return Response(gen(), mimetype="text/event-stream",
                     headers={"Cache-Control": "no-cache",

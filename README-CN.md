@@ -89,7 +89,7 @@ cabal build all
 cabal run extension -- --help
 ```
 
-发布产物由 `.github/workflows/release.yml` 生成：推送 `v*` 标签（或手动运行工作流）会构建包含 `main.exe` / `extension.exe` 的 Windows `.zip` 与 x64/arm64 两份 macOS `.dmg`，连同 SHA-256 校验文件一起发布到 GitHub Release。
+发布产物由 `.github/workflows/release.yml` 生成：推送 `v*` 标签（或手动运行工作流）会构建包含 `main.exe` / `extension.exe` 的 Windows `.zip`、Linux `.tar.gz` 与 x64/arm64 两份 macOS `.dmg`，连同 SHA-256 校验文件一起发布到 GitHub Release。
 
 ## 版本
 

@@ -136,8 +136,8 @@ cabal run extension -- --help
 
 Release artifacts are produced by `.github/workflows/release.yml`: pushing a
 `v*` tag (or running the workflow manually) builds a Windows `.zip` with
-`main.exe`/`extension.exe` and macOS `.dmg` images for x64 and arm64, then
-publishes them to a GitHub Release with SHA-256 checksums.
+`main.exe`/`extension.exe`, a Linux `.tar.gz`, and macOS `.dmg` images for x64
+and arm64, then publishes them to a GitHub Release with SHA-256 checksums.
 
 ## Version
 

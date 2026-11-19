@@ -26,7 +26,7 @@ let script = match[1];
 const marker = "})();";
 const idx = script.lastIndexOf(marker);
 if (idx < 0) { console.error("IIFE end not found"); process.exit(1); }
-script = script.slice(0, idx) + "window.__test = { state: state, findBracketPair: findBracketPair, highlight: highlight, I18N: I18N, newSession: newSession, renderOutput: renderOutput, addErrorSnippet: addErrorSnippet, isStreamFailure: isStreamFailure, streamEval: streamEval, splitLogicalCommands: splitLogicalCommands, renderTrace: renderTrace, logicalCommandAt: logicalCommandAt };\n" + script.slice(idx);
+script = script.slice(0, idx) + "window.__test = { state: state, findBracketPair: findBracketPair, highlight: highlight, I18N: I18N, newSession: newSession, renderOutput: renderOutput, addErrorSnippet: addErrorSnippet, isStreamFailure: isStreamFailure, streamEval: streamEval, splitLogicalCommands: splitLogicalCommands, renderTrace: renderTrace, logicalCommandAt: logicalCommandAt, isSafeShareCommand: isSafeShareCommand, applySharePayload: applySharePayload, applyTranscriptLang: applyTranscriptLang, safeShareCode: safeShareCode };\n" + script.slice(idx);
 
 function makeEl(tag = "div") {
   const el = {
@@ -219,6 +219,26 @@ check("share strategy ignored",
       document.getElementById("strategy").value === "applicative",
       "strategy=" + document.getElementById("strategy").value);
 
+// 构造的分享字段不能把字符串当成布尔值，也不能写入超大步数
+// Crafted share fields must not coerce strings to booleans nor set a huge limit.
+sandbox.window.__test.applySharePayload({ eta: "false", fast: "false", limit: 1e9 });
+check("share boolean strings ignored",
+      state.eta === false && state.fast === false,
+      `eta=${state.eta} fast=${state.fast}`);
+check("share huge limit ignored", state.limit === 10000, "limit=" + state.limit);
+check("share code whitelist drops :load",
+      JSON.stringify(sandbox.window.__test.safeShareCode(
+        ["PLUS ONE TWO", ":load secret.lam", ":q"])) === JSON.stringify(["PLUS ONE TWO"]),
+      "safeShareCode");
+
+// 切换语言后错误码提示的标题仍保留机器可读的 code
+// Re-rendering the transcript must keep the code in error tooltips.
+sandbox.window.__test.applyTranscriptLang();
+check("transcript lang keeps error code title",
+      String(warnLine && warnLine.title || "").includes("timeout")
+      && String(failLine && failLine.title || "").includes("term_too_large"),
+      `${warnLine && warnLine.title} / ${failLine && failLine.title}`);
+
 // Bug: typing :lang in the terminal must update local state and the select.
 await typeAndEnter(":lang zh");
 check("lang state", state.lang === "zh", "state.lang=" + state.lang);
@@ -360,6 +380,35 @@ check("history restored on boot", html.includes("saved.history"),
 check("Ctrl/Cmd+Enter runs current command",
       html.includes('e.key === "Enter" && (e.ctrlKey || e.metaKey)'),
       "Ctrl/Cmd+Enter handler missing");
+// 外部分享载荷必须过白名单，不能注入 :load/:reset/:q 等命令
+// External share payloads must pass the whitelist.
+const safeCmd = sandbox.window.__test.isSafeShareCommand;
+check("share allows plain expressions", safeCmd("PLUS ONE TWO") === true, "plain term rejected");
+check("share allows safe settings", safeCmd(":strategy normal") === true, ":strategy rejected");
+check("share rejects file commands", safeCmd(":load secret.lam") === false, ":load accepted");
+check("share rejects session commands", safeCmd(":reset") === false, ":reset accepted");
+check("share rejects quit", safeCmd(":q") === false, ":q accepted");
+check("share rejects control chars", safeCmd("id = x\x1ey") === false, "RS accepted");
+check("share rejects unicode separators", safeCmd("x\u2028y") === false, "separator accepted");
+check("share allows comments", safeCmd("-- note") === true, "comment rejected");
+check("retry does not re-record history",
+      html.includes("原命令已在回放历史里"), "retry re-records the command");
+
+// 其他第二轮修复的静态断言 / static assertions for the second round of fixes
+check("trace playback updates only a frame",
+      html.includes("function updateTraceFrame"), "frame-local playback update missing");
+check("step list is keyboard operable",
+      /<button type="button" class="st/.test(html), "step list is not a button");
+check("AST SVG fits container", /\.ast-svg svg\{[^}]*max-width:100%/.test(html),
+      "AST SVG has no fit-to-width rule");
+check("error codes have help entries", html.includes("var ERR_HELP"),
+      "error code help table missing");
+check("exports are timestamped", html.includes("function fileStamp"),
+      "export filenames are not timestamped");
+check("network errors offer retry", html.includes("retry.textContent = dual"),
+      "no retry affordance on network errors");
+check("share short id is validated", /\[0-9a-f\]\{10\}/.test(html),
+      "share short id is not validated");
 check("IIFE end marker intact", script.includes("})();"), "IIFE marker missing");
 
 // 流式帧：解释器的 error 输出是普通结果，只有后端的流级失败才算失败

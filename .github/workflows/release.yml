@@ -14,6 +14,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   windows:
     name: Windows EXE
@@ -30,13 +34,22 @@ jobs:
         shell: cmd
         run: build.bat
 
+      - name: Smoke test binaries
+        shell: pwsh
+        run: |
+          $ver = (Get-Content VERSION -Raw).Trim()
+          $out = & .\extension.exe --version
+          if ($LASTEXITCODE -ne 0 -or $out -notmatch [regex]::Escape($ver)) {
+            throw "extension.exe version mismatch: $out (expected $ver)"
+          }
+
       - name: Package EXE
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
           $ver = (Get-Content VERSION -Raw).Trim()
           New-Item -ItemType Directory -Force dist | Out-Null
-          Copy-Item main.exe,extension.exe,README.md,README-CN.md,LICENSE,VERSION dist
+          Copy-Item main.exe,extension.exe,README.md,README-CN.md,CHANGELOG.md,LICENSE,VERSION dist
           Copy-Item lib dist\lib -Recurse
           $zip = "dist/lambda-calculus-interpreter-$ver-windows-x64.zip"
           Compress-Archive -Path dist\* -DestinationPath $zip
@@ -80,6 +93,10 @@ jobs:
       - name: Build (macOS)
         run: bash build.sh
 
+      - name: Smoke test binaries
+        shell: bash
+        run: ./extension --version | grep -F "$(tr -d '\r\n' < VERSION)"
+
       - name: Package DMG
         shell: bash
         run: |
@@ -87,7 +104,7 @@ jobs:
           ver="$(tr -d '\r\n' < VERSION)"
           staging="dist/lambda-calculus-interpreter"
           mkdir -p "$staging"
-          cp main extension README.md README-CN.md LICENSE VERSION "$staging"/
+          cp main extension README.md README-CN.md CHANGELOG.md LICENSE VERSION "$staging"/
           cp -R lib "$staging"/lib
           chmod +x "$staging/main" "$staging/extension"
           dmg="dist/lambda-calculus-interpreter-$ver-macos-${{ matrix.arch }}.dmg"
@@ -107,6 +124,45 @@ jobs:
           path: |
             main
             extension
+          if-no-files-found: error
+
+  linux:
+    name: Linux binaries
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: haskell-actions/setup@v2
+        with:
+          ghc-version: "9.6"
+
+      - name: Build (Linux)
+        run: bash build.sh
+
+      - name: Smoke test binaries
+        shell: bash
+        run: ./extension --version | grep -F "$(tr -d '\r\n' < VERSION)"
+
+      - name: Package tar.gz
+        shell: bash
+        run: |
+          set -euo pipefail
+          ver="$(tr -d '\r\n' < VERSION)"
+          staging="dist/lambda-calculus-interpreter"
+          mkdir -p "$staging"
+          cp main extension README.md README-CN.md CHANGELOG.md LICENSE VERSION "$staging"/
+          cp -R lib "$staging"/lib
+          chmod +x "$staging/main" "$staging/extension"
+          tar -czf "dist/lambda-calculus-interpreter-$ver-linux-x64.tar.gz" \
+            -C dist lambda-calculus-interpreter
+          (cd dist && sha256sum "lambda-calculus-interpreter-$ver-linux-x64.tar.gz" \
+            > SHA256SUMS-linux.txt)
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-binary
+          path: dist/*
           if-no-files-found: error
 
   desktop-windows:
@@ -207,8 +263,9 @@ jobs:
 
   release:
     name: Publish Release
-    needs: [windows, macos, desktop-windows, desktop-macos]
+    needs: [windows, macos, linux, desktop-windows, desktop-macos]
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -251,4 +308,5 @@ jobs:
           files: |
             dist/*.zip
             dist/*.dmg
+            dist/*.tar.gz
             dist/SHA256SUMS-*.txt

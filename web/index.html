@@ -204,7 +204,7 @@
   .cmp ins{background:rgba(47,143,82,.16);color:var(--ins);text-decoration:none;border-radius:2px;}
   .note{font-family:var(--mono);font-size:11.5px;color:var(--dim);margin-bottom:10px;}
   .steps-list{display:flex;flex-direction:column;gap:2px;}
-  .steps-list .st{font-family:var(--mono);font-size:11.5px;color:var(--dim);padding:4px 8px;border-left:1px solid transparent;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .steps-list .st{font-family:var(--mono);font-size:11.5px;color:var(--dim);padding:4px 8px;border:0;border-left:1px solid transparent;background:transparent;text-align:left;width:100%;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
   .steps-list .st:hover{color:var(--text);border-left-color:var(--border-strong);}
   .steps-list .st.active{color:var(--text);border-left-color:var(--accent);}
   .env-row{display:flex;flex-direction:column;gap:1px;padding:5px 0;border-bottom:1px dashed var(--border);}
@@ -255,7 +255,7 @@
   .ast-tree .leaf .k{color:var(--faint);}
   .ast-view{display:flex;gap:6px;margin:0 0 10px;}
   .ast-svg{overflow:auto;border:1px solid var(--border);border-radius:var(--radius);padding:4px;}
-  .ast-svg svg{display:block;}
+  .ast-svg svg{display:block;max-width:100%;height:auto;}
   .ast-svg .ast-edge{stroke:var(--border-strong);stroke-width:1;}
   .ast-svg .ast-node-rect{fill:var(--card);stroke:var(--border);}
   .ast-svg .ast-node-text{fill:var(--text);font-family:var(--mono);font-size:11px;}
@@ -419,7 +419,7 @@
         </div>
       </div>
       <div class="term-body">
-        <div class="term-out" id="out" aria-live="polite"></div>
+        <div class="term-out" id="out" aria-live="polite" aria-relevant="additions"></div>
         <div class="term-line">
           <span class="prompt">λ&gt;</span>
           <div class="input-wrap">
@@ -506,7 +506,7 @@
     subline: {zh:"Haskell 解释器 · 归约轨迹 · 语法树 · 类型推断", en:"Haskell interpreter · reduction traces · AST · types"},
     exTitle: {zh:"示例（点击填入）", en:"Examples (click to insert)"},
     preTitle:{zh:"预定义环境（点击插入）", en:"Prelude (click to insert)"},
-    foot:    {zh:"提示：\\x.x 或 λx.x 表示抽象；数字自动转 Church 编码；↑↓ 翻历史，Tab 补全，Ctrl+L 清空。", en:"Tip: write \\x.x or λx.x; numbers become Church numerals; ↑↓ history, Tab completes, Ctrl+L clears."},
+    foot:    {zh:"提示：\\x.x 或 λx.x 表示抽象；数字自动转 Church 编码；↑↓ 翻历史，Tab 补全，Ctrl+K 命令面板，Ctrl+Enter 只运行当前命令，Ctrl+L 清空。", en:"Tip: write \\x.x or λx.x; numbers become Church numerals; ↑↓ history, Tab completes, Ctrl+K palette, Ctrl+Enter runs the current command, Ctrl+L clears."},
     dark:    {zh:"深色", en:"Dark"}, light:{zh:"浅色", en:"Light"},
     clear:   {zh:"清空", en:"clear"},
     steps:   {zh:"步", en:"steps"},
@@ -539,6 +539,7 @@
     noType:  {zh:"无法推断类型（无类型项或尚未执行表达式）。", en:"No type available (untypable term, or nothing run yet)."},
     env:     {zh:"环境", en:"Environment"},
     envEmpty:{zh:"环境为空。", en:"Environment is empty."},
+    preludeFail:{zh:"预定义列表加载失败，请刷新页面重试。", en:"Failed to load the prelude list; refresh to retry."},
     before:  {zh:"归约前", en:"before"}, after:{zh:"归约后", en:"after"},
     step:    {zh:"第", en:"step"}, of:{zh:"步，共", en:"of"},
     shareOk: {zh:"链接已复制到地址栏", en:"Link is in the address bar"},
@@ -1241,6 +1242,57 @@
     setTimeout(function(){ URL.revokeObjectURL(a.href); }, 1000);
   }
 
+  // 常见错误码的中英文说明；点击结果行的 meta 徽标即可查看
+  // Explanations for common error codes, opened by clicking the meta badge.
+  var ERR_HELP = {
+    parse_error: {zh:"表达式无法解析：检查括号是否闭合、λ 分隔符（. / → / ->）与命令拼写。",
+                  en:"The expression could not be parsed: check brackets, lambda separators (. / → / ->) and command spelling."},
+    type_error: {zh:"表达式没有简单类型：自应用与不动点组合子通常无法用 Hindley–Milner 推断。",
+                 en:"The term has no simple type: self-application and fixed-point combinators usually defeat Hindley–Milner inference."},
+    term_too_large: {zh:"项超过节点上限：减小表达式，或提高 --max-term-size。",
+                     en:"The term exceeds the node cap: use a smaller term or raise --max-term-size."},
+    timeout: {zh:"求值超时且会话已重置：降低 :steps 或避免发散项。",
+              en:"Evaluation timed out and the session was reset: lower :steps or avoid divergent terms."},
+    cycle_detected: {zh:"检测到归约环，表达式不会收敛。",
+                     en:"A reduction cycle was detected; the term will not converge."},
+    macro_fuel: {zh:"宏展开燃料耗尽：检查是否存在自引用定义。",
+                 en:"Macro expansion fuel ran out: check for a self-referential definition."},
+    cli_only: {zh:"该命令只在命令行可用，网页端已拦截。",
+               en:"This command is CLI-only and was blocked in the web app."},
+    load_error: {zh:"加载文件失败：检查路径是否为解释器目录内的 .lam 文件。",
+                 en:"Loading failed: check that the path is a .lam file inside the interpreter directory."},
+    rate_limited: {zh:"请求过于频繁，请稍后再试。",
+                   en:"Too many requests; try again shortly."},
+    bad_request: {zh:"请求格式有误。", en:"The request was malformed."}
+  };
+  function linkCodeHelp(lineEl, code){
+    var m = lineEl && lineEl.querySelector ? lineEl.querySelector(".meta") : null;
+    if (!m || !code) return;
+    m.setAttribute("role", "button");
+    m.setAttribute("tabindex", "0");
+    m.style.cursor = "pointer";
+    m.title = t("errCode") + ": " + code + " — " + dual("点击查看原因", "click for details");
+    function show(){
+      var h = ERR_HELP[code];
+      var msg = h ? dual(h.zh, h.en)
+                  : dual("暂无该错误码的详细说明。", "No detailed help is available for this code.");
+      dialog({title: t("errCode") + ": " + code, message: msg});
+    }
+    m.addEventListener("click", show);
+    m.addEventListener("keydown", function(e){
+      if (e.key === "Enter" || e.key === " "){ e.preventDefault(); show(); }
+    });
+  }
+
+  // 导出文件名带时间戳，避免多次导出后无法区分
+  // Timestamp exported files so repeated exports stay distinguishable.
+  function fileStamp(){
+    var d = new Date();
+    function p(n){ return (n < 10 ? "0" : "") + n; }
+    return String(d.getFullYear()) + p(d.getMonth() + 1) + p(d.getDate()) + "-" +
+           p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds());
+  }
+
   function addActions(lineEl, obj, source){
     // 手动单步的输出没有 trace，补一个单步对比 / synthesize a one-step trace
     if (!obj.trace && obj.before && obj.term){
@@ -1282,15 +1334,15 @@
     if (obj.trace && obj.trace.length){
       add(function(){ return "⤓ " + t("exportT"); }, function(){ return t("exportT"); },
           function(){
-            saveBlob("lambda-trace.md", traceMarkdown(obj), "text/markdown;charset=utf-8");
+            saveBlob("lambda-trace-" + fileStamp() + ".md", traceMarkdown(obj), "text/markdown;charset=utf-8");
           });
       add(function(){ return "⤓ " + t("exportJson"); }, function(){ return t("exportJson"); },
           function(){
-            saveBlob("lambda-trace.json", JSON.stringify(obj, null, 2), "application/json;charset=utf-8");
+            saveBlob("lambda-trace-" + fileStamp() + ".json", JSON.stringify(obj, null, 2), "application/json;charset=utf-8");
           });
       add(function(){ return "⤓ " + t("exportTex"); }, function(){ return t("exportTex"); },
           function(){
-            saveBlob("lambda-trace.tex", traceLatex(obj), "application/x-tex;charset=utf-8");
+            saveBlob("lambda-trace-" + fileStamp() + ".tex", traceLatex(obj), "application/x-tex;charset=utf-8");
           });
     }
     lineEl.addEventListener("click", function(){
@@ -1328,7 +1380,7 @@
       var el = addLine(obj.kind, bodyText, isWarn ? warnCode : resultMeta(obj), source,
                        isWarn ? obj.textZh : (obj.term || obj.textZh),
                        isWarn ? obj.textEn : (obj.term || obj.textEn));
-      if (warnCode) el.title = t("errCode") + ": " + warnCode;
+      if (warnCode){ el._errCode = warnCode; el.title = t("errCode") + ": " + warnCode; linkCodeHelp(el, warnCode); }
       el._metaObj = obj;
       addActions(el, obj, source);
       // 普通结果的 redex 不属于手动归约，不能覆盖手动归约的 redex 列表
@@ -1360,7 +1412,7 @@
       // 错误码进入该行的 meta 与 title / surface the error code in meta and title
       var codeMeta = obj.code ? String(obj.code) : null;
       var d = addLine("error", objText(obj), codeMeta, source, obj.textZh, obj.textEn);
-      if (obj.code) d.title = t("errCode") + ": " + String(obj.code);
+      if (obj.code){ d._errCode = String(obj.code); d.title = t("errCode") + ": " + String(obj.code); linkCodeHelp(d, String(obj.code)); }
       if (obj.pos != null && source) addErrorSnippet(obj.pos, source);
       return;
     }
@@ -1370,7 +1422,7 @@
       var failCode = (obj.kind === "fail" && obj.code) ? String(obj.code) : null;
       var line = addLine(obj.kind, body, failCode, source,
                          obj.textZh || body, obj.textEn || body);
-      if (failCode) line.title = t("errCode") + ": " + failCode;
+      if (failCode){ line._errCode = failCode; line.title = t("errCode") + ": " + failCode; linkCodeHelp(line, failCode); }
       if (obj.kind === "term"){ setManual(true, obj.term); }
       if (obj.kind === "term" || obj.kind === "step"){
         if (obj.term) state.manualTerm = obj.term;
@@ -1437,6 +1489,37 @@
     if (state.playTimer){ clearInterval(state.playTimer); state.playTimer = null; }
   }
 
+  // 播放时只更新当前帧，不重建整个面板和最多 500 条的步列表
+  // Update only the current frame while playing; never rebuild the whole panel.
+  function updateTraceFrame(){
+    var obj = state.selected;
+    if (!obj || !obj.trace || !obj.trace.length) return;
+    var steps = obj.trace;
+    var i = Math.min(state.tracePos, steps.length - 1);
+    var st = steps[i];
+    var d = diffParts(st.before, st.after);
+    var rows = panel.querySelectorAll(".cmp .row");
+    if (rows.length >= 2){
+      rows[0].innerHTML = '<span class="lab">' + esc(t("before")) + '</span>' +
+        esc(d.pre) + (d.aMid ? '<del>' + esc(d.aMid) + '</del>' : '') + esc(d.suf);
+      rows[1].innerHTML = '<span class="lab">' + esc(t("after")) + '</span>' +
+        esc(d.pre) + (d.bMid ? '<ins>' + esc(d.bMid) + '</ins>' : '') + esc(d.suf);
+    }
+    var note = panel.querySelector(".note");
+    if (note) note.textContent = st.note || ("β " + (i + 1));
+    var count = panel.querySelector(".player .count");
+    if (count) count.textContent = (i + 1) + " / " + steps.length;
+    var range = panel.querySelector("#tr-range");
+    if (range){
+      range.value = i;
+      var pct = steps.length > 1 ? (i / (steps.length - 1) * 100) : 0;
+      range.style.setProperty("--p", pct + "%");
+    }
+    Array.prototype.forEach.call(panel.querySelectorAll(".steps-list .st"), function(b, k){
+      if (b.classList) b.classList.toggle("active", k === i);
+    });
+  }
+
   function startPlay(){
     var total = (state.selected && state.selected.trace) ? state.selected.trace.length : 0;
     if (total < 1) return;
@@ -1450,7 +1533,7 @@
         return;
       }
       state.tracePos += 1;
-      renderPanel();
+      updateTraceFrame();
     }, state.playMs);
     renderPanel();
   }
@@ -1465,7 +1548,7 @@
       html += '<span class="redex-hint">' + esc(t("redexNone")) + '</span>';
     }
     list.forEach(function(r){
-      html += '<button class="redex-btn" type="button" data-redex="' + r.i +
+      html += '<button class="redex-btn" type="button" data-redex="' + esc(String(r.i)) +
               '" title="' + esc(r.term) + '"><b>' + r.i + '</b>' +
               esc(shorten(r.term, 48)) + '</button>';
     });
@@ -1520,8 +1603,9 @@
     html += '</div>';
     html += '<div class="steps-list">';
     steps.forEach(function(s, k){
-      html += '<div class="st' + (k === i ? ' active' : '') + '" data-step="' + k + '">' +
-              (k + 1) + '. ' + esc(shorten(s.after, 64)) + '</div>';
+      html += '<button type="button" class="st' + (k === i ? ' active' : '') +
+              '" data-step="' + k + '">' +
+              (k + 1) + '. ' + esc(shorten(s.after, 64)) + '</button>';
     });
     html += '</div>';
     return html;
@@ -1650,8 +1734,8 @@
   function renderGuide(){
     var rows = [
       {h: ["1 · 输入与执行", "1 · Type and run"],
-       b: ["输入表达式后按 Enter。Tab 补全、↑↓ 历史、Ctrl+L 清空。",
-           "Press Enter to run. Tab completes, ↑↓ history, Ctrl+L clears."]},
+       b: ["输入表达式后按 Enter。Tab 补全、↑↓ 历史、Ctrl+K 命令面板、Ctrl+Enter 只运行当前命令、Ctrl+L 清空。",
+           "Press Enter to run. Tab completes, ↑↓ history, Ctrl+K palette, Ctrl+Enter runs the current command, Ctrl+L clears."]},
       {h: ["2 · 看懂结果", "2 · Read the result"],
        b: ["⇒ 是结果；“轨迹”看每一步前后差异，“结构”看语法树，“类型”看推断。",
            "⇒ marks a result. Trace shows each step, AST the tree, Type the inference."]},
@@ -1787,33 +1871,35 @@
   }
 
   function renderHelp(){
+    // Help 说明随 :lang 切换，不再硬编码中英合体字符串
+    // Help descriptions follow :lang instead of hard-coded bilingual strings.
     var cmds = [
-      [":help", "显示帮助 / show help"],
-      [":trace <expr>", "归约轨迹 / reduction trace"],
-      [":ast <expr>", "语法树 / syntax tree"],
-      [":db <expr>", "de Bruijn 索引 / de Bruijn indices"],
-      [":type <expr>", "推断类型 / infer type"],
-      [":eq <a> , <b>", "α 等价 / alpha-equivalence"],
-      [":conv <a> , <b>", "β 等价 / beta-convertibility"],
-      [":nf / :whnf <expr>", "正规形 / 弱首正规形 / normal form, WHNF"],
-      [":int <expr> / :church <n>", "邱奇数 ↔ 整数 / Church numeral ↔ integer"],
+      [":help", dual("显示帮助", "show help")],
+      [":trace <expr>", dual("归约轨迹", "reduction trace")],
+      [":ast <expr>", dual("语法树", "syntax tree")],
+      [":db <expr>", dual("de Bruijn 索引", "de Bruijn indices")],
+      [":type <expr>", dual("推断类型", "infer type")],
+      [":eq <a> , <b>", dual("α 等价", "alpha-equivalence")],
+      [":conv <a> , <b>", dual("β 等价", "beta-convertibility")],
+      [":nf / :whnf <expr>", dual("正规形 / 弱首正规形", "normal form, WHNF")],
+      [":int <expr> / :church <n>", dual("邱奇数 ↔ 整数", "Church numeral ↔ integer")],
       [":strategy <s>", "applicative / normal / cbn / cbv"],
-      [":steps <n>", "步数上限 / step limit"],
-      [":eta on|off", "η 归约 / eta reduction"],
-      [":fast on|off", "共享快速正规化 / shared fast normalization"],
-      [":begin <expr>", "开始手动归约 / start manual reduction"],
-      [":step [n] / :run / :end", "单步或任选 redex / step or pick a redex"],
-      [":back / :goto <n>", "回退或跳到第 n 步 / rewind, jump to step n"],
-      [":def <n> / :search <s>", "查看定义 / 搜索环境 / show, search"],
-      [":reload / :edit [f]", "重载文件 / 编辑器打开 / reload, edit"],
-      [":let name = expr / rec name = expr", "定义 / 递归定义 / define, recursive definition"],
-      [":load <f> / :save <f>", "加载 / 保存定义 / load, save definitions"],
-      [":env / :del <n> / :reset", "环境 / environment"],
-      [":lang zh|en|both", "语言 / language"],
+      [":steps <n>", dual("步数上限", "step limit")],
+      [":eta on|off", dual("η 归约", "eta reduction")],
+      [":fast on|off", dual("共享快速正规化", "shared fast normalization")],
+      [":begin <expr>", dual("开始手动归约", "start manual reduction")],
+      [":step [n] / :run / :end", dual("单步或任选 redex", "step or pick a redex")],
+      [":back / :goto <n>", dual("回退或跳到第 n 步", "rewind, jump to step n")],
+      [":def <n> / :search <s>", dual("查看定义 / 搜索环境", "show, search")],
+      [":reload / :edit [f]", dual("重载文件 / 编辑器打开", "reload, edit")],
+      [":let name = expr / rec name = expr", dual("定义 / 递归定义", "define, recursive definition")],
+      [":load <f> / :save <f>", dual("加载 / 保存定义", "load, save definitions")],
+      [":env / :del <n> / :reset", dual("环境", "environment")],
+      [":lang zh|en|both", dual("语言", "language")],
       [":time [n] <expr>", t("helpTime")],
       [":bench <n> <expr>", t("helpBench")],
       [":help <cmd>", t("helpCmdNameHelp")],
-      [":q", "退出 / quit"]
+      [":q", dual("退出", "quit")]
     ];
     var html = '<h3>' + esc(t("helpTitle")) + '</h3><dl class="help-dl">';
     cmds.forEach(function(c){
@@ -2079,6 +2165,10 @@
     // After a clear/rebuild, a stale response must not touch session or UI.
     if (state.gen !== gen) return [];
     if (r.status === 408 || (r.data && (r.data.timeout || r.data.restart))){
+      // 超时/过期的命令不能留在回放历史里，否则每次重建都重跑并切碎会话
+      // A timed-out line must not stay in the replay history and re-thrash sessions.
+      var dead = state.codeLines.lastIndexOf(line);
+      if (dead >= 0){ state.codeLines.splice(dead, 1); saveLocal(); }
       state.session = null; setConn(false);
       if (!silent){
         addLine("warn", (r.data && r.data.error) || t("timeout"));
@@ -2087,7 +2177,21 @@
       return [];
     }
     if (!r.data || !r.data.ok){
-      if (!silent) addLine("fail", (r.data && r.data.error) || "request failed");
+      if (!silent){
+        var failEl = addLine("fail", (r.data && r.data.error) || dual(
+          "请求失败，请检查 web/app.py 是否运行。", "Request failed; check that web/app.py is running."));
+        if (r.status === 0){
+          // 网络错误给出可点击的重试，不再只显示一句失败
+          // Offer a retry button instead of a bare failure message.
+          var retry = elem("button", "act");
+          retry.textContent = dual("重试", "retry");
+          retry.style.opacity = "1";
+          // 原命令已在回放历史里，重试不能重复记录
+          // The original line is already in replay history; do not record it twice.
+          retry.addEventListener("click", function(){ exec(line, {record: false}); });
+          failEl.querySelector(".line-main").appendChild(retry);
+        }
+      }
       if (r.status === 0) setConn(false);
       else if (r.status >= 500) { state.session = null; setConn(false); }
       return [];
@@ -2106,14 +2210,18 @@
     await evalLine(":steps " + state.limit, true);
     await evalLine(":eta " + (state.eta ? "on" : "off"), true);
     await evalLine(":fast " + (state.fast ? "on" : "off"), true);
-    for (var i = 0; i < state.codeLines.length; i++){
-      await evalLine(state.codeLines[i], true);
+    var lines = state.codeLines.slice();
+    for (var i = 0; i < lines.length; i++){
+      await evalLine(lines[i], true);
     }
   }
 
   // 取消求值：中断 fetch、通知后端、再走已有的会话重建与历史回放
   // Cancel evaluation: abort the fetch, notify the backend, then rebuild and replay.
   async function cancelEval(){
+    // 递增代数：即便某个并行请求没有被 abort，它的旧结果也不能再渲染
+    // Bump the generation so a parallel request that was not aborted cannot render.
+    state.gen++;
     if (activeController && typeof activeController.abort === "function"){
       try { activeController.abort(); } catch(e){}
     }
@@ -2633,14 +2741,17 @@
     try {
       if (!opts.reuse || !state.session) await newSession();
       addLine("info", t("welcome"), null, null, I18N.welcome.zh, I18N.welcome.en);
-      for (var i = 0; i < state.codeLines.length; i++){
-        await exec(state.codeLines[i], {record: false});
-      }
+      // 设置必须先发送到解释器，回放才会按分享的策略/步数执行
+      // Apply settings before replay so shared strategy and limit take effect.
       await evalLine(":lang " + state.lang, true);
       await evalLine(":strategy " + $("strategy").value, true);
       await evalLine(":steps " + state.limit, true);
       await evalLine(":eta " + (state.eta ? "on" : "off"), true);
       await evalLine(":fast " + (state.fast ? "on" : "off"), true);
+      var lines = state.codeLines.slice();
+      for (var i = 0; i < lines.length; i++){
+        await exec(lines[i], {record: false});
+      }
       await refreshEnv();
     } finally {
       state.replaying = false;
@@ -2679,6 +2790,7 @@
   // 轨迹快捷键：←/→ 单步，空格播放/暂停（输入框内不拦截）
   // Trace shortcuts: ←/→ step, Space plays/pauses (ignored while typing).
   document.addEventListener("keydown", function(e){
+    if (dialogOpen) return;
     if (state.tab !== "trace" || !state.selected || !state.selected.trace) return;
     var ae = document.activeElement;
     if (ae && /^(INPUT|TEXTAREA|SELECT|BUTTON)$/.test(ae.tagName)) return;
@@ -2829,13 +2941,38 @@
   // field instead of trusting it.
   function validLang(v){ return v === "zh" || v === "en" || v === "both"; }
   function validTheme(v){ return v === "light" || v === "dark"; }
-  function validLimit(v){ return typeof v === "number" && isFinite(v) && v > 0; }
+  function validLimit(v){ return typeof v === "number" && isFinite(v) && v > 0 && v <= 10000000; }
   function validStrategy(v){ return typeof v === "string" && !!STRATEGY_LABELS[v]; }
+
+  // 与后端 /api/share 一致的白名单：外部构造的 #state=/#code= 不能绕过它
+  // Mirror the backend share whitelist: crafted #state=/#code= must not bypass it.
+  var SAFE_SHARE_CMDS = {
+    ":lang":1, ":strategy":1, ":steps":1, ":eta":1, ":fast":1,
+    ":type":1, ":trace":1, ":ast":1, ":db":1, ":eq":1, ":conv":1, ":nf":1, ":whnf":1,
+    ":int":1, ":church":1, ":env":1, ":help":1, ":def":1, ":search":1, ":let":1,
+    ":begin":1, ":step":1, ":back":1, ":goto":1, ":run":1, ":end":1
+  };
+  function isSafeShareCommand(line){
+    if (typeof line !== "string") return false;
+    for (var i = 0; i < line.length; i++){
+      var c = line.charCodeAt(i);
+      if ((c < 32 && c !== 9) || c === 0x1e || c === 0xfeff ||
+          c === 0x2028 || c === 0x2029) return false;
+    }
+    var s = line.trim();
+    if (!s || s.slice(0, 2) === "--" || s.charAt(0) === "#") return true;
+    if (s.charAt(0) === ":") return !!SAFE_SHARE_CMDS[s.split(/\s+/)[0].toLowerCase()];
+    return true;
+  }
+  function safeShareCode(code){
+    if (!Array.isArray(code)) return [];
+    return code.filter(isSafeShareCommand).slice(0, 200);
+  }
 
   function applySharePayload(payload){
     if (!payload) return;
     if (Array.isArray(payload.code)) {
-      state.codeLines = payload.code.filter(function(x){ return typeof x === "string"; });
+      state.codeLines = safeShareCode(payload.code);
     }
     if (typeof payload.strategy === "string" && STRATEGY_LABELS[payload.strategy]) {
       $("strategy").value = payload.strategy;
@@ -2843,8 +2980,8 @@
     if (validLimit(payload.limit)) state.limit = Math.floor(payload.limit);
     if (validTheme(payload.theme)) state.theme = payload.theme;
     if (validLang(payload.lang)) state.lang = payload.lang;
-    if (payload.eta != null) state.eta = !!payload.eta;
-    if (payload.fast != null) state.fast = !!payload.fast;
+    if (typeof payload.eta === "boolean") state.eta = payload.eta;
+    if (typeof payload.fast === "boolean") state.fast = payload.fast;
     applyFastButton();
   }
 
@@ -2875,7 +3012,7 @@
     var blob = new Blob([state.codeLines.join("\n") + "\n"], {type:"text/plain;charset=utf-8"});
     var a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = "lambda-session.lam";
+    a.download = "lambda-session-" + fileStamp() + ".lam";
     a.click();
     setTimeout(function(){ URL.revokeObjectURL(a.href); }, 1000);
   });
@@ -2981,12 +3118,16 @@
         c.addEventListener("click", function(){ insertText(n); });
         box.appendChild(c);
       });
-    }).catch(function(){});
+    }).catch(function(){ toast(t("preludeFail")); });
   }
 
   // 不重放命令，直接用服务端同时返回的中/英文本刷新已有输出
   // Refresh existing output from the bilingual fields without replaying.
   function applyTranscriptLang(){
+    // 批量改写历史文本时暂停朗读，避免读屏软件重读整段记录
+    // Pause live announcements while rewriting the whole transcript.
+    var live = out.getAttribute("aria-live");
+    out.removeAttribute("aria-live");
     Array.prototype.forEach.call(out.querySelectorAll(".line"), function(el){
       if (el._zh != null){
         var body = el.querySelector(".body");
@@ -2996,6 +3137,9 @@
         var m = el.querySelector(".meta");
         if (m) m.textContent = resultMeta(el._metaObj);
       }
+      // 错误码提示的标题里含可翻译的“错误码”前缀，切换语言时一并刷新
+      // The code tooltip contains a translatable prefix; refresh it on lang switch.
+      if (el._errCode) el.title = t("errCode") + ": " + el._errCode;
     });
     Array.prototype.forEach.call(out.querySelectorAll(".act"), function(b){
       if (b._relabel) b._relabel();
@@ -3003,6 +3147,7 @@
     renderRedexes();
     refreshStType();
     renderPanel();
+    if (live) out.setAttribute("aria-live", live);
   }
 
   function applyStaticTexts(){
@@ -3043,13 +3188,15 @@
       if (validLang(saved.lang)) state.lang = saved.lang;
       if (validTheme(saved.theme)) state.theme = saved.theme;
       if (validLimit(saved.limit)) state.limit = Math.floor(saved.limit);
-      state.eta = !!saved.eta;
-      state.fast = !!saved.fast;
+      if (typeof saved.eta === "boolean") state.eta = saved.eta;
+      if (typeof saved.fast === "boolean") state.fast = saved.fast;
       if (typeof saved.strategy === "string" && STRATEGY_LABELS[saved.strategy]) {
         $("strategy").value = saved.strategy;
       }
       if (Array.isArray(saved.code)) {
-        state.codeLines = saved.code.filter(function(x){ return typeof x === "string"; });
+        // 本地存储与分享链接同样要经过命令白名单，避免刷新后回放 :load/:edit/:q
+        // Local storage must pass the same command whitelist as share links.
+        state.codeLines = safeShareCode(saved.code);
       }
       // 命令历史随界面状态一起持久化，刷新后仍可用上下方向键找回
       // Persist command history with the UI state so Up/Down survives a reload.
@@ -3071,10 +3218,13 @@
     // URL share state first: new format carries code, strategy, limit, theme and language.
     var hash = location.hash.slice(1);
     if (hash.indexOf("s=") === 0){
-      try {
-        var sr = await api("api/share/" + hash.slice(2), null, "GET");
-        if (sr.data && sr.data.ok) applySharePayload(sr.data.state);
-      } catch(e){}
+      var sid = hash.slice(2);
+      if (/^[0-9a-f]{10}$/.test(sid)){
+        try {
+          var sr = await api("api/share/" + sid, null, "GET");
+          if (sr.data && sr.data.ok) applySharePayload(sr.data.state);
+        } catch(e){}
+      }
     } else if (hash.indexOf("state=") === 0){
       try {
         var sb64 = hash.slice(6).replace(/-/g,"+").replace(/_/g,"/");
@@ -3086,12 +3236,17 @@
         var b64 = hash.slice(5).replace(/-/g,"+").replace(/_/g,"/");
         while (b64.length % 4) b64 += "=";
         var text = decodeURIComponent(escape(atob(b64)));
-        state.codeLines = text.split("\n").filter(function(l){ return l.trim(); });
+        state.codeLines = text.split("\n").filter(function(l){
+          return l.trim() && isSafeShareCommand(l);
+        }).slice(0, 200);
       } catch(e){}
     }
 
     var stepsLine = state.codeLines.filter(function(l){ return /^:steps\s+\d+/.test(l.trim()); }).pop();
-    if (stepsLine) state.limit = parseInt(stepsLine.trim().split(/\s+/)[1], 10) || state.limit;
+    if (stepsLine){
+      var stepsVal = parseInt(stepsLine.trim().split(/\s+/)[1], 10);
+      if (validLimit(stepsVal) && stepsVal <= 10000000) state.limit = Math.floor(stepsVal);
+    }
     // 分享链接可能覆盖语言/主题/策略，重新应用一次
     // A share link may override language/theme/strategy; re-apply them.
     applyTheme(state.theme);

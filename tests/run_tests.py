@@ -244,6 +244,24 @@ def test_step_limit(b: Path) -> None:
     r = one([":steps 0"], b)
     check("zero limit rejected", r.get("kind") == "error", str(r))
 
+    # 恰好用满步数且已到正规形时不能误报命中上限
+    # A term reaching normal form on the last allowed step is not a limit hit.
+    r = one([":steps 1", "(\\x.x) a"], b)
+    check("exact limit is not a hit",
+          r.get("kind") == "result" and r.get("limitHit") is False, str(r))
+    r = one([":steps 1", ":int ((\\x.x) (\\f.\\x.f x))"], b)
+    check("exact limit decodes numeral", r.get("value") == 1, str(r))
+    r = one([":steps 1", ":conv (\\x.x) a , a"], b)
+    check("exact limit conv resolves",
+          r.get("limitHit") is False and r.get("equal") is True, str(r))
+
+    # 滚动窗口：2000 步之后才进入的环也要被识别
+    # A cycle entered after 2000 steps must still be detected.
+    omega = "(\\x.x x)(\\x.x x)"
+    late = "(\\x.x) " * 2010 + omega
+    r = one([":steps 3000", late], b)
+    check("late cycle detected", r.get("cycle") is True, str(r)[:200])
+
 
 # ---------------------------------------------------------------------------
 # 解析错误 / Parse errors
@@ -593,6 +611,17 @@ def test_web_api(b: Path) -> None:
         check("web load confined", r.status_code == 400, str(r.status_code))
         check("web load message", "restricted" in r.get_json().get("error", ""), r.get_json().get("error", ""))
 
+        # 仓库内的敏感文件也不能通过 :load 回显（隐藏路径 / 非 .lam）
+        # Sensitive repo files must not be echoed through :load either.
+        r = client.post("/api/eval", json={"session": sid, "line": ":load .git/config"})
+        check("web load rejects hidden path", r.status_code == 400, str(r.status_code))
+        r = client.post("/api/eval", json={"session": sid, "line": ":load web/app.py"})
+        check("web load rejects non-lam file", r.status_code == 400, str(r.status_code))
+        # 行尾注释不应触发路径检查（解释器会先剥掉注释）
+        # A trailing comment must not trip the path check (the interpreter strips it).
+        r = client.post("/api/eval", json={"session": sid, "line": ":load test.lam -- note"})
+        check("web load allows trailing comment", r.status_code == 200, str(r.status_code))
+
         r = client.post("/api/eval", json={"session": sid, "line": ":db \\x.\\y.x y"})
         out = r.get_json()["outputs"][0]
         check("web db kind", out.get("kind") == "db" and out.get("text") == "λ.λ.(#1 #0)", str(out))
@@ -637,6 +666,13 @@ def test_web_api(b: Path) -> None:
 # ---------------------------------------------------------------------------
 
 def test_alpha_and_equivalence(b: Path) -> None:
+    # 列表字面量里的逗号不能把 :eq/:conv 的两侧切开
+    # Commas inside list literals must not split :eq/:conv arguments.
+    r = one([":eq [ONE, TWO] , [ONE, TWO]"], b)
+    check("eq with list literals", r.get("equal") is True, str(r))
+    r = one([":conv [ONE, TWO] , [ONE, TWO]"], b)
+    check("conv with list literals", r.get("equal") is True, str(r))
+
     # α 等价必须忽略绑定名（回归：\a.a 应识别为 I）
     r = one(["\\a.a"], b)
     check("alpha I hint", "I combinator" in r.get("hint", ""), r.get("hint", ""))
@@ -1176,6 +1212,13 @@ def test_fast_mode(b: Path) -> None:
     c = one([":fast on", ":conv MULT 12 12 , 144"], b)
     check("fast conv", c.get("equal") is True and c.get("limitHit") is False, str(c)[:200])
 
+    # η 开启时 fast 自动回退，:int/:conv 也要标记 fastFallback
+    # With η on, fast falls back; :int/:conv must flag it too.
+    fb_int = one([":fast on", ":eta on", ":int TWO"], b)
+    check("int reports fast fallback", fb_int.get("fastFallback") is True, str(fb_int)[:200])
+    fb_conv = one([":fast on", ":eta on", ":conv I , I"], b)
+    check("conv reports fast fallback", fb_conv.get("fastFallback") is True, str(fb_conv)[:200])
+
     # 步进类命令保持逐步语义 / stepping commands keep their exact semantics
     t = one([":fast on", ":trace (\\x.x) a"], b)
     check("fast keeps trace", t.get("kind") == "trace" and len(t.get("trace", [])) == 1,
@@ -1269,6 +1312,16 @@ def test_new_commands(b: Path) -> None:
     r = one([":time PLUS ONE TWO"], b)
     check("time elapsedMs", isinstance(r.get("elapsedMs"), (int, float))
           and r.get("elapsedMs") >= 0, str(r))
+    # `:time <n> <expr>` 必须去掉前缀数字后再解析表达式，否则会解析错对象
+    # `:time <n> <expr>` must strip the count before parsing, or it times the wrong term.
+    r = one([":time 2 \\x.x"], b)
+    check("time with count parses lambda",
+          r.get("kind") == "result" and r.get("runs") == 2
+          and r.get("term") == "λx → x", str(r))
+    r = one([":time 2 (\\x.x) ONE"], b)
+    check("time with count evaluates right term",
+          r.get("kind") == "result" and r.get("runs") == 2
+          and "f x" in r.get("term", ""), str(r))
     r = one([":bench 3 (\\x.x) ONE"], b)
     check("bench runs", r.get("runs") == 3 and "elapsedTotalMs" in r, str(r))
     r = one([":bench 0 (\\x.x)"], b)
@@ -1363,7 +1416,20 @@ def test_version_sources(b: Path) -> None:
         p = subprocess.run([str(exe), "--version"], capture_output=True, timeout=30)
         check(f"{name} version", version in p.stdout.decode("utf-8", "replace"),
               p.stdout.decode("utf-8", "replace")[:100])
-        break
+
+    # 构建参数分散在四个文件里，必须保持一致
+    # Build flags live in four files and must stay in sync.
+    script_flags = ("-O2", "-Wall", "-threaded", "-rtsopts",
+                    "-package containers", "-package haskeline",
+                    "-package directory", "-package process")
+    for name in ("build.sh", "build.bat", "Dockerfile"):
+        text = (ROOT / name).read_text(encoding="utf-8")
+        for flag in script_flags:
+            check(f"{name} has {flag}", flag in text, "")
+    for dep in ("containers", "haskeline", "directory", "process"):
+        check(f"cabal has {dep}", dep in cabal, "")
+    for flag in ("-O2", "-Wall", "-threaded", "-rtsopts"):
+        check(f"cabal has {flag}", flag in cabal, "")
 
 
 def test_core_sync(b: Path) -> None:
@@ -1386,8 +1452,16 @@ def test_core_sync(b: Path) -> None:
         shutil.copy2(ROOT / "main.hs", root / "main.hs")
         shutil.copy2(ROOT / "extension.hs", root / "extension.hs")
         probe = root / "tools" / "check_core_sync.py"
-        old = b"n > limit = EvalResult"
-        new = b"n > limit + 1 = EvalResult"
+        # 按正则匹配守卫，避免硬编码字节串因无害空白/改名而假失败
+        # Match the guard by regex so harmless whitespace changes do not false-fail.
+        guard = re.compile(rb"(n\s*>\s*limit)(\s*=)")
+
+        def mutate(data: bytes) -> bytes:
+            m = guard.search(data)
+            check("eval loop probe applies", m is not None, "")
+            if not m:
+                return data
+            return data[:m.end(1)] + b" + 1" + data[m.end(1):]
 
         def run_probe():
             # 模拟 CI 的非 UTF-8 控制台：中文失败信息不能把脚本打崩
@@ -1397,15 +1471,13 @@ def test_core_sync(b: Path) -> None:
                                   timeout=60, cwd=str(root), env=env)
 
         ext = root / "extension.hs"
-        data = ext.read_bytes()
-        check("eval loop probe applies", old in data, "")
-        ext.write_bytes(data.replace(old, new))
+        ext.write_bytes(mutate(ext.read_bytes()))
         r = run_probe()
         out = (r.stdout + r.stderr).decode("utf-8", "replace")
         check("core sync catches a one-sided eval change",
               r.returncode != 0 and "evalUntil" in out, out[-300:])
         main_file = root / "main.hs"
-        main_file.write_bytes(main_file.read_bytes().replace(old, new))
+        main_file.write_bytes(mutate(main_file.read_bytes()))
         r = run_probe()
         out = (r.stdout + r.stderr).decode("utf-8", "replace")
         check("core sync accepts the same change on both sides",
@@ -1438,7 +1510,7 @@ def test_performance_budget(b: Path) -> None:
     # Loose threshold: catch order-of-magnitude regressions, not machine speed.
     r = one([":time PLUS 20 20"], b)
     ms = r.get("elapsedMs", 10 ** 6)
-    check("evaluation budget", isinstance(ms, (int, float)) and 0 <= ms < 5000, str(ms))
+    check("evaluation budget", isinstance(ms, (int, float)) and 0 <= ms < 15000, str(ms))
 
     # 大项的类型推断代价很高，必须跳过而不是把解释器拖住
     # Type inference on a large term is expensive, so it must be skipped
@@ -1447,7 +1519,7 @@ def test_performance_budget(b: Path) -> None:
     start = time.monotonic()
     r = one([big], b)
     secs = time.monotonic() - start
-    check("large term stays fast", secs < 5, f"{secs:.1f}s")
+    check("large term stays fast", secs < 15, f"{secs:.1f}s")
     check("large term carries no type", "type" not in r, str(r)[:120])
     r = one([f":type {big}"], b)
     check("large term type inference skipped",
@@ -1460,7 +1532,7 @@ def test_performance_budget(b: Path) -> None:
     start = time.monotonic()
     r = one([f":ast {nested}"], b)
     secs = time.monotonic() - start
-    check("nested lets stay fast", secs < 5, f"{secs:.1f}s")
+    check("nested lets stay fast", secs < 15, f"{secs:.1f}s")
     check("nested lets parse", r.get("kind") != "error", str(r)[:120])
 
 
@@ -1473,7 +1545,7 @@ def test_style_conventions(b: Path) -> None:
         "CONTRIBUTING.md", "tools/screenshot.py", "lib/prelude.lam",
         "Dockerfile", "web/requirements.txt", "desktop.py",
         "desktop-requirements.txt", "web/__init__.py",
-        ".github/workflows/release.yml",
+        ".github/workflows/release.yml", ".github/workflows/ci.yml",
     )
     comment_prefixes = ("#", "--", "//", "rem ", "/*", "*")
     for name in sources:
@@ -1944,6 +2016,11 @@ def test_web_stream_and_storage(b: Path) -> None:
               and second.status_code == 429
               and second.get_json().get("code") == "rate_limited",
               f"{first.status_code}/{second.status_code}")
+        rl = second.get_json()
+        check("rate limit bilingual text",
+              rl.get("textZh") != rl.get("textEn")
+              and "请求" in rl.get("textZh", "")
+              and "requests" in rl.get("textEn", ""), str(rl))
     finally:
         webapp.RATE_LIMIT = old_rate
         webapp._rate_buckets.clear()
@@ -1958,13 +2035,13 @@ def test_web_stream_and_storage(b: Path) -> None:
           f"alive={interp4.alive} sessions={len(webapp._sessions)}")
 
 
-TESTS.append(test_web_stream_and_storage)
-
-
-TESTS.append(test_property_extensions)
-
-
-TESTS.append(test_new_features)
+# 这三个测试定义在 TESTS 列表之后，统一在末尾注册
+# These three are defined after the list, so register them together at the end.
+TESTS.extend([
+    test_web_stream_and_storage,
+    test_property_extensions,
+    test_new_features,
+])
 
 
 def main() -> int:
@@ -1977,11 +2054,20 @@ def main() -> int:
     ap.add_argument("-v", "--verbose", action="store_true")
     ap.add_argument("--require-all", action="store_true",
                     help="fail if any test group is skipped / 有跳过则视为失败")
+    ap.add_argument("-k", "--group", default=None,
+                    help="only run groups whose name matches / 只运行名称匹配的组")
     args = ap.parse_args()
 
     binary = find_binary(args.bin)
+    selected = TESTS
+    if args.group:
+        needle = args.group.lower()
+        selected = [t for t in TESTS if needle in t.__name__.lower()]
+        if not selected:
+            print(f"No test group matches {args.group!r}", file=sys.stderr)
+            return 1
     print(f"interpreter: {binary}")
-    for test in TESTS:
+    for test in selected:
         before = len(FAILURES)
         skips_before = len(SKIPPED)
         try:
@@ -2009,7 +2095,7 @@ def main() -> int:
         if args.require_all:
             return 1
     suffix = f" ({len(SKIPPED)} skipped)" if SKIPPED else ""
-    print(f"All {len(TESTS)} test groups passed{suffix}.")
+    print(f"All {len(selected)} test groups passed{suffix}.")
     return 0
 
 

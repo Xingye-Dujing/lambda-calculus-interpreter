@@ -6,15 +6,17 @@
 import qualified Data.Map.Strict as Map
 import qualified Data.IntMap.Strict as IM
 import qualified Data.Set as Set
+import qualified Data.Sequence as Seq
 import Control.Applicative ((<|>))
-import Control.Exception (catch, evaluate, mask_, throwIO, SomeException, AsyncException(..))
+import Control.Exception (catch, mask_, throwIO, SomeException, IOException, AsyncException(..))
 import Control.Monad (void, when, unless, forM_, forM, guard, foldM, replicateM_, zipWithM_)
 import Control.Monad.IO.Class (liftIO)
 import Data.Char (isAlpha, isDigit, isSpace, ord, toLower)
 import Data.List (elemIndex, find, stripPrefix, isPrefixOf, isInfixOf, intercalate, foldl', sort)
 import Data.Maybe (fromMaybe)
 import Numeric (showHex, showFFloat)
-import System.Directory (getHomeDirectory)
+import System.Directory (getHomeDirectory, renameFile, removeFile)
+import System.IO.Error (isDoesNotExistError)
 import System.Environment (getArgs, lookupEnv)
 import System.Exit (exitFailure, exitSuccess)
 import System.IO
@@ -331,8 +333,8 @@ data EvalResult = EvalResult
 defaultLimit :: Int
 defaultLimit = 10000
 
--- 有界循环检测：只记住前若干步里的小项，避免为发散项白跑满步数
--- Bounded cycle detection: remember small whole terms for the first steps only,
+-- 有界循环检测：在最近 cycleCheckLimit 个小项里查找重复，避免发散项白跑满步数
+-- Bounded cycle detection: look for repeats in a rolling window of small terms,
 -- so a divergent term is reported instead of silently burning the step budget.
 cycleCheckLimit :: Int
 cycleCheckLimit = 2000
@@ -340,15 +342,26 @@ cycleCheckLimit = 2000
 cycleTermLimit :: Int
 cycleTermLimit = 400
 
+-- 手动归约轨迹上限：每个 :step 都保存整棵项，不能无限增长
+-- Cap for manual reduction: every :step stores a whole term, so it must be bounded.
+trailLimit :: Int
+trailLimit = 2000
+
 -- 求值循环：keepTrace 为 False 时不保留轨迹（省内存）
 -- Evaluation loop; with keepTrace=False the trace is dropped (saves memory).
 evalUntil :: Bool -> Bool -> Int -> Strategy -> (Expr -> Bool) -> Expr -> EvalResult
 evalUntil eta keepTrace limit strat done e0 =
-  loop 1 e0 [] (Set.singleton e0) False
+  loop 1 e0 [] (Set.singleton e0) (Seq.singleton (0, e0)) False
   where
-    loop !n e !acc !seen !cyc
-      | n > limit = EvalResult e (reverse acc) (n - 1) True cyc
+    loop !n e !acc !seen !window !cyc
       | done e    = EvalResult e (reverse acc) (n - 1) False cyc
+      -- 恰好用满步数且已无 redex 时不算命中上限
+      -- A normal term at the step limit is not a step-limit hit.
+      | n > limit =
+          let more = case stepFor eta strat e of
+                       Nothing -> False
+                       Just _  -> True
+          in EvalResult e (reverse acc) (n - 1) more cyc
       | otherwise = case stepFor eta strat e of
           Just s ->
             let e'   = soWhole s
@@ -356,10 +369,21 @@ evalUntil eta keepTrace limit strat done e0 =
                 acc' = if keepTrace && n <= traceLimit
                          then TraceStep n e e' (redRule red) (redNote red) : acc
                          else acc
-                track = n <= cycleCheckLimit && exprSize e' <= cycleTermLimit
+                -- 滚动窗口：在最近 cycleCheckLimit 个小项里找重复
+                -- Rolling window: look for repeats anywhere in the reduction.
+                track = not cyc && exprSize e' <= cycleTermLimit
                 cyc'  = cyc || (track && Set.member e' seen)
-                seen' = if track then Set.insert e' seen else seen
-            in loop (n + 1) e' acc' seen' cyc'
+                (seen', window') =
+                  if track && not cyc'
+                    then let w = window Seq.|> (n, e')
+                         in case Seq.viewl w of
+                              Seq.EmptyL -> (Set.insert e' seen, w)
+                              (_, old) Seq.:< rest
+                                | Seq.length w > cycleCheckLimit ->
+                                    (Set.insert e' (Set.delete old seen), rest)
+                                | otherwise -> (Set.insert e' seen, w)
+                    else (seen, window)
+            in loop (n + 1) e' acc' seen' window' cyc'
           Nothing -> EvalResult e (reverse acc) (n - 1) False cyc
 
 evalWith :: Bool -> Bool -> Int -> Strategy -> Expr -> EvalResult
@@ -447,7 +471,7 @@ force i = FastM $ \s -> case IM.lookup i (fsStore s) of
   Just (Thunk db env) -> case runFastM (evalDB env db) s of
     Left ()       -> Left ()
     Right (v, s') -> Right (v, s' { fsStore = IM.insert i (Done v) (fsStore s') })
-  Nothing             -> Right (FastFree "?", s)   -- 不可达 / unreachable
+  Nothing             -> Left ()  -- 内部错误，不伪造变量 / internal error, never fabricate a var
 
 toDB :: [String] -> Expr -> DB
 toDB bound (Var x)   = maybe (DFree x) DVar (elemIndex x bound)
@@ -458,7 +482,7 @@ evalDB :: [Int] -> DB -> FastM FastVal
 evalDB env (DVar i) =
   case drop i env of
     (t : _) -> force t
-    []      -> pure (FastFree "?")   -- 不可达 / unreachable
+    []      -> FastM $ \_ -> Left ()  -- 内部错误，不伪造变量 / internal error, never fabricate a var
 evalDB _   (DFree x)  = pure (FastFree x)
 evalDB env (DLam x b) = pure (FastLam x (\t -> evalDB (t : env) b))
 evalDB env (DApp f a) = do
@@ -1248,7 +1272,7 @@ parseCommand raw
     parseTime src =
       let txt = trim src
           numTxt = takeWhile (not . isSpace) txt
-          rest   = dropWhile isSpace txt
+          rest   = dropWhile (not . isSpace) txt
       in case reads numTxt :: [(Int, String)] of
            [(n, "")] | n > 0 && n <= 1000, not (null (trim rest)) ->
              case runParserFull parseExpr (trim rest) of
@@ -1308,22 +1332,39 @@ splitTypeAnnotation txt =
     step d ')' = max 0 (d - 1)
     step d _   = d
 
--- 用逗号分隔两个表达式；逗号不属于表达式语法
--- Two expressions separated by a comma (a comma cannot occur in an expression).
+-- 顶层逗号：列表字面量 [a, b] 内的逗号不能当作两侧分隔符
+-- Top-level comma: commas inside list literals must not split the pair.
+topComma :: String -> Maybe Int
+topComma = go 0 0 0
+  where
+    go :: Int -> Int -> Int -> String -> Maybe Int
+    go _ _ _ [] = Nothing
+    go i par brk (c:cs)
+      | c == '(' = go (i + 1) (par + 1) brk cs
+      | c == ')' = go (i + 1) (max 0 (par - 1)) brk cs
+      | c == '[' = go (i + 1) par (brk + 1) cs
+      | c == ']' = go (i + 1) par (max 0 (brk - 1)) cs
+      | c == ',' && par == 0 && brk == 0 = Just i
+      | otherwise = go (i + 1) par brk cs
+
+-- 用顶层逗号分隔两个表达式；列表字面量里的逗号不影响切分
+-- Split two expressions at a top-level comma; list literals may contain commas.
 parsePairIn :: String -> String -> Either ParseError (Expr, Expr)
 parsePairIn cmdName src =
-  case break (== ',') src of
-    (l, ',':r)
-      | null (trim l) || null (trim r) -> usage
-      | otherwise ->
-          case (runParserFull parseExpr (trim l), runParserFull parseExpr (trim r)) of
-            (Right a, Right b) -> Right (a, b)
-            (Left e, Right _)  -> Left e
-            (Right _, Left e)  -> Left e
-            (Left e1, Left e2) -> Left (ParseError 1
-              ( "左侧错误：" ++ fst (peMsg e1) ++ "；右侧错误：" ++ fst (peMsg e2)
-              , "left: " ++ snd (peMsg e1) ++ "; right: " ++ snd (peMsg e2) ))
-    _ -> usage
+  case topComma src of
+    Nothing -> usage
+    Just i ->
+      let l = take i src
+          r = drop (i + 1) src
+      in if null (trim l) || null (trim r)
+           then usage
+           else case (runParserFull parseExpr (trim l), runParserFull parseExpr (trim r)) of
+                  (Right a, Right b) -> Right (a, b)
+                  (Left e, Right _)  -> Left e
+                  (Right _, Left e)  -> Left e
+                  (Left e1, Left e2) -> Left (ParseError 1
+                    ( "左侧错误：" ++ fst (peMsg e1) ++ "；右侧错误：" ++ fst (peMsg e2)
+                    , "left: " ++ snd (peMsg e1) ++ "; right: " ++ snd (peMsg e2) ))
   where
     usage = Left (ParseError 1
       ( "用法：" ++ cmdName ++ " <表达式> , <表达式>"
@@ -2199,6 +2240,10 @@ applyLoadOutcome st out = st
   , rsLang     = fromMaybe (rsLang st) (loLang out)
   , rsFast     = fromMaybe (rsFast st) (loFast out)
   , rsEta      = fromMaybe (rsEta st) (loEta out)
+  -- 文件加载会改变环境，旧的手动归约轨迹不应继续沿用
+  -- A load changes the environment, so stale manual reduction state must go.
+  , rsCurrent  = Nothing
+  , rsTrail    = []
   }
 
 -- 可被解析器重新读取的源语法（与 pretty 的 → 不同）
@@ -2222,12 +2267,20 @@ sourceDef name e = case e of
   _ -> name ++ " = " ++ sourceExpr e
 
 writeFileUtf8 :: FilePath -> String -> IO (Either String ())
-writeFileUtf8 path text =
-  catch (withFile path WriteMode $ \h -> do
-           hSetEncoding h utf8
-           hPutStr h text
-           return (Right ()))
-        (\(e :: SomeException) -> return (Left (show e)))
+writeFileUtf8 path text = do
+  -- 先写同目录临时文件再原子改名，写入失败不会破坏已有文件
+  -- Write a sibling temp file, then rename atomically so failures keep the original.
+  let tmp = path ++ ".tmp"
+  catch (do
+      withFile tmp WriteMode $ \h -> do
+        hSetEncoding h utf8
+        hPutStr h text
+        hFlush h
+      renameFile tmp path
+      return (Right ()))
+    (\(e :: SomeException) -> do
+      catch (removeFile tmp) (\(_ :: SomeException) -> return ())
+      return (Left (show e)))
 
 -- ---------------------------------------------------------------------------
 -- 命令执行 Command Execution
@@ -2367,10 +2420,11 @@ emitConv st hit ok la lb = do
            else if ok then "beta-equivalent: " ++ la ++ "  ,  " ++ lb
            else "not beta-equivalent: " ++ la ++ "  ,  " ++ lb
   emitL st "conv" zh en
-    [ "equal"    .= JBool ok
-    , "limitHit" .= JBool hit
-    , "left"     .= JStr la
-    , "right"    .= JStr lb ]
+    ([ "equal"    .= JBool ok
+     , "limitHit" .= JBool hit
+     , "left"     .= JStr la
+     , "right"    .= JStr lb ]
+     ++ [ "fastFallback" .= JBool True | rsFast st && not (fastActive st) ])
 
 -- 单调时钟：纳秒精度，Windows 上也有可用的分辨率
 -- Monotonic clock: nanosecond resolution, including on Windows.
@@ -2386,14 +2440,19 @@ cpuMs act = do
   t1 <- nowMs
   return (x, t1 - t0)
 
--- 强制 pretty，确保整项真正被求值后才结束计时
--- Force pretty so the whole term is evaluated before the timer stops.
+-- 只强制 Expr 构造子，确保整项被求值但不把 pretty 格式化算进耗时
+-- Force only the Expr spine so timing measures evaluation, not formatting.
+forceExpr :: Expr -> IO ()
+forceExpr (Var _)   = return ()
+forceExpr (Lam _ b) = forceExpr b
+forceExpr (App f a) = forceExpr f >> forceExpr a
+
 forceTerm :: ReplState -> Expr -> IO (EvalResult, Int)
 forceTerm st e = do
   let res = evalWith (rsEta st) (rsJson st) (rsLimit st) (rsStrategy st)
                      (expandTop (rsEnv st) e)
-  n <- evaluate (length (pretty (erFinal res)))
-  return (res, n)
+  forceExpr (erFinal res)
+  return (res, 0)
 
 fmtMs :: Double -> String
 fmtMs d = showFFloat (Just 3) d ""
@@ -2815,8 +2874,9 @@ runCommand st (IntOf expr)
       case isChurchNumeral final of
         Just n | not (erLimitHit res) ->
           emit st "int" (show n)
-            [ "value" .= JNum (fromIntegral n)
-            , "term"  .= JStr (pretty final) ]
+            ([ "value" .= JNum (fromIntegral n)
+             , "term"  .= JStr (pretty final) ]
+             ++ [ "fastFallback" .= JBool True | rsFast st && not (fastActive st) ])
         Just _ -> emitL st "fail"
           "归约达到步数上限，无法确认邱奇数"
           "Step limit reached; cannot confirm a Church numeral" []
@@ -2876,7 +2936,15 @@ runCommand st (StepCmd mi) = case rsCurrent st of
                 , "Already in normal form: " ++ pretty e )
         emitL st (if mi == Nothing then "info" else "fail") zh en []
         return (Just st)
-      Just (StepOut whole red) -> do
+      Just (StepOut whole red)
+        | length (rsTrail st) >= trailLimit -> do
+            emitL st "fail"
+              ("手动归约轨迹已达上限 " ++ show trailLimit ++ " 步，请用 :run 或 :end 重置")
+              ("Manual reduction trail reached the " ++ show trailLimit
+               ++ "-step cap; use :run or :end to reset")
+              [ "code" .= JStr "trail_full" ]
+            return (Just st)
+        | otherwise -> do
         let stepNo = maybe "" (\i -> " #" ++ show i) mi
             trail' = whole : rsTrail st
         emit st "step" (pretty whole)
@@ -2984,7 +3052,7 @@ runCommand st (EditFile mpath) =
                              []      -> (editor, [])
           tryEditor exe args =
             catch (Right <$> callProcess exe (args ++ [path]))
-                  (\(e :: SomeException) -> return (Left (show e)))
+                  (\(e :: IOException) -> return (Left e))
       if null exe0
         then do
           emitL st "fail"
@@ -2996,13 +3064,13 @@ runCommand st (EditFile mpath) =
           -- string as an executable path (it may contain spaces).
           r0 <- tryEditor exe0 args0
           r <- case r0 of
-                 Left err | not (null args0) && "does not exist" `isInfixOf` err ->
+                 Left e | not (null args0) && isDoesNotExistError e ->
                    tryEditor editor []
                  _ -> return r0
           case r of
             Left err -> emitL st "fail"
-              ("无法启动编辑器 " ++ editor ++ "：" ++ err)
-              ("Could not start editor " ++ editor ++ ": " ++ err) []
+              ("无法启动编辑器 " ++ editor ++ "：" ++ show err)
+              ("Could not start editor " ++ editor ++ ": " ++ show err) []
             Right () -> emitL st "info"
               ("已用 " ++ editor ++ " 打开 " ++ path ++ "；用 :reload 重新加载。")
               ("Opened " ++ path ++ " with " ++ editor ++ "; use :reload to load it again.")
