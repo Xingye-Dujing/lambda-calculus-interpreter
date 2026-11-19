@@ -1,4 +1,15 @@
-# Changelog
+# 变更记录 / Changelog
+
+> 本文件主体为英文，最新版本附中文摘要。完整历史请继续阅读英文正文。
+> The body of this file is in English; the latest release also has a Chinese
+> summary above its English entry.
+
+## 最新版本中文摘要 / Latest release in Chinese
+
+### 2.2.3 — 2026-11-14
+
+- 修复：测试套件与核心同步工具现在无论控制台代码页如何都以 UTF-8 输出，
+  Windows CI（cp1252）打印中文失败详情时不再崩溃。
 
 ## 2.2.3 — 2026-11-14
 

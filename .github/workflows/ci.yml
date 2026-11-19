@@ -50,4 +50,4 @@ jobs:
         run: python -m pip install -r web/requirements.txt
 
       - name: End-to-end tests
-        run: python tests/run_tests.py
+        run: python tests/run_tests.py --require-all

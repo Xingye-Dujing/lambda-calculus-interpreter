@@ -231,6 +231,17 @@ jobs:
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "Publishing $tag"
 
+      - name: Verify tag matches VERSION
+        shell: bash
+        run: |
+          expected="v$(tr -d '\r\n' < VERSION)"
+          actual="${{ steps.tag.outputs.tag }}"
+          if [ "$actual" != "$expected" ]; then
+            echo "Release tag $actual does not match VERSION ($expected)" >&2
+            exit 1
+          fi
+          echo "Tag $actual matches VERSION"
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:

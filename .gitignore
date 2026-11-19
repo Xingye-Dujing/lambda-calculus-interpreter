@@ -68,10 +68,10 @@ desktop.ini
 .openchamber/
 
 # ---------------------------------------------------------------------------
-# 生成资源：宣传片、截图与输出 / Generated assets: video, screenshots, output
+# 生成资源：宣传片与输出 / Generated assets: video and output
+# 截图已随仓库提供，这里不再忽略 / Screenshots are committed, so do not ignore them
 # ---------------------------------------------------------------------------
 /video/
-/docs/screenshots/
 *.mp4
 /out/
 

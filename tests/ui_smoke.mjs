@@ -26,7 +26,7 @@ let script = match[1];
 const marker = "})();";
 const idx = script.lastIndexOf(marker);
 if (idx < 0) { console.error("IIFE end not found"); process.exit(1); }
-script = script.slice(0, idx) + "window.__test = { state: state, findBracketPair: findBracketPair, highlight: highlight, I18N: I18N, newSession: newSession, renderOutput: renderOutput, isStreamFailure: isStreamFailure, streamEval: streamEval, splitLogicalCommands: splitLogicalCommands };\n" + script.slice(idx);
+script = script.slice(0, idx) + "window.__test = { state: state, findBracketPair: findBracketPair, highlight: highlight, I18N: I18N, newSession: newSession, renderOutput: renderOutput, addErrorSnippet: addErrorSnippet, isStreamFailure: isStreamFailure, streamEval: streamEval, splitLogicalCommands: splitLogicalCommands, renderTrace: renderTrace, logicalCommandAt: logicalCommandAt };\n" + script.slice(idx);
 
 function makeEl(tag = "div") {
   const el = {
@@ -328,6 +328,38 @@ check("command palette wired", html.includes("Ctrl+K") || html.includes("ctrl+k"
 check("timing commands in UI", html.includes(":time") && html.includes(":bench"),
       ":time / :bench UI entries missing");
 check("cancel endpoint wired", html.includes("/cancel"), "cancel route missing");
+// kind=term 的结果行不能继承终端卡片 .term 的盒子 / a "term" result line must not inherit the .term card box
+check("term result line resets the card box",
+      /\.line\.term\{[^}]*flex-direction:row/.test(html)
+      && /\.line\.term\{[^}]*height:auto/.test(html)
+      && /\.line\.term\{[^}]*border:0/.test(html),
+      "the .line.term reset is missing");
+// P0 修复：SVG 填充变量、I18N 键唯一、取消按钮初始禁用、复制失败回退
+// P0 fixes: defined SVG fill var, unique I18N key, cancel disabled initially, copy fallback.
+check("--card is defined for the AST SVG fill", /--card\s*:/.test(html),
+      "--card CSS variable missing");
+check("copied I18N key is unique", (html.match(/\n\s*copied\s*:/g) || []).length === 1,
+      "duplicate copied I18N key");
+check("share uses copiedLink", html.includes('t("copiedLink")'),
+      "share link no longer uses copiedLink");
+check("cancel button starts disabled", /id="cancel-eval"[^>]*disabled/.test(html),
+      "cancel button is not disabled initially");
+check("cancel toggle helper exists", html.includes("function setCancelActive"),
+      "setCancelActive helper missing");
+check("copy failure restores via fallback",
+      html.includes("copyFailed:") && html.includes('toast(t("copyFailed"))'),
+      "copy failure fallback missing");
+// 阶段 2：Trace 删除高亮、历史持久化、运行当前逻辑命令
+// Stage 2: trace deletion highlight, history persistence, run-current-command.
+check("trace diff marks deletion", html.includes("<del>") && html.includes("</del>"),
+      "before row has no <del> highlight");
+check("history persisted locally", html.includes("history: state.history.slice(-100)"),
+      "command history not written to localStorage");
+check("history restored on boot", html.includes("saved.history"),
+      "command history not restored on boot");
+check("Ctrl/Cmd+Enter runs current command",
+      html.includes('e.key === "Enter" && (e.ctrlKey || e.metaKey)'),
+      "Ctrl/Cmd+Enter handler missing");
 check("IIFE end marker intact", script.includes("})();"), "IIFE marker missing");
 
 // 流式帧：解释器的 error 输出是普通结果，只有后端的流级失败才算失败
@@ -407,6 +439,44 @@ check("manual redex list is set", state.redexes.length === 1, String(state.redex
 renderOutput({ kind: "result", term: "x", redexes: [] }, "PLUS ONE TWO", false);
 check("manual redex list survives a plain result", state.redexes.length === 1,
       String(state.redexes.length));
+
+// 解析错误要给出错行与脱字符，而不是只把插入符丢在错误文字下面
+// A parse error must point at the failing source column, not under the message text.
+const snippet = sandbox.window.__test.addErrorSnippet(9, ":beigin 1");
+const snipMain = snippet.children[0];
+const snipSrc = snipMain.children[0];
+const snipCaret = snipMain.children[1];
+check("error snippet marks the source line", String(snippet.innerHTML).includes("↳"),
+      String(snippet.innerHTML));
+check("error snippet highlights the failing character",
+      snipSrc.children.some((c) => c.textContent === "1"), JSON.stringify(snipSrc.children.length));
+check("error snippet keeps the caret", snipCaret && snipCaret.textContent === "^",
+      snipCaret && String(snipCaret.textContent));
+check("error snippet caret is operable", snipCaret._attrs.role === "button"
+      && snipCaret._attrs.tabindex === "0", JSON.stringify(snipCaret._attrs));
+
+// Trace 前后对比同时标出删除与新增片段
+// The trace comparison highlights both the removed and inserted fragments.
+state.selected = {
+  term: "axc",
+  trace: [{ before: "abc", after: "axc", note: "beta" }]
+};
+state.tracePos = 0;
+const traceHtml = sandbox.window.__test.renderTrace();
+check("trace before has <del> of replaced fragment", traceHtml.includes("<del>b</del>"),
+      String(traceHtml).slice(0, 240));
+check("trace after has <ins> of replacement", traceHtml.includes("<ins>x</ins>"),
+      String(traceHtml).slice(0, 240));
+state.selected = null;
+
+// Ctrl/Cmd+Enter 只定位光标所在的逻辑命令
+// Ctrl/Cmd+Enter locates only the logical command under the caret.
+const seg = sandbox.window.__test.logicalCommandAt("PLUS ONE TWO\nI", 0);
+check("logicalCommandAt picks the first command", seg && seg.text === "PLUS ONE TWO",
+      JSON.stringify(seg));
+const seg2 = sandbox.window.__test.logicalCommandAt("PLUS ONE TWO\nI", 14);
+check("logicalCommandAt picks the second command", seg2 && seg2.text === "I",
+      JSON.stringify(seg2));
 
 if (failures.length) {
   console.error("FAILURES:\n  " + failures.join("\n  "));

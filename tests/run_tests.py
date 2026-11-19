@@ -53,11 +53,18 @@ ROOT = Path(__file__).resolve().parent.parent
 RS = "\x1e"  # 批处理模式每条命令后的记录分隔符 / record separator
 
 FAILURES: list[str] = []
+SKIPPED: list[str] = []
 
 
 def check(name: str, ok: bool, detail: str = "") -> None:
     if not ok:
         FAILURES.append(f"{name}: {detail}" if detail else name)
+
+
+def skip(reason: str) -> None:
+    # 依赖缺失导致的跳过必须显式可见，不能被当成 PASS 掩盖
+    # A missing dependency must be reported as a skip, never as a silent PASS.
+    SKIPPED.append(reason)
 
 
 def find_binary(explicit: str | None = None) -> Path:
@@ -562,7 +569,8 @@ def test_web_api(b: Path) -> None:
     try:
         import flask  # noqa: F401
     except ImportError:
-        return  # 未安装 Flask 时跳过 / skip when Flask is not installed
+        skip("test_web_api: Flask is not installed")
+        return
     import sys as _sys
     web_dir = str(ROOT / "web")
     if web_dir not in _sys.path:
@@ -889,6 +897,15 @@ def test_cli_options(b: Path) -> None:
     check("missing lang value fails", p.returncode != 0, str(p.returncode))
     p = subprocess.run([str(b), "--timeout=abc"], capture_output=True, timeout=30)
     check("bad timeout fails", p.returncode != 0, str(p.returncode))
+    # 空格形式的非法开关值必须报错，不能被静默当成文件名
+    # Invalid space-form switch values must fail, not be swallowed as filenames.
+    p = subprocess.run([str(b), "--eta", "yes", "--json", "--eval", "I"], capture_output=True, timeout=30)
+    check("bad --eta value fails", p.returncode != 0, str(p.returncode))
+    p = subprocess.run([str(b), "--fast", "yes", "--json", "--eval", "I"], capture_output=True, timeout=30)
+    check("bad --fast value fails", p.returncode != 0, str(p.returncode))
+    p = subprocess.run([str(b), "--eta", "on", "--json", "--eval", "I"], capture_output=True, timeout=30)
+    check("--eta on still works", p.returncode == 0 and b'"kind":"result"' in p.stdout,
+          p.stdout.decode("utf-8", "replace")[:200])
 
     omega = "((\\x.x x)(\\x.x x))"
     p = subprocess.run(
@@ -921,6 +938,7 @@ def test_web_extras(b: Path) -> None:
     try:
         import flask  # noqa: F401
     except ImportError:
+        skip("test_web_extras: Flask is not installed")
         return
     import sys as _sys
     web_dir = str(ROOT / "web")
@@ -1197,7 +1215,8 @@ def test_fast_mode(b: Path) -> None:
 def test_web_ui_state(b: Path) -> None:
     node = shutil.which("node")
     if not node:
-        return  # 未安装 Node 时跳过 / skip when Node is unavailable
+        skip("test_web_ui_state: Node is not installed")
+        return
     proc = subprocess.run(
         [node, str(ROOT / "tests" / "ui_smoke.mjs")],
         capture_output=True, timeout=60, cwd=str(ROOT),
@@ -1225,6 +1244,19 @@ def test_let_and_annotations(b: Path) -> None:
     check("annotation matches", r.get("matches") is True, str(r))
     r = one([":type \\x.x : a -> b"], b)
     check("annotation mismatch", r.get("matches") is False, str(r))
+    # 内建具体类型：可实例化的标注给出提示，无关的构造子则明确拒绝
+    # Built-in concrete types: an instantiable annotation is reported as such.
+    r = one([":type \\x.x : Int -> Int"], b)
+    check("concrete annotation is an instance",
+          r.get("matches") is False and r.get("instantiable") is True
+          and r.get("expected") == "Int → Int", str(r))
+    r = one([":type \\f.\\x.f (f x) : (Int -> Int) -> Int -> Int"], b)
+    check("church annotation is an instance",
+          r.get("matches") is False and r.get("instantiable") is True, str(r))
+    r = one([":type \\x.x : List Int"], b)
+    check("unrelated constructor rejected",
+          r.get("matches") is False and r.get("instantiable") is False
+          and r.get("expected") == "List Int", str(r))
     r = one([":type \\x.x"], b)
     check("type lists free vars", r.get("freeVars") == [], str(r))
     r = one(["PLUS ONE TWO -- 加法"], b)
@@ -1467,7 +1499,8 @@ def test_web_21(b: Path) -> None:
     try:
         import flask  # noqa: F401
     except ImportError:
-        return  # 未安装 Flask 时跳过 / skip when Flask is unavailable
+        skip("test_web_21: Flask is not installed")
+        return
     import sys as _sys
     web_dir = str(ROOT / "web")
     if web_dir not in _sys.path:
@@ -1654,6 +1687,12 @@ def test_new_features(b: Path) -> None:
     check("--max-term-size accepts a small term",
           p.returncode == 0 and b'"value":3' in p.stdout,
           p.stdout.decode("utf-8", "replace")[:200])
+    # :church 直接构造大项，也必须受节点上限约束
+    # :church builds a large term directly and must respect the node cap too.
+    p = run_cli("--max-term-size", "50", "--json", "--eval", ":church 9999", "--lang", "en")
+    check("--max-term-size bounds :church",
+          p.returncode == 0 and b"term_too_large" in p.stdout,
+          p.stdout.decode("utf-8", "replace")[:200])
 
     # --max-term-size 也必须约束 :load，而不是只约束 REPL 输入
     # --max-term-size must also bound :load, not just REPL input.
@@ -1789,6 +1828,7 @@ def test_web_stream_and_storage(b: Path) -> None:
     try:
         import flask  # noqa: F401
     except ImportError:
+        skip("test_web_stream_and_storage: Flask is not installed")
         return
     import sys as _sys
     web_dir = str(ROOT / "web")
@@ -1935,12 +1975,15 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="λ calculus interpreter regression tests")
     ap.add_argument("--bin", default=None, help="extension 可执行文件路径 / path to extension")
     ap.add_argument("-v", "--verbose", action="store_true")
+    ap.add_argument("--require-all", action="store_true",
+                    help="fail if any test group is skipped / 有跳过则视为失败")
     args = ap.parse_args()
 
     binary = find_binary(args.bin)
     print(f"interpreter: {binary}")
     for test in TESTS:
         before = len(FAILURES)
+        skips_before = len(SKIPPED)
         try:
             if test is test_main_binary:
                 test()
@@ -1949,6 +1992,8 @@ def main() -> int:
         except Exception as exc:  # noqa: BLE001
             FAILURES.append(f"{test.__name__}: raised {type(exc).__name__}: {exc}")
         status = "PASS" if len(FAILURES) == before else "FAIL"
+        if len(SKIPPED) > skips_before:
+            status = "SKIP"
         print(f"  [{status}] {test.__name__}")
 
     print()
@@ -1957,7 +2002,14 @@ def main() -> int:
         for f in FAILURES:
             print(f"  - {f}")
         return 1
-    print(f"All {len(TESTS)} test groups passed.")
+    if SKIPPED:
+        print(f"{len(SKIPPED)} test group(s) skipped / 跳过的测试组:")
+        for s in SKIPPED:
+            print(f"  - {s}")
+        if args.require_all:
+            return 1
+    suffix = f" ({len(SKIPPED)} skipped)" if SKIPPED else ""
+    print(f"All {len(TESTS)} test groups passed{suffix}.")
     return 0
 
 

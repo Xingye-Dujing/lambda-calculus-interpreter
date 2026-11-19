@@ -15,7 +15,7 @@
   .lam{font-family:'APL385 Unicode',var(--mono);}
   :root{
     color-scheme: light;
-    --bg:#fafaf8; --paper:#ffffff; --term-bg:#ffffff;
+    --bg:#fafaf8; --paper:#ffffff; --card:#ffffff; --term-bg:#ffffff;
     --text:#141518; --dim:#5c5f66; --faint:#5f626a;
     --border:rgba(20,21,24,.14); --border-strong:rgba(20,21,24,.46);
     --hover:rgba(20,21,24,.045);
@@ -30,7 +30,7 @@
   }
   html[data-theme="dark"]{
     color-scheme: dark;
-    --bg:#0b0c0e; --paper:#0e0f11; --term-bg:#0b0c0e;
+    --bg:#0b0c0e; --paper:#0e0f11; --card:#0e0f11; --term-bg:#0b0c0e;
     --text:#e8e9ec; --dim:#b6b9c0; --faint:#9a9ea7;
     --border:rgba(255,255,255,.13); --border-strong:rgba(255,255,255,.44);
     --hover:rgba(255,255,255,.05);
@@ -86,6 +86,9 @@
   .term-body{flex:1;min-height:0;display:flex;flex-direction:column;padding:12px 14px 10px;}
   .term-out{flex:1;min-height:0;max-height:none;overflow-y:auto;font-family:var(--mono);font-size:13.5px;line-height:1.75;white-space:pre-wrap;word-break:break-word;padding-right:6px;}
   .line{margin:2px 0;display:flex;gap:8px;align-items:flex-start;}
+  /* 结果行的 kind=term 与终端卡片 .term 同名，这里恢复成普通行 / a "term" result line must not inherit the .term card box */
+  .line.term{display:flex;flex-direction:row;height:auto;min-height:0;gap:8px;align-items:flex-start;
+    background:transparent;border:0;border-radius:0;overflow:visible;}
   .line-main{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px;}
   .line .body{min-width:0;white-space:pre-wrap;word-break:break-word;}
   .line-acts{display:flex;flex-wrap:wrap;gap:6px;align-items:center;}
@@ -101,11 +104,18 @@
   .line.info .body{color:var(--info);}
   .mark{flex:none;font-weight:600;user-select:none;}
   .meta{font-size:10.5px;color:var(--faint);border:1px solid var(--border);border-radius:var(--radius);padding:0 6px;white-space:nowrap;background:transparent;}
+  .line-main > .meta{align-self:flex-start;}
   .line .act{font-family:var(--mono);font-size:10.5px;color:var(--dim);background:transparent;border:1px solid var(--border);border-radius:var(--radius);padding:0 7px;cursor:pointer;opacity:0;transition:opacity .12s,color .12s,border-color .12s;}
   .line:hover .act,.line.sel .act{opacity:1;}
   .line .act:hover{color:var(--text);border-color:var(--border-strong);}
   .line.sel{background:var(--hover);border-radius:var(--radius);}
-  .caret{color:var(--err);font-family:var(--mono);white-space:pre;}
+  /* 解析错误的定位片段：出错行 + 脱字符 / parse-error snippet: the failing line plus a caret */
+  .err-snip{color:var(--dim);margin:0 0 2px;}
+  .err-src{color:var(--dim);}
+  .err-ch{color:var(--err);border-bottom:2px solid var(--err);}
+  .err-caret{color:var(--err);font-family:var(--mono);white-space:pre;cursor:pointer;user-select:none;
+    align-self:flex-start;border-radius:var(--radius);}
+  .err-caret:hover,.err-caret:focus-visible{color:var(--text);background:var(--hover);outline:none;}
   .term-line{flex:none;display:flex;align-items:flex-start;gap:9px;margin-top:10px;font-family:var(--mono);font-size:13.5px;border-top:1px solid var(--border);padding-top:11px;}
   .prompt{color:var(--prompt);flex:none;user-select:none;font-weight:600;padding-top:2px;}
   .input-wrap{flex:1;min-width:0;position:relative;
@@ -134,8 +144,6 @@
   .tok-paren{color:var(--dim);}
   .tok-var{color:var(--text);}
   .tok-paren-match{color:var(--accent);background:var(--sel);border-radius:2px;font-weight:600;}
-  .caret.clickable{cursor:pointer;text-decoration:underline dotted;text-underline-offset:3px;}
-  .caret.clickable:hover{color:var(--text);}
   #cancel-eval{flex:none;align-self:flex-start;margin-top:1px;font-family:var(--mono);font-size:11px;
     color:var(--dim);background:transparent;border:1px solid var(--border);border-radius:var(--radius);
     padding:4px 9px;cursor:pointer;white-space:nowrap;}
@@ -425,7 +433,7 @@
             </div>
             <div class="ac" id="ac" role="listbox"></div>
           </div>
-          <button class="mini" id="cancel-eval" type="button">取消 / cancel</button>
+          <button class="mini" id="cancel-eval" type="button" disabled>取消 / cancel</button>
         </div>
         <div class="status">
           <span><b id="st-strategy">applicative</b></span>
@@ -534,7 +542,7 @@
     before:  {zh:"归约前", en:"before"}, after:{zh:"归约后", en:"after"},
     step:    {zh:"第", en:"step"}, of:{zh:"步，共", en:"of"},
     shareOk: {zh:"链接已复制到地址栏", en:"Link is in the address bar"},
-    copied:  {zh:"已复制链接", en:"Link copied"},
+    copiedLink:{zh:"已复制链接", en:"Link copied"},
     importOk:{zh:"已导入", en:"Imported"},
     del:     {zh:"删除", en:"del"},
     run:     {zh:"运行", en:"run"},
@@ -552,6 +560,7 @@
     exportJson:{zh:"导出 JSON", en:"export JSON"},
     exportTex:{zh:"导出 LaTeX", en:"export LaTeX"},
     copied:  {zh:"已复制", en:"Copied"},
+    copyFailed:{zh:"复制失败", en:"Copy failed"},
     saveName:{zh:"给结果起个名字", en:"name this result"},
     redexHint:{zh:"可归约位置：点击任一项直接归约", en:"Redexes: click one to contract it"},
     redexNone:{zh:"已没有可归约位置。", en:"No redexes left."},
@@ -680,6 +689,12 @@
   var root = document.documentElement;
   var hl = $("hl"), gutter = $("gutter");
   var activeController = null;  // 进行中的 eval 请求 / in-flight eval request
+  // 取消按钮只在有进行中的请求时可用，避免空闲点击触发无意义的会话重建
+  // Keep the cancel button disabled unless a request is actually in flight.
+  function setCancelActive(on){
+    var b = $("cancel-eval");
+    if (b) b.disabled = !on;
+  }
   var dialogOpen = false;       // 是否有弹窗打开 / whether a dialog is open
   var edHist = [""], edHistIdx = 0;  // 编辑器输入撤销栈 / editor input undo history
 
@@ -1003,7 +1018,8 @@
     try {
       localStorage.setItem(LS, JSON.stringify({
         lang: state.lang, theme: state.theme, strategy: $("strategy").value,
-        limit: state.limit, eta: state.eta, fast: state.fast, code: state.codeLines
+        limit: state.limit, eta: state.eta, fast: state.fast, code: state.codeLines,
+        history: state.history.slice(-100)
       }));
     } catch(e){}
   }
@@ -1094,12 +1110,97 @@
     return d;
   }
 
+  // 解析错误定位：显示出错的那一行，并在对应列下画脱字符
+  // Parse errors: show the failing line and put the caret under the reported column.
+  function addErrorSnippet(pos, source){
+    var text = String(source || "");
+    var at = Math.max(1, Number(pos) || 1);
+    var lines = text.split("\n");
+    var start = 0, row = 0;
+    for (var i = 0; i < lines.length; i++){
+      if (at <= start + lines[i].length || i === lines.length - 1){ row = i; break; }
+      start += lines[i].length + 1;
+    }
+    var lineText = lines[row] || "";
+    var col = Math.min(Math.max(1, at - start), lineText.length + 1);
+    var before = lineText.slice(0, col - 1);
+    var hitChar = lineText.charAt(col - 1);
+    var after = lineText.slice(col);
+
+    var d = elem("div", "line err-snip");
+    d.innerHTML = '<span class="mark">↳</span>';
+    var main = elem("div", "line-main");
+    var src = elem("span", "body err-src");
+    var pre = elem("span", "err-pre");
+    pre.textContent = before;
+    src.appendChild(pre);
+    if (hitChar){
+      var hit = elem("span", "err-ch");
+      hit.textContent = hitChar;
+      src.appendChild(hit);
+    }
+    if (after){
+      var post = elem("span", "err-post");
+      post.textContent = after;
+      src.appendChild(post);
+    }
+    main.appendChild(src);
+
+    var caret = elem("span", "err-caret");
+    caret.textContent = "^";
+    caret.title = t("gotoErr");
+    caret.setAttribute("role", "button");
+    caret.setAttribute("tabindex", "0");
+    function pick(){
+      cmd.value = text;
+      if (cmd.setSelectionRange){
+        var c = Math.min(Math.max(0, at - 1), cmd.value.length);
+        cmd.setSelectionRange(c, c);
+      }
+      if (cmd.focus) cmd.focus();
+      pushEditor(cmd.value);
+      syncEditor();
+    }
+    caret.addEventListener("click", pick);
+    caret.addEventListener("keydown", function(e){
+      if (e.key === "Enter" || e.key === " "){ e.preventDefault(); pick(); }
+    });
+    main.appendChild(caret);
+    d.appendChild(main);
+    out.appendChild(d);
+    // 用实际宽度对齐：中英文与制表符的宽度不同，不能靠空格数猜
+    // Align by measured width: CJK glyphs and tabs are not one column per character.
+    (function align(){
+      var w = pre.getBoundingClientRect ? pre.getBoundingClientRect().width : 0;
+      var room = Number(out.clientWidth) || 0;
+      var max = room > 0 ? room - 32 : w;
+      caret.style.paddingLeft = Math.max(0, Math.min(w || 0, max)) + "px";
+    })();
+    return d;
+  }
+
   function copyText(text){
+    var ok = function(){ toast(t("copied")); };
+    // 剪贴板 API 不可用时退回 execCommand，再失败就如实报错
+    // Fall back to execCommand when the clipboard API is unavailable or rejects.
+    var fallback = function(){
+      try {
+        var ta = document.createElement("textarea");
+        ta.value = String(text);
+        ta.setAttribute("readonly", "");
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        if (ta.select) ta.select();
+        var done = document.execCommand && document.execCommand("copy");
+        document.body.removeChild(ta);
+        toast(done ? t("copied") : t("copyFailed"));
+      } catch(e){ toast(t("copyFailed")); }
+    };
     if (navigator.clipboard && navigator.clipboard.writeText){
-      navigator.clipboard.writeText(text).then(function(){ toast(t("copied")); },
-                                               function(){ toast(t("copied")); });
+      navigator.clipboard.writeText(text).then(ok, fallback);
     } else {
-      toast(t("copied"));
+      fallback();
     }
   }
 
@@ -1260,26 +1361,7 @@
       var codeMeta = obj.code ? String(obj.code) : null;
       var d = addLine("error", objText(obj), codeMeta, source, obj.textZh, obj.textEn);
       if (obj.code) d.title = t("errCode") + ": " + String(obj.code);
-      if (obj.pos != null && source){
-        var caret = elem("div", "line");
-        caret.innerHTML = '<span class="mark"></span><span class="caret clickable"></span>';
-        var cspan = caret.querySelector(".caret");
-        cspan.textContent = " ".repeat(Math.max(0, obj.pos + 3)) + "^";
-        cspan.title = t("gotoErr");
-        if (cspan.setAttribute) cspan.setAttribute("role", "button");
-        // 点击把出错文本放回输入框并定位光标 / restore the line and place the caret
-        cspan.addEventListener("click", function(){
-          cmd.value = source;
-          if (cmd.setSelectionRange){
-            var col = Math.min(Math.max(0, obj.pos - 1), cmd.value.length);
-            cmd.setSelectionRange(col, col);
-          }
-          if (cmd.focus) cmd.focus();
-          pushEditor(cmd.value);
-          syncEditor();
-        });
-        out.appendChild(caret);
-      }
+      if (obj.pos != null && source) addErrorSnippet(obj.pos, source);
       return;
     }
     if (obj.kind === "fail" || obj.kind === "info" || obj.kind === "define" || obj.kind === "step" || obj.kind === "term"){
@@ -1429,7 +1511,10 @@
     }
     html += '<div class="note">' + esc(st.note || ("β " + (i + 1))) + '</div>';
     html += '<div class="cmp">';
-    html += '<div class="row"><span class="lab">' + esc(t("before")) + '</span>' + esc(st.before) + '</div>';
+    // 归约前标出被替换的片段，归约后标出新增的片段，让一步 β 的改写一目了然
+    // Mark the replaced fragment before and the inserted fragment after, so one beta step is obvious.
+    html += '<div class="row"><span class="lab">' + esc(t("before")) + '</span>' +
+            esc(d.pre) + (d.aMid ? '<del>' + esc(d.aMid) + '</del>' : '') + esc(d.suf) + '</div>';
     html += '<div class="row"><span class="lab">' + esc(t("after")) + '</span>' +
             esc(d.pre) + (d.bMid ? '<ins>' + esc(d.bMid) + '</ins>' : '') + esc(d.suf) + '</div>';
     html += '</div>';
@@ -1968,21 +2053,26 @@
     if (typeof AbortController !== "undefined"){
       controller = new AbortController();
       activeController = controller;
+      setCancelActive(true);
     }
     var r = null;
-    if (canStream()){
-      try {
-        r = await streamEval(line, controller ? controller.signal : undefined);
-      } catch(e){
-        if (controller && controller.signal && controller.signal.aborted) return [];
-        r = null;
+    try {
+      if (canStream()){
+        try {
+          r = await streamEval(line, controller ? controller.signal : undefined);
+        } catch(e){
+          if (controller && controller.signal && controller.signal.aborted) return [];
+          r = null;
+        }
       }
+      if (!r){
+        r = await api("api/eval", {session: state.session, line: line, lang: state.lang},
+                      null, controller ? controller.signal : undefined);
+      }
+    } finally {
+      if (activeController === controller) activeController = null;
+      if (controller) setCancelActive(false);
     }
-    if (!r){
-      r = await api("api/eval", {session: state.session, line: line, lang: state.lang},
-                    null, controller ? controller.signal : undefined);
-    }
-    if (activeController === controller) activeController = null;
     // 被取消的请求不再渲染错误 / a cancelled request renders nothing
     if (controller && controller.signal && controller.signal.aborted) return [];
     // 清空/重建后，旧请求的结果不能再改动会话或界面
@@ -2409,6 +2499,27 @@
     if (cur != null) out.push(cur);
     return out;
   }
+  // 光标所在的逻辑命令范围：Ctrl/Cmd+Enter 只执行这一段，其余保留在输入框
+  // The logical command under the caret: Ctrl/Cmd+Enter runs just this segment.
+  function logicalCommandAt(text, pos){
+    var s = String(text == null ? "" : text);
+    var lines = s.split(/\r?\n/);
+    var offsets = [], acc = 0;
+    for (var i = 0; i < lines.length; i++){ offsets.push(acc); acc += lines[i].length + 1; }
+    var at = Math.max(0, Math.min(Number(pos) || 0, s.length));
+    var row = 0;
+    for (var i = 0; i < lines.length; i++){
+      if (at <= offsets[i] + lines[i].length){ row = i; break; }
+      row = i;
+    }
+    var start = row;
+    while (start > 0 && needsContinuation(lines[start - 1])) start--;
+    var end = row;
+    while (end < lines.length - 1 && needsContinuation(lines[end])) end++;
+    var startOff = offsets[start];
+    var endOff = end < lines.length - 1 ? offsets[end + 1] - 1 : offsets[end] + lines[end].length;
+    return { start: startOff, end: endOff, text: s.slice(startOff, endOff) };
+  }
   // 命令面板复用 dialog 的 list 模式 / the palette reuses dialog's list mode
   function openCommandPalette(){
     return dialog({
@@ -2442,6 +2553,25 @@
       if (e.key === "Tab" || e.key === "Enter"){ e.preventDefault(); acceptAc(); return; }
       if (e.key === "Escape"){ closeAc(); return; }
     }
+    // Ctrl/Cmd+Enter 只运行当前逻辑命令；Shift+Enter 仍然是插入换行
+    // Ctrl/Cmd+Enter runs the current logical command; Shift+Enter still inserts a newline.
+    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)){
+      e.preventDefault();
+      var seg = logicalCommandAt(cmd.value,
+        cmd.selectionStart == null ? cmd.value.length : cmd.selectionStart);
+      var one = seg.text.trim();
+      if (!one) return;
+      cmd.value = (cmd.value.slice(0, seg.start) + cmd.value.slice(seg.end)).replace(/^\n/, "");
+      cmd.style.height = "auto";
+      pushEditor(cmd.value);
+      syncEditor();
+      state.history.push(one);
+      if (state.history.length > 100) state.history.shift();
+      state.hIdx = state.history.length;
+      saveLocal();
+      exec(one);
+      return;
+    }
     if (e.key === "Enter" && !e.shiftKey){
       e.preventDefault();
       var v = cmd.value;
@@ -2451,6 +2581,7 @@
       syncEditor();
       if (v.trim()) state.history.push(v);
       state.hIdx = state.history.length;
+      saveLocal();
       // 与命令行一致：未闭合的括号或行尾反斜杠表示续行，多行输入按一条命令发送
       // Like the CLI, an unclosed bracket or a trailing backslash continues the
       // line, so a multi-line term is sent as one command.
@@ -2720,7 +2851,7 @@
   async function copyShareUrl(url){
     try { history.replaceState(null, "", url.slice(url.indexOf("#"))); } catch(e){}
     if (navigator.clipboard){
-      try { await navigator.clipboard.writeText(url); toast(t("copied")); }
+      try { await navigator.clipboard.writeText(url); toast(t("copiedLink")); }
       catch(e){ toast(t("shareOk")); }
     } else toast(t("shareOk"));
   }
@@ -2919,6 +3050,12 @@
       }
       if (Array.isArray(saved.code)) {
         state.codeLines = saved.code.filter(function(x){ return typeof x === "string"; });
+      }
+      // 命令历史随界面状态一起持久化，刷新后仍可用上下方向键找回
+      // Persist command history with the UI state so Up/Down survives a reload.
+      if (Array.isArray(saved.history)) {
+        state.history = saved.history.filter(function(x){ return typeof x === "string"; }).slice(-100);
+        state.hIdx = state.history.length;
       }
     }
     // 首次访问默认浅色；之后沿用用户保存的主题

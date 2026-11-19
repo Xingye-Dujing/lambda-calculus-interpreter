@@ -8,7 +8,7 @@ import qualified Data.IntMap.Strict as IM
 import qualified Data.Set as Set
 import Control.Applicative ((<|>))
 import Control.Exception (catch, evaluate, mask_, throwIO, SomeException, AsyncException(..))
-import Control.Monad (void, when, unless, forM_, forM, guard, foldM, replicateM_)
+import Control.Monad (void, when, unless, forM_, forM, guard, foldM, replicateM_, zipWithM_)
 import Control.Monad.IO.Class (liftIO)
 import Data.Char (isAlpha, isDigit, isSpace, ord, toLower)
 import Data.List (elemIndex, find, stripPrefix, isPrefixOf, isInfixOf, intercalate, foldl', sort)
@@ -475,7 +475,7 @@ quoteFast _ bound (FastGen i) =
   let n = length bound
   in if i < n
        then pure (Var (bound !! (n - 1 - i)))
-       else pure (Var ("#" ++ show i))
+       else pure (Var ("gen" ++ show i))
 quoteFast _ _ (FastFree x) = pure (Var x)
 quoteFast avoid bound (FastApp f t) =
   App <$> quoteFast avoid bound f <*> (force t >>= quoteFast avoid bound)
@@ -1344,15 +1344,20 @@ parseOnOff raw = case map lower (trim raw) of
 -- ---------------------------------------------------------------------------
 -- 简单类型推断 Simple Type Inference (Hindley–Milner)
 -- ---------------------------------------------------------------------------
-data Ty = TVar String | TArr Ty Ty deriving (Eq)
+-- TCon 表示具体类型构造子：Int / Bool 为零元，List T 带一个参数
+-- TCon is a concrete type constructor: Int/Bool are nullary, List T takes one.
+data Ty = TVar String | TArr Ty Ty | TCon String [Ty] deriving (Eq)
 
 prettyTy :: Ty -> String
 prettyTy t = go 0 t ""
   where
     go :: Int -> Ty -> ShowS
-    go _ (TVar v)   = showString v
-    go p (TArr a b) = showParen (p > 0)
+    go _ (TVar v)    = showString v
+    go p (TArr a b)  = showParen (p > 0)
       (go 1 a . showString " → " . go 0 b)
+    go _ (TCon n []) = showString n
+    go p (TCon n as) = showParen (p > 0)
+      (showString n . foldr (\a r -> showString " " . go 2 a . r) id as)
 
 normalizeNames :: Ty -> Ty
 normalizeNames t = fst (go t Map.empty)
@@ -1365,10 +1370,15 @@ normalizeNames t = fst (go t Map.empty)
       let (a', m1) = go a m
           (b', m2) = go b m1
       in (TArr a' b', m2)
+    go (TCon n as) m =
+      let step (xs, mm) a = let (a', mm') = go a mm in (xs ++ [a'], mm')
+          (as', m') = foldl' step ([], m) as
+      in (TCon n as', m')
 
 freeTyVars :: Ty -> Set.Set String
-freeTyVars (TVar v)   = Set.singleton v
-freeTyVars (TArr a b) = freeTyVars a `Set.union` freeTyVars b
+freeTyVars (TVar v)    = Set.singleton v
+freeTyVars (TArr a b)  = freeTyVars a `Set.union` freeTyVars b
+freeTyVars (TCon _ as) = Set.unions (map freeTyVars as)
 
 -- 把内部类型变量名（_seed_n）改写为 t0/t1，方便阅读
 -- Rewrite internal type variable names (_seed_n) to t0/t1 for readability.
@@ -1415,7 +1425,13 @@ parseTyText s =
           spaces
           _ <- char ')'
           return t)
-      <++ (TVar <$> munch1 (\c -> isAlpha c || isDigit c || c `elem` ("_'" :: String)))
+      <++ (do n <- munch1 (\c -> isAlpha c || isDigit c || c `elem` ("_'" :: String))
+              spaces
+              case n of
+                "Int"  -> return (TCon "Int" [])
+                "Bool" -> return (TCon "Bool" [])
+                "List" -> TCon "List" . (:[]) <$> tyP
+                _      -> return (TVar n))
 
 data Scheme = Forall [String] Ty
 
@@ -1469,6 +1485,7 @@ applySub (TVar a) = do
       extendSub a t'
       return t'
 applySub (TArr a b) = TArr <$> applySub a <*> applySub b
+applySub (TCon n as) = TCon n <$> mapM applySub as
 
 occursIn :: String -> Ty -> TI Bool
 occursIn a t = do
@@ -1476,6 +1493,7 @@ occursIn a t = do
   case t' of
     TVar b        -> return (a == b)
     TArr x y      -> (||) <$> occursIn a x <*> occursIn a y
+    TCon _ as     -> or <$> mapM (occursIn a) as
 
 unify :: Ty -> Ty -> TI ()
 unify t1 t2 = do
@@ -1487,11 +1505,14 @@ unify t1 t2 = do
       putState st { tiSteps = tiSteps st + 1 }
       a <- applySub t1
       b <- applySub t2
-      case a of
-        TVar x -> bindVar x b
-        TArr x1 y1 -> case b of
-          TVar y     -> bindVar y a
-          TArr x2 y2 -> unify x1 x2 >> unify y1 y2
+      case (a, b) of
+        (TVar x, _) -> bindVar x b
+        (_, TVar y) -> bindVar y a
+        (TArr x1 y1, TArr x2 y2) -> unify x1 x2 >> unify y1 y2
+        (TCon n xs, TCon m ys)
+          | n == m && length xs == length ys -> zipWithM_ unify xs ys
+        _ -> failTI ("类型不匹配 / type mismatch: " ++ prettyTy a
+                     ++ " vs " ++ prettyTy b)
 
 bindVar :: String -> Ty -> TI ()
 bindVar x t = do
@@ -1520,6 +1541,7 @@ instantiate (Forall vars t) = do
 substTy :: Map.Map String Ty -> Ty -> Ty
 substTy m (TVar v) = Map.findWithDefault (TVar v) v m
 substTy m (TArr a b) = TArr (substTy m a) (substTy m b)
+substTy m (TCon n as) = TCon n (map (substTy m) as)
 
 infer :: TypeEnv -> Expr -> TI Ty
 infer env (Var x) = case Map.lookup x env of
@@ -1574,8 +1596,9 @@ typeSizeLimit :: Int
 typeSizeLimit = 1000
 
 tySizeT :: Ty -> Int
-tySizeT (TVar _)   = 1
-tySizeT (TArr a b) = 1 + tySizeT a + tySizeT b
+tySizeT (TVar _)    = 1
+tySizeT (TArr a b)  = 1 + tySizeT a + tySizeT b
+tySizeT (TCon _ as) = 1 + sum (map tySizeT as)
 
 inferScheme :: TypeEnv -> Expr -> Either String Scheme
 inferScheme tenv e = runTI go (Map.size tenv + 1)
@@ -2379,6 +2402,14 @@ fmtMs d = showFFloat (Just 3) d ""
 isPreludeDef :: String -> Expr -> Bool
 isPreludeDef n e = Map.lookup n initEnv == Just e
 
+-- 标注是否为推断类型的合法实例：类型变量可实例化，具体类型（TCon）视为常量
+-- Whether the annotation is a legal instance: type vars instantiate, TCons stay fixed.
+annotationInstantiable :: Ty -> Ty -> Bool
+annotationInstantiable raw ann =
+  case runTI (unify raw ann) 0 of
+    Right () -> True
+    Left _   -> False
+
 typeOfExpr :: ReplState -> Expr -> Maybe String -> IO (Maybe ReplState)
 typeOfExpr st expr mAnn
   | exprSize expr > astBudget = do
@@ -2399,19 +2430,26 @@ typeOfExpr st expr mAnn
       let ty = prettySchemeMsg sc
           ann = mAnn >>= parseTyText
           matches = fmap (\t -> normalizeNames t == normalizeNames rawTy) ann
+          instantiable = fmap (annotationInstantiable rawTy) ann
           annText = fmap (prettyTy . normalizeNames) ann
+          generalZh = case instantiable of
+            Just True -> "；该类型是它的一个实例，表达式更通用"
+            _         -> ""
+          generalEn = case instantiable of
+            Just True -> "; the annotation is an instance; the term is more general"
+            _         -> ""
           noteZh = case matches of
             Just True  -> "；标注匹配"
             Just False -> case annText of
               Just a  -> "；标注不匹配（期望 " ++ a ++ "，实际 "
-                          ++ prettyTy (normalizeNames rawTy) ++ "）"
+                          ++ prettyTy (normalizeNames rawTy) ++ "）" ++ generalZh
               Nothing -> "；标注不匹配"
             Nothing    -> ""
           noteEn = case matches of
             Just True  -> "; annotation matches"
             Just False -> case annText of
               Just a  -> "; annotation does not match (expected " ++ a
-                          ++ ", got " ++ prettyTy (normalizeNames rawTy) ++ ")"
+                          ++ ", got " ++ prettyTy (normalizeNames rawTy) ++ ")" ++ generalEn
               Nothing -> "; annotation does not match"
             Nothing    -> ""
           tyZh = "类型：" ++ fst ty
@@ -2422,6 +2460,7 @@ typeOfExpr st expr mAnn
                    , "freeVars" .= JArr (map JStr (Set.toList (freeVars expr))) ]
                    ++ [ "annotation" .= JStr a | Just a <- [mAnn] ]
                    ++ [ "matches" .= JBool b | Just b <- [matches] ]
+                   ++ [ "instantiable" .= JBool b | Just b <- [instantiable] ]
                    ++ [ "expected" .= JStr a | Just a <- [annText] ]
                    ++ [ "actual" .= JStr (prettyTy (normalizeNames rawTy))
                       | Just _ <- [ann] ]
@@ -3186,6 +3225,9 @@ commandExprs c = case c of
   Nf e          -> [e]
   Whnf e        -> [e]
   IntOf e       -> [e]
+  -- :church 直接构造大项，也要纳入 --max-term-size 检查
+  -- :church builds a large term directly, so it must respect --max-term-size too
+  ChurchOf n    -> [churchNumeral n]
   Begin e       -> [e]
   _             -> []
 
@@ -3383,11 +3425,15 @@ parseArgs = go defaultOptions
         _ -> Left ("无效的 --steps 值 / invalid --steps: " ++ v)
       [] -> Left "缺少 --steps 的值 / missing value for --steps"
     go o ("--eta":xs) = case xs of
-      (v:rest) | Just b <- parseOnOff v -> go o { optEta = Just b } rest
-      _ -> go o { optEta = Just True } xs
+      []       -> go o { optEta = Just True } []
+      (v:rest) -> case parseOnOff v of
+        Just b  -> go o { optEta = Just b } rest
+        Nothing -> Left ("无效的 --eta 值 / invalid --eta: " ++ v)
     go o ("--fast":xs) = case xs of
-      (v:rest) | Just b <- parseOnOff v -> go o { optFast = Just b } rest
-      _ -> go o { optFast = Just True } xs
+      []       -> go o { optFast = Just True } []
+      (v:rest) -> case parseOnOff v of
+        Just b  -> go o { optFast = Just b } rest
+        Nothing -> Left ("无效的 --fast 值 / invalid --fast: " ++ v)
     go o (x:xs)
       | Just v <- stripPrefix "--lang=" x =
           case parseLang v of
