@@ -293,7 +293,6 @@ def capture(url: str, out: Path, only: str | None,
             shooter.panel_bottom()
             shooter.shot("guide.png")
     finally:
-        sock.close()
         if proc is not None:
             proc.terminate()
             try:

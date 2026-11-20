@@ -83,7 +83,7 @@ build.bat       # Windows
 directory -package process`，生成 `main` / `extension`（Windows 上为
 `main.exe` / `extension.exe`）。`process` 只用于 `:edit`。
 `build.sh` 仅在 Linux（通过 `uname -s` 判断）追加 GNU ld 链接参数
-（`-split-sections -optl-Wl,--gc-sections -optl-s`），`-optlc-march=native` 需通过
+（`-split-sections -optl-Wl,--gc-sections -optl-s`），`-optc-march=native` 需通过
 `LAMBDA_NATIVE=1` 显式开启，macOS 保持可移植参数；`build.bat` 检查 `ghc` 与
 `errorlevel`，不带 `-march=native` 与 GNU ld 专属参数。找不到 `ghc` 会直接报错退出，
 两个脚本都会给出构建成功或失败的提示。

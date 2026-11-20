@@ -3300,6 +3300,12 @@ def test_gallery_tokens_lsp_benchmark(b: Path) -> None:
           "clip scale still hardcoded to 1")
     check("screenshot no port race", "--remote-debugging-port=0" in shot_src
           and "DevToolsActivePort" in shot_src, "port reservation race remains")
+    check("screenshot cleanup has no stale socket", "sock.close()" not in shot_src,
+          "stale socket reference crashes capture cleanup")
+    bench_src = (ROOT / "tools" / "benchmark.py").read_text(encoding="utf-8")
+    check("benchmark converges FACT", 'CASE_SETUP' in bench_src
+          and ':strategy normal' in bench_src and ':steps 300000' in bench_src,
+          "FACT benchmark still burns the default step limit")
     sync_src = (ROOT / "tools" / "check_core_sync.py").read_text(encoding="utf-8")
     check("core sync manifest covers db view", '"deBruijnView"' in sync_src
           and '"exprSize"' in sync_src, "shared declaration missing from manifest")

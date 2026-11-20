@@ -110,8 +110,9 @@ Chinese/English**.
   queue while streaming, so a long reduction is not killed by the normal
   request timeout. `LAMBDA_RATE_LIMIT=<n>` adds a per-IP token bucket
   (default off). With a loopback reverse proxy (Caddy `handle_path`), all
-  browsers share `127.0.0.1`; `LAMBDA_TRUST_XFF=1` opts in to trusting the first
-  `X-Forwarded-For` value from loopback peers so each browser gets its own bucket.
+  browsers share `127.0.0.1`; `LAMBDA_TRUST_XFF=1` opts in to trusting the last
+  `X-Forwarded-For` value from loopback peers so each browser gets its own bucket
+  without letting a client spoof its own bucket with a leading value.
   Off by default, so `X-Forwarded-For` is ignored and `REMOTE_ADDR` is used,
   preventing peers from spoofing the header. The Docker image serves the app
   with `waitress` and a `HEALTHCHECK`, and remains single-process because

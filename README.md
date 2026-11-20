@@ -147,7 +147,7 @@ package is also provided. Both scripts pass
 directory -package process` and produce `main` / `extension` (`main.exe` /
 `extension.exe` on Windows). `process` is only used by `:edit`. `build.sh` adds the GNU ld link flags
 (`-split-sections -optl-Wl,--gc-sections -optl-s`) on Linux only (via
-`uname -s`), treats `-optlc-march=native` as opt-in under `LAMBDA_NATIVE=1`,
+`uname -s`), treats `-optc-march=native` as opt-in under `LAMBDA_NATIVE=1`,
 and stays portable on macOS; `build.bat` checks for `ghc` and `errorlevel`,
 and carries no `-march=native` or GNU ld flags. A missing `ghc` is a hard error,
 and each script reports build success or failure.

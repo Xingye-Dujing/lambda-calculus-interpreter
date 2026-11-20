@@ -79,6 +79,8 @@
   Snapshot TTL/cap pruning can now delete owned snapshots (the owner filter used to block it); the legacy eval endpoint charges per command; non-string session ids return 400 consistently; share-page responses no longer duplicate the charset parameter.
 - 网页字号控制现在也会缩放命令编辑器与高亮层；Ctrl+Enter 执行中间命令不再留下空行。
   The web font-size control now scales the command editor and highlight layer too; Ctrl+Enter on a middle command no longer leaves a blank line.
+- 截图脚本清理阶段残留的 `sock` 引用已移除，不会再崩溃或泄漏 Chrome 进程；基准的 FACT 用例改用正规序与更大步数，测的是完整归约；README 的原生编译旗标更正为 `-optc-march=native`，AGENTS 的 XFF 方向更正为“取最后一个值”。
+  Removed a stale `sock` reference from screenshot cleanup (it crashed every run and leaked Chrome); the FACT benchmark now uses normal order and a larger budget so it measures a finished reduction; README's native flag is corrected to `-optc-march=native`, and AGENTS' XFF rule now says the last value is trusted.
 - `:time <n> <expr>` 现在先去掉次数再解析表达式，不再解析错误对象。
   `:time <n> <expr>` now strips the run count before parsing the expression.
 - 失效会话返回 410 + restart 而不是误报 408；流式求值的超时不再因心跳间隔而超时后延。

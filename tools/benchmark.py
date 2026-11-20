@@ -18,6 +18,12 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 CASES = ("PLUS 40 40", "MULT 20 20", "FACT 6", "(\\x.x x) (\\y.y)")
+# 递归需要在正规序下并放宽步数，否则 FACT 6 只是“烧完步数上限”的空转
+# Recursive definitions need normal order and a larger step budget; otherwise
+# FACT 6 merely measures time to exhaust the default limit.
+CASE_SETUP = {
+    "FACT 6": ":strategy normal\n:steps 300000\n",
+}
 DEFAULT_DB = ROOT / "web" / "benchmarks.json"
 
 
@@ -45,7 +51,8 @@ def run_case(binary: Path, expr: str, runs: int = 5) -> dict:
     # 基准实际测的是 0 步的规范化空转
     # Load the prelude first: FACT etc. live only in lib/prelude.lam; without it the
     # "benchmark" measures a free variable in normal form (zero beta steps).
-    line = f":load lib/prelude.lam\n:bench {runs} {expr}\n"
+    setup = CASE_SETUP.get(expr, "")
+    line = f":load lib/prelude.lam\n{setup}:bench {runs} {expr}\n"
     try:
         proc = subprocess.run([str(binary), "--batch", "--json", "--lang", "en"],
                               input=line.encode("utf-8"), capture_output=True,
