@@ -1312,7 +1312,9 @@
     var rows = out.querySelectorAll(".line.echo");
     var row = rows[rows.length - 1];
     if (!row || !failing) return;
-    var main = row.querySelector(".line-main");
+    // 回显行的命令正文在 .body 里，不是 .line-main；旧选择器永远匹配不到
+    // Echo lines put the command text in .body, not .line-main; the old selector never matched.
+    var main = row.querySelector(".body") || row.querySelector(".line-main");
     if (!main || main.dataset.typed === "1") return;
     var txt = main.textContent || "";
     var i = txt.indexOf(failing);
@@ -1843,6 +1845,9 @@
       b.setAttribute("tabindex", on ? "0" : "-1");
     });
     renderPanel();
+    // 首次进入“会话”标签也要拉取列表，不能等用户手动点刷新
+    // Fetch the snapshot list on first open; do not wait for a manual Refresh.
+    if (tab === "sessions") refreshSessions();
   }
 
   function stopPlay(){
@@ -2504,6 +2509,16 @@
     }
     var ev = await api("api/eval", {session: state.compare[sidKey],
                                     line: state.compare[side], lang: state.lang});
+    // 对比会话在后端失效后返回 410：清掉旧 id 并提示，避免静默显示过期结果
+    // A dead compare session returns 410: drop the stale id instead of silently
+    // rendering the cached term from a session that no longer exists.
+    if (ev.status === 410 || (ev.data && ev.data.restart)){
+      state.compare[sidKey] = null;
+      state.compare[side + "Term"] = "";
+      addLine("fail", dual("对比会话已过期，请重新运行", "compare session expired; run again"));
+      renderPanel();
+      return;
+    }
     var objs = ev.data && ev.data.outputs;
     var o = objs && objs[0];
     if (o) state.compare[side + "Term"] = o.term || o.text || "";
@@ -2516,7 +2531,9 @@
   }
 
   async function refreshSessions(){
-    var r = await api("api/snapshots", {});
+    // 后端只注册了 GET，漏掉 method 会用 POST 导致 405（桩环境掩盖了这个问题）
+    // The backend registers GET only; omitting the method sends POST and yields 405.
+    var r = await api("api/snapshots", {}, "GET");
     if (r.data && r.data.ok){
       state.sessionRows = r.data.snapshots || [];
       renderPanel();
@@ -2579,6 +2596,7 @@
     var input = $("ex-input-" + i);
     var line = input ? input.value.trim() : "";
     if (!line) return;
+    await ensureSession();
     var r = await api("api/eval", {session: state.session, lang: state.lang,
                                    line: ":conv " + line + " , " + ex.target});
     var res = $("ex-result-" + i);
@@ -2635,7 +2653,19 @@
     return html;
   }
 
+  // 重绘会销毁 textarea/input：先把当前值写回 state，否则切换标签或语言会丢失未提交的输入
+  // Repainting destroys the textareas/inputs: commit their current values first,
+  // otherwise tab/language switches silently discard unsubmitted text.
+  function syncPanelInputs(){
+    if (panel.querySelector("[id^=nb-]")) syncNotebook();
+    var l = panel.querySelector("#cmp-left"), r = panel.querySelector("#cmp-right");
+    if (l) state.compare.left = l.value;
+    if (r) state.compare.right = r.value;
+    if (l || r) saveLocal();
+  }
+
   function renderPanel(){
+    syncPanelInputs();
     // 重绘前记录焦点与滚动，重绘后恢复 / capture focus and scroll before repaint
     var keepScroll = panel.scrollTop || 0;
     var keepFocus = null;
@@ -2840,6 +2870,14 @@
           out.innerHTML = "";
           state.selected = null;
           state.envRows = [];
+          // 清除上一个会话残留的检查器数据，避免状态栏/竞速/曲线面板显示旧内容
+          // Drop inspector data from the old session so the status bar, Race and
+          // Growth panels do not keep showing stale results.
+          state.lastType = null;
+          state.raceResults = null;
+          state.growth = null;
+          state.expiredSession = null;
+          state.tracePos = 0;
           setManual(false);
           state.session = r.data.session;
           state.codeLines = Array.isArray(r.data.code) ? r.data.code.slice() : [];
@@ -2921,14 +2959,41 @@
   }
 
   /* ---------------------------------------------------------------- session / 会话 */
+  // 会话所有权令牌：本地生成、持久保存，随请求发送，防止别人的快照被列举/删除
+  // Session owner token: generated and persisted locally, sent with requests so
+  // other users' snapshots cannot be enumerated or deleted.
+  function ownerToken(){
+    var key = "lambda-owner";
+    var t = null;
+    try { t = localStorage.getItem(key); } catch(e){}
+    if (!t){
+      var bytes = new Uint8Array(16);
+      if (typeof crypto !== "undefined" && crypto.getRandomValues) crypto.getRandomValues(bytes);
+      else for (var i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 256);
+      t = Array.prototype.map.call(bytes, function(b){
+        return ("0" + b.toString(16)).slice(-2);
+      }).join("");
+      try { localStorage.setItem(key, t); } catch(e){}
+    }
+    return t;
+  }
+
   // 网络错误不能变成未处理的 Promise 拒绝：统一返回 status 0 与错误对象
   // A network error must not become an unhandled rejection: return status 0.
   async function api(path, body, method, signal){
     try {
+      var verb = method || "POST";
+      var payload = body;
+      if (verb === "GET"){
+        path += (path.indexOf("?") < 0 ? "?" : "&") + "owner=" + encodeURIComponent(ownerToken());
+      } else {
+        if (!payload || typeof payload !== "object" || Array.isArray(payload)) payload = {};
+        payload = Object.assign({}, payload, {owner: ownerToken()});
+      }
       var opts = {
-        method: method || "POST",
+        method: verb,
         headers: {"Content-Type": "application/json"},
-        body: body ? JSON.stringify(body) : undefined
+        body: verb === "GET" ? undefined : JSON.stringify(payload)
       };
       // 仅在有 AbortController 时附带 signal，桩环境不会碰到它
       // Attach a signal only when AbortController exists; the stub never sees it.
@@ -2961,6 +3026,14 @@
     pendingSession = p;
     try { return await p; }
     finally { if (pendingSession === p) pendingSession = null; }
+  }
+
+  // 辅助接口（判题、对比）也必须确保有会话，不能让后端隐式创建后丢弃 session id
+  // Helper routes must ensure a session exists; otherwise the backend creates one
+  // whose id is dropped, leaking an interpreter subprocess on every call.
+  async function ensureSession(){
+    if (!state.session) await newSession();
+    return state.session;
   }
 
   function setConn(ok){
@@ -3010,6 +3083,17 @@
       return {status: res.status, data: body || {ok: false,
         error: "stream failed", code: "internal_error"}};
     }
+    // 代理有时会把 SSE 转成普通 JSON：直接采纳，不能再回退到 /api/eval 重发命令
+    // A proxy may convert SSE into a plain JSON body: use it directly instead of
+    // falling back to /api/eval (which would execute the line twice).
+    var ctype = (res.headers && res.headers.get && res.headers.get("content-type")) || "";
+    if (ctype && ctype.indexOf("text/event-stream") < 0){
+      var direct = null;
+      try { direct = await res.json(); } catch(e){}
+      if (direct && Array.isArray(direct.outputs)) return {status: res.status, data: direct};
+      return {status: res.status, data: direct || {ok: false,
+        error: "unexpected stream response", code: "internal_error"}};
+    }
     if (!res.body || typeof res.body.getReader !== "function") return null;
     var reader = res.body.getReader(), dec = new TextDecoder();
     // 后端已收到并可能已开始执行这一行；此后若传输中断，不能再通过 /api/eval 重发
@@ -3017,10 +3101,7 @@
     // failure must not re-send it through /api/eval.
     if (streamState) streamState.started = true;
     var buf = "", outputs = [], session = null, failure = null;
-    while (true){
-      var part = await reader.read();
-      if (part.done) break;
-      buf += dec.decode(part.value, {stream: true});
+    var consume = function(){
       var idx;
       while ((idx = buf.indexOf("\n\n")) >= 0){
         var frame = buf.slice(0, idx); buf = buf.slice(idx + 2);
@@ -3038,7 +3119,17 @@
           outputs.push(obj);
         }
       }
+    };
+    while (true){
+      var part = await reader.read();
+      if (part.done) break;
+      buf += dec.decode(part.value, {stream: true});
+      consume();
     }
+    // 冲刷解码器，避免流末尾被拆分的多字节字符丢失
+    // Flush the decoder so a multi-byte character split at the very end is kept.
+    buf += dec.decode();
+    consume();
     if (failure){
       var status = failure.timeout ? 408 : (failure.restart ? 410 : 500);
       return {status: status, data: failure};
@@ -3796,7 +3887,10 @@
   // Trace shortcuts: ←/→ step, Space plays/pauses (ignored while typing).
   document.addEventListener("keydown", function(e){
     if (dialogOpen) return;
-    if (state.tab !== "trace" || !state.selected || !state.selected.trace) return;
+    // 证明视图渲染的是 renderProof()，没有播放控件；此时不应响应轨迹快捷键
+    // The proof view renders renderProof() with no playback controls, so ignore trace keys.
+    if (state.tab !== "trace" || !state.selected || !state.selected.trace
+        || state.selected.leftTrace) return;
     var ae = document.activeElement;
     if (ae && /^(INPUT|TEXTAREA|SELECT|BUTTON)$/.test(ae.tagName)) return;
     var n = state.selected.trace.length;
@@ -4289,6 +4383,7 @@
         try {
           var sr = await api("api/share/" + sid, null, "GET");
           if (sr.data && sr.data.ok) applySharePayload(sr.data.state);
+          else toast(dual("分享链接已失效或未找到", "share link expired or not found"));
         } catch(e){}
       }
     } else if (hash.indexOf("state=") === 0){

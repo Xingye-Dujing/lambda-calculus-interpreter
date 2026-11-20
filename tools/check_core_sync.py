@@ -135,6 +135,18 @@ def sync_from_extension(dst: Path, src: Path) -> int:
     changed = 0
     # 从后往前替换，避免行号偏移 / replace back to front so earlier spans stay valid
     targets = [n for n in MUST_MATCH if n in src_span and n in dst_span]
+    # 跨度必须是纯的同名声明块；若中间夹着别的声明，整段替换会误删它，宁可跳过
+    # A span must contain only blocks of the same name; replacing across a foreign
+    # declaration would delete it, so skip such a target instead.
+    def _pure(path_lines: list[str], name: str, span: tuple[int, int]) -> bool:
+        s, e = span
+        for k in range(s, e):
+            m = DECL_START.match(path_lines[k])
+            if m and m.group(1) != name:
+                return False
+        return True
+    targets = [n for n in targets
+               if _pure(src_lines, n, src_span[n]) and _pure(dst_lines, n, dst_span[n])]
     for name in sorted(targets, key=lambda n: dst_span[n][0], reverse=True):
         if normalize(dst_decl.get(name, "")) == normalize(src_decl.get(name, "")):
             continue
@@ -148,14 +160,51 @@ def sync_from_extension(dst: Path, src: Path) -> int:
     return changed
 
 
+def _strip_haskell_comments(text: str) -> str:
+    """Remove -- line and {- block -} comments, leaving string literals intact."""
+    out: list[str] = []
+    i, n = 0, len(text)
+    in_string = False
+    in_block = 0
+    while i < n:
+        c = text[i]
+        if in_block:
+            if text.startswith("{-", i):
+                in_block += 1; i += 2; continue
+            if text.startswith("-}", i):
+                in_block -= 1; i += 2; continue
+            if c == "\n":
+                out.append("\n")
+            i += 1
+            continue
+        if in_string:
+            out.append(c)
+            if c == "\\" and i + 1 < n:
+                out.append(text[i + 1]); i += 2; continue
+            if c == '"':
+                in_string = False
+            i += 1
+            continue
+        if text.startswith("{-", i):
+            in_block = 1; i += 2; continue
+        if text.startswith("--", i):
+            while i < n and text[i] != "\n":
+                i += 1
+            continue
+        if c == '"':
+            in_string = True
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
 def normalize(text: str) -> str:
-    # 去掉整行注释与行尾空白；保留缩进，避免把不同结构抹平成一样
-    # Drop whole-line comments and trailing whitespace; keep indentation so
+    # 去掉行注释、块注释与行尾空白；保留缩进，避免把不同结构抹平成一样
+    # Drop line/block comments and trailing whitespace; keep indentation so
     # structurally different code cannot collapse into the same text.
     kept = []
-    for line in text.splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("--"):
+    for line in _strip_haskell_comments(text).splitlines():
+        if not line.strip():
             continue
         kept.append(line.rstrip())
     return "\n".join(kept)

@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag (default: v + VERSION)"
+        description: "Release tag (must equal v + VERSION; leave empty to use VERSION)"
         required: false
         default: ""
 

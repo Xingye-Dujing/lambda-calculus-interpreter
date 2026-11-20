@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import html
 import json
+import os
 import subprocess
 import sys
 import time
@@ -23,15 +24,28 @@ DEFAULT_DB = ROOT / "web" / "benchmarks.json"
 def find_binary(explicit: str | None) -> Path:
     if explicit:
         return Path(explicit)
-    for name in ("extension.exe", "extension"):
-        p = ROOT / name
-        if p.is_file():
-            return p
+    env = os.environ.get("LAMBDA_INTERP_BIN")
+    if env and Path(env).is_file():
+        return Path(env)
+    dirs = []
+    d = os.environ.get("LAMBDA_INTERP_DIR")
+    if d:
+        dirs.append(Path(d))
+    dirs += [ROOT, Path("/opt/lambda-calculus-interpreter")]
+    for base in dirs:
+        for name in ("extension.exe", "extension"):
+            p = base / name
+            if p.is_file():
+                return p
     raise SystemExit("extension binary not found / 未找到 extension")
 
 
 def run_case(binary: Path, expr: str, runs: int = 5) -> dict:
-    line = f":bench {runs} {expr}\n"
+    # 先加载 prelude：FACT 等名字只定义在 lib/prelude.lam，否则会被当成自由变量，
+    # 基准实际测的是 0 步的规范化空转
+    # Load the prelude first: FACT etc. live only in lib/prelude.lam; without it the
+    # "benchmark" measures a free variable in normal form (zero beta steps).
+    line = f":load lib/prelude.lam\n:bench {runs} {expr}\n"
     try:
         proc = subprocess.run([str(binary), "--batch", "--json", "--lang", "en"],
                               input=line.encode("utf-8"), capture_output=True,

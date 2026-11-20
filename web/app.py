@@ -73,6 +73,9 @@ RS = "\x1e"                     # 与前端的记录分隔符保持一致 / keep
 # 环境变量可能是 0 或负数；统一夹到可用范围，避免 queue/sleep 收到非法值
 # Env values may be zero or negative; clamp them so queue/sleep never see bad values.
 EVAL_TIMEOUT = max(0.1, float(os.environ.get("LAMBDA_EVAL_TIMEOUT", "10")))
+# 流式输出队列上限：慢消费者不能让读线程无界堆积对象
+# Bound the streaming queue so a slow consumer cannot grow memory without limit.
+STREAM_QUEUE_MAX = max(64, int(os.environ.get("LAMBDA_STREAM_QUEUE_MAX", "10000")))
 SESSION_IDLE = max(1.0, float(os.environ.get("LAMBDA_SESSION_IDLE", "1800")))
 MAX_SESSIONS = max(0, int(os.environ.get("LAMBDA_MAX_SESSIONS", "32")))
 ALLOWED_LANGS = {"zh", "en", "both"}
@@ -145,27 +148,28 @@ def _client_ip() -> str:
 
     生产部署经 Caddy(handle_path) 转发时 remote_addr 是 127.0.0.1，所有浏览器
     会共用一个限流桶。只有显式设置 LAMBDA_TRUST_XFF=1 时，才信任来自回环地址的
-    X-Forwarded-For 第一段；默认忽略该头，使用 remote_addr，避免任意客户端伪造
-    该头绕过限流。
+    X-Forwarded-For。代理通常在已有链尾追加真实客户端地址，因此取最后一段：
+    取第一段会被客户端伪造的值控制，从而绕过限流。
     Behind a loopback reverse proxy remote_addr is the proxy and every browser
-    would share one bucket. Only when LAMBDA_TRUST_XFF=1 is set do we trust the
-    first X-Forwarded-For value from a loopback peer; by default the header is
-    ignored and remote_addr is used, so clients cannot spoof it to bypass the limit.
+    would share one bucket. Only when LAMBDA_TRUST_XFF=1 do we trust X-Forwarded-For
+    from a loopback peer. Proxies normally append the real client to the chain, so
+    use the LAST value; trusting the first lets a client spoof its own bucket key.
     """
     remote = request.remote_addr or "unknown"
     if TRUST_XFF and remote in ("127.0.0.1", "::1"):
         forwarded = request.headers.get("X-Forwarded-For", "")
         if forwarded:
-            first = forwarded.split(",", 1)[0].strip()
-            if first:
-                return first
+            last = forwarded.rsplit(",", 1)[-1].strip()
+            if last:
+                return last
     return remote
 
 
-def _rate_ok() -> bool:
+def _rate_ok(cost: int = 1) -> bool:
     """Token bucket per client IP; disabled when RATE_LIMIT <= 0."""
     if RATE_LIMIT <= 0:
         return True
+    cost = max(1, int(cost))
     ip = _client_ip()
     now = time.monotonic()
     rate = RATE_LIMIT / 60.0
@@ -179,10 +183,10 @@ def _rate_ok() -> bool:
                 _rate_buckets.pop(oldest, None)
         tokens, last = _rate_buckets.get(ip, (float(RATE_LIMIT), now))
         tokens = min(float(RATE_LIMIT), tokens + (now - last) * rate)
-        if tokens < 1.0:
+        if tokens < cost:
             _rate_buckets[ip] = (tokens, now)
             return False
-        _rate_buckets[ip] = (tokens - 1.0, now)
+        _rate_buckets[ip] = (tokens - float(cost), now)
     return True
 # 版本号来自仓库根目录的 VERSION 文件
 # Version is read from the VERSION file at the repository root.
@@ -277,6 +281,13 @@ _CLI_ONLY_TEXT = "该命令仅在命令行可用 / this command is only availabl
 
 def validate_line(line: str) -> tuple[str, str] | None:
     """Validate one web command; returns an error code and message."""
+    # 命令必须是真正的单行：换行、回车和 \x1e 哨兵都会破坏“每行一个回复”的协议，
+    # 还可能把后半段当成未校验的新命令注入解释器（例如 "1\n:load /etc/passwd"）
+    # A command must be a single line: newlines, CR and the \x1e sentinel break the
+    # one-reply-per-line protocol and can inject an unverified command (e.g.
+    # "1\n:load /etc/passwd" bypasses the :load path check).
+    if any(ord(c) < 32 and c != "\t" or c == "\x7f" for c in line):
+        return ("bad_request", "命令含非法控制字符 / command contains control characters")
     # Web 会话必须保持存活，且不能让 API 直接拉起服务器上的编辑器
     # A web session must stay alive, and the API must not launch a server editor.
     # 解释器会先剥掉行尾注释再解析命令；这里也必须这么做，否则
@@ -516,6 +527,22 @@ def _hidden_process_kwargs() -> dict:
     }
 
 
+def _write_all(stream, data: bytes) -> None:
+    """Write every byte to a raw (unbuffered) pipe; a single write may be short.
+
+    bufsize=0 makes stdin a raw FileIO whose write() is one os.write() and may
+    return a partial count. Large commands (> PIPE_BUF) would otherwise be
+    truncated and desynchronise the one-sentinel-per-line protocol.
+    """
+    view = memoryview(data)
+    while view:
+        written = stream.write(view)
+        if not written:
+            raise OSError("short write to interpreter stdin")
+        view = view[written:]
+    stream.flush()
+
+
 class Interpreter:
     """一个 `extension --batch --json` 子进程 + 一个读线程"""
 
@@ -524,9 +551,17 @@ class Interpreter:
         self._q: queue.Queue = queue.Queue()
         # 流式求值的逐行通道：仅在 send_stream 激活时写入
         # Per-line channel used only while send_stream is active.
-        self._stream_q: queue.Queue = queue.Queue()
+        self._stream_q: queue.Queue = queue.Queue(maxsize=STREAM_QUEUE_MAX)
+        self._stream_overflow = False
         self._streaming = False
-        self._lock = threading.Lock()
+        # 命令槽用 Condition 做有界等待：流式生成器在 yield 之间不再持有锁，
+        # 慢消费者最多让同会话的其他请求等待一个 EVAL_TIMEOUT，之后会话被回收
+        # A Condition-based command slot with a bounded wait: the streaming generator
+        # no longer holds a lock across yields, so a slow consumer can pin a session
+        # for at most one EVAL_TIMEOUT instead of forever.
+        self._lock = threading.RLock()
+        self._cond = threading.Condition(self._lock)
+        self._busy = False
         env = {**os.environ, "TERM": "dumb"}
         env.pop("LAMBDA_INTERP_BIN", None)
         args = [str(INTERP_BIN), "--batch", "--json", "--lang", lang]
@@ -545,6 +580,18 @@ class Interpreter:
         self._reader = threading.Thread(target=self._read_loop, daemon=True)
         self._reader.start()
 
+    def _stream_put(self, item) -> None:
+        """Queue a stream item; kill the child on overflow instead of growing forever."""
+        try:
+            self._stream_q.put_nowait(item)
+        except queue.Full:
+            self._stream_overflow = True
+            log.warning("stream queue overflow, killing interpreter / 流式队列溢出，终止解释器")
+            try:
+                self.proc.kill()
+            except Exception:  # noqa: BLE001
+                pass
+
     def _read_loop(self) -> None:
         buf: list[dict] = []
         try:
@@ -557,7 +604,7 @@ class Interpreter:
                     if self._streaming:
                         # 流式请求逐行接收；整批结果不再进入 _q
                         # A streaming request consumes lines; the batch skips _q.
-                        self._stream_q.put(None)
+                        self._stream_put(None)
                     else:
                         self._q.put(buf)
                     buf = []
@@ -568,7 +615,7 @@ class Interpreter:
                         item = {"kind": "info", "text": line.rstrip()}
                     buf.append(item)
                     if self._streaming:
-                        self._stream_q.put(item)
+                        self._stream_put(item)
         except Exception:  # noqa: BLE001
             pass
         finally:
@@ -577,14 +624,33 @@ class Interpreter:
             # streaming request cannot mistake a truncated reply for success.
             self.alive = False
             if self._streaming:
-                self._stream_q.put(None)
+                self._stream_put(None)
             self._q.put(None)
 
+    def _begin_command(self, timeout: float) -> None:
+        """Acquire the command slot, waiting at most ``timeout`` for a stream to end."""
+        deadline = time.monotonic() + timeout
+        with self._cond:
+            while self._busy:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    # 卡住的流不能无限拖住其他请求：终止会话并让等待者按过期处理
+                    # A stuck stream must not block other requests forever: kill the
+                    # session so waiters get the normal 410 restart path.
+                    self.kill()
+                    raise TimeoutError("session busy")
+                self._cond.wait(remaining)
+            self._busy = True
+
+    def _end_command(self) -> None:
+        with self._cond:
+            self._busy = False
+            self._cond.notify_all()
+
     def _send_unlocked(self, line: str, timeout: float = EVAL_TIMEOUT) -> list[dict]:
-        """Write one command and collect its reply; the caller holds self._lock."""
+        """Write one command and collect its reply; the caller holds the command slot."""
         try:
-            self.proc.stdin.write((line + "\n").encode("utf-8"))
-            self.proc.stdin.flush()
+            _write_all(self.proc.stdin, (line + "\n").encode("utf-8"))
         except (BrokenPipeError, OSError) as exc:
             self.kill()
             raise RuntimeError(f"interpreter pipe closed: {exc}") from exc
@@ -603,8 +669,11 @@ class Interpreter:
             # 已死亡会话不是超时，而是需要重建；用 RuntimeError 映射到 410+restart
             # A dead session is not a timeout but a rebuild signal (410 + restart).
             raise RuntimeError("session is dead")
-        with self._lock:
+        self._begin_command(timeout)
+        try:
             return self._send_unlocked(line, timeout)
+        finally:
+            self._end_command()
 
     def send_many(self, lines: list[str], timeout: float = EVAL_TIMEOUT) -> list[list[dict]]:
         """Send several commands atomically under a single lock acquisition.
@@ -616,19 +685,22 @@ class Interpreter:
         """
         if not self.alive:
             raise RuntimeError("session is dead")
-        with self._lock:
+        self._begin_command(timeout)
+        try:
             return [self._send_unlocked(ln, timeout) for ln in lines]
+        finally:
+            self._end_command()
 
     def send_stream(self, line: str, timeout: float = EVAL_TIMEOUT):
         """Yield each output object as it arrives, with heartbeats.
 
-        The outer lock is held for the whole evaluation, so one session still
-        runs one command at a time. A heartbeat keeps the HTTP connection warm
-        even when the reducer emits nothing until it finishes.
+        The command slot is held only between yields, and other callers wait with
+        a bounded timeout, so one stalled HTTP consumer cannot pin the session.
         """
         if not self.alive:
             raise RuntimeError("session is dead")
-        with self._lock:
+        self._begin_command(timeout)
+        try:
             # 丢弃上一次流式请求可能残留的对象 / drain stale stream objects
             while True:
                 try:
@@ -636,11 +708,11 @@ class Interpreter:
                 except queue.Empty:
                     break
             self._streaming = True
+            self._stream_overflow = False
             completed = False
             started = time.monotonic()
             try:
-                self.proc.stdin.write((line + "\n").encode("utf-8"))
-                self.proc.stdin.flush()
+                _write_all(self.proc.stdin, (line + "\n").encode("utf-8"))
             except (BrokenPipeError, OSError) as exc:
                 self._streaming = False
                 self.kill()
@@ -673,20 +745,21 @@ class Interpreter:
                     yield item
             finally:
                 self._streaming = False
-                # 客户端中途断开时命令仍在运行，输出无法再对齐；直接回收会话，
-                # 避免下一条命令读到上一条的残留结果或让子进程继续空转
-                # On an early client disconnect the command is still running and
-                # its output can no longer be aligned; kill the session instead of
-                # letting the next command read the stale result or burn CPU.
+                # 客户端中途断开时命令仍在运行，输出无法再对齐；直接回收会话
+                # On an early client disconnect kill the session instead of letting
+                # the next command read stale results or burn CPU.
                 if not completed and self.alive:
                     self.kill()
+        finally:
+            self._end_command()
 
     def kill(self) -> None:
-        # 先标记失效，再回收子进程，避免留下僵尸进程与泄漏的文件描述符；
-        # 读线程仍是 daemon，不在此处 join
-        # Mark the session dead first, then reap the child so no zombie process
-        # or leaked file descriptor remains. The reader thread stays a daemon.
-        self.alive = False
+        # 先标记失效并释放命令槽，等待中的请求能立刻走 410，而不是一直卡在这里
+        # Mark dead and release the command slot so waiters take the 410 path at once.
+        with self._cond:
+            self.alive = False
+            self._busy = False
+            self._cond.notify_all()
         try:
             self.proc.kill()
         except Exception:  # noqa: BLE001
@@ -882,7 +955,7 @@ def _sql_get(sid: str) -> dict | None:
             "created": float(row[2]), "used": float(row[3]), "name": row[4] or ""}
 
 
-def _sql_put(sid: str, entry: dict) -> None:
+def _sql_put(sid: str, entry: dict) -> bool:
     try:
         with _sql_conn() as conn:
             conn.execute(
@@ -891,8 +964,10 @@ def _sql_put(sid: str, entry: dict) -> None:
                 (sid, json.dumps(entry["code"], ensure_ascii=False), entry["lang"],
                  entry["created"], entry["used"], entry.get("name", "")),
             )
+        return True
     except sqlite3.Error as exc:
         log.warning("snapshot sqlite write failed / SQLite 快照写入失败: %s", exc)
+        return False
 
 
 def _sql_all() -> dict[str, dict]:
@@ -964,17 +1039,19 @@ def _load_snapshots() -> None:
             _snapshots[sid] = entry
 
 
-def _save_snapshots_locked() -> None:
+def _save_snapshots_locked() -> bool:
     path = _snapshot_db_path()
     if path is None:
-        return
+        return True
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_name(path.name + ".tmp")
         tmp.write_text(json.dumps(_snapshots, ensure_ascii=False), encoding="utf-8")
         os.replace(tmp, path)
+        return True
     except OSError as exc:
         log.warning("snapshot store write failed / 快照存储写入失败: %s", exc)
+        return False
 
 
 _load_snapshots()
@@ -995,13 +1072,12 @@ def _snapshot_get(sid: str) -> dict | None:
         return dict(entry) if entry else None
 
 
-def _snapshot_put(sid: str, entry: dict) -> None:
+def _snapshot_put(sid: str, entry: dict) -> bool:
     if _use_sqlite():
-        _sql_put(sid, entry)
-        return
+        return _sql_put(sid, entry)
     with _snapshots_lock:
         _snapshots[sid] = entry
-        _save_snapshots_locked()
+        return _save_snapshots_locked()
 
 
 def _snapshot_remove(sid: str) -> None:
@@ -1026,13 +1102,20 @@ def _prune_snapshots() -> None:
         _snapshot_remove(sid)
 
 
-def _snapshot_record(sid: str, lines, lang: str) -> None:
+def _snapshot_record(sid: str, lines, lang: str, set_lang: bool = True,
+                     owner: str | None = None) -> None:
     """Append successfully evaluated lines to a persistent replay snapshot.
 
-    把成功执行的行追加到可持久化的回放快照中。
+    把成功执行的行追加到可持久化的回放快照中。set_lang=False 用于请求未显式带
+    lang 的情况：不能把快照里已有的 en/zh 悄悄改回默认的 both。
+    owner 取自会话，写进快照供管理器鉴权；已有快照的所有者不被覆盖。
     """
     if _snapshot_db_path() is None or not isinstance(sid, str):
         return
+    if owner is None:
+        with _sessions_lock:
+            session = _sessions.get(sid)
+            owner = session.get("owner") if session else None
     # 整个读-改-写必须持锁，否则两个并发 eval 会基于同一旧快照各自追加，
     # 后写者覆盖先写者
     # RLock 不与 _snapshots_lock 形成环：get/put 各自获取后即释放
@@ -1043,7 +1126,7 @@ def _snapshot_record(sid: str, lines, lang: str) -> None:
         now = time.time()
         entry = _snapshot_get(sid) or {
             "code": [], "lang": lang if lang in ALLOWED_LANGS else "both",
-            "created": now, "used": now, "name": ""}
+            "created": now, "used": now, "name": "", "owner": owner}
         code = list(entry.get("code", []))
         for ln in lines:
             text = str(ln).strip()
@@ -1052,7 +1135,7 @@ def _snapshot_record(sid: str, lines, lang: str) -> None:
         # 语言切换要写回已有快照，否则恢复时会沿用旧语言
         # Persist a language switch onto an existing snapshot, or restore uses the
         # stale language. Invalid values leave the stored language untouched.
-        if lang in ALLOWED_LANGS:
+        if set_lang and lang in ALLOWED_LANGS:
             entry["lang"] = lang
         entry.update({"code": code[-MAX_SNAPSHOT_LINES:], "used": now,
                       "name": entry.get("name", "")})
@@ -1261,6 +1344,36 @@ def _token_used(token) -> None:
             _save_tokens_locked()
 
 
+# 会话所有权：owner 是客户端自己生成并保存在 localStorage 的随机串
+# 它把快照绑定到浏览器，避免 /api/snapshots 列举所有人的会话或被任意删除
+# 旧数据（无 owner）只给同样不带 owner 的旧客户端访问，保持向后兼容
+# Session ownership: a random client-generated token stored in localStorage binds
+# snapshots to one browser, so /api/snapshots cannot enumerate or delete other
+# users' sessions. Legacy ownerless entries stay visible to ownerless clients.
+def _req_owner(data: dict | None = None) -> str | None:
+    candidates = []
+    if data:
+        candidates.append(data.get("owner"))
+    candidates.append(request.args.get("owner"))
+    for value in candidates:
+        if (isinstance(value, str) and 8 <= len(value) <= 128
+                and value.isalnum()):
+            return value
+    return None
+
+
+def _owner_allowed(entry: dict | None, owner: str | None) -> bool:
+    """Matching owners may access their snapshots; legacy ownerless ones stay visible.
+
+    旧版无 owner 的快照对所有客户端可见，避免升级后历史会话“消失”；
+    新快照只属于各自的 owner。
+    """
+    if entry is None:
+        return False
+    stored = entry.get("owner")
+    return stored is None or stored == owner
+
+
 # code 会被前端逐条 exec，只放行无害内容：表达式、定义、注释与少量设置命令
 # The client exec's code line by line, so allow only harmless content:
 # expressions, definitions, comments and a few setting commands.
@@ -1339,23 +1452,19 @@ def _prune_sessions() -> None:
     now = time.time()
     doomed: list[tuple[str, dict, str]] = []
     with _sessions_lock:
-        # 正在执行命令的会话持有 interp._lock（send / send_stream 全程持锁），
-        # 不能因为“空闲超时”而回收它，否则 health 检查或新请求会中断长计算.
-        # A session with a command in flight holds interp._lock; never reap it
-        # as idle, or a health check / new request would abort a long eval.
+        # 正在执行命令的会话占用 interp._busy 命令槽，不能因“空闲超时”回收它
+        # A session with a command in flight occupies _busy; never reap it as idle.
         stale = [sid for sid, s in _sessions.items()
-                 if (not s["interp"]._lock.locked()
+                 if (not s["interp"]._busy
                      and (now - s["used"] > SESSION_IDLE or not s["interp"].alive))]
         for sid in stale:
             doomed.append((sid, _sessions.pop(sid), "idle/dead"))
-        # 超出上限时只淘汰未执行命令的会话，正在执行命令的会话持有 interp._lock，
-        # 淘汰它会中断长计算；若全部持锁则暂时超限，留待下次清理.
-        # Evict only unlocked sessions when over the limit: a session with a command
-        # in flight holds interp._lock and must not be killed; if all are locked,
-        # tolerate a temporary over-limit until the next sweep.
+        # 超出上限时只淘汰空闲会话；若都忙则暂时超限，留待下次清理
+        # Evict only idle sessions when over the limit; tolerate a temporary
+        # over-limit until the next sweep if all are busy.
         while len(_sessions) > MAX_SESSIONS:
             candidates = [sid for sid in _sessions
-                          if not _sessions[sid]["interp"]._lock.locked()]
+                          if not _sessions[sid]["interp"]._busy]
             if not candidates:
                 break
             oldest = min(candidates, key=lambda k: _sessions[k]["used"])
@@ -1371,7 +1480,8 @@ def _prune_sessions() -> None:
 
 
 def get_session(sid: str | None, lang: str = "both",
-                *, create: bool = True) -> tuple[str, Interpreter] | tuple[None, None]:
+                *, create: bool = True, owner: str | None = None
+                ) -> tuple[str, Interpreter] | tuple[None, None]:
     """Look up or create a session.
 
     With ``create=False`` an unknown id returns ``(None, None)`` instead of
@@ -1391,7 +1501,7 @@ def get_session(sid: str | None, lang: str = "both",
     # health endpoint are not blocked by a slow Popen.
     interp = Interpreter(lang)
     with _sessions_lock:
-        _sessions[new_sid] = {"interp": interp, "used": time.time()}
+        _sessions[new_sid] = {"interp": interp, "used": time.time(), "owner": owner}
     log.info("session created sid=%s lang=%s / 会话已创建", new_sid, lang)
     return new_sid, interp
 
@@ -1637,7 +1747,7 @@ def api_session():
         return api_error(_missing_bin_msg(), 500, "internal")
     data = _json_body() or {}
     lang = data.get("lang") if data.get("lang") in ALLOWED_LANGS else "both"
-    sid, _ = get_session(None, lang)
+    sid, _ = get_session(None, lang, owner=_req_owner(data))
     return jsonify({"ok": True, "session": sid})
 
 
@@ -1651,21 +1761,23 @@ def api_session_restore(sid):
         return api_error("请求过于频繁 / rate limit exceeded", 429, "rate_limited")
     data = _json_body() or {}
     lang = data.get("lang") if data.get("lang") in ALLOWED_LANGS else "both"
+    owner = _req_owner(data)
     _prune_snapshots()
     with _snapshot_rmw_lock:
         entry = _snapshot_get(sid)
-        code = list(entry["code"]) if entry else None
-        saved_lang = entry["lang"] if entry else lang
-        saved_name = entry.get("name", "") if entry else ""
-        if code is None:
+        if not _owner_allowed(entry, owner):
             return api_error("快照不存在或已过期 / snapshot not found", 404, "not_found")
+        code = list(entry["code"])
+        saved_lang = entry["lang"]
+        saved_name = entry.get("name", "")
+        saved_owner = entry.get("owner")
         for ln in code:
             problem = validate_line(ln)
             if problem:
                 return api_error(problem[1], 400, problem[0])
         if not INTERP_BIN.is_file():
             return api_error(_missing_bin_msg(), 500, "internal")
-        new_sid, interp = get_session(None, saved_lang)
+        new_sid, interp = get_session(None, saved_lang, owner=saved_owner)
         try:
             interp.send(":lang " + saved_lang)
             for ln in code:
@@ -1677,11 +1789,15 @@ def api_session_restore(sid):
             log.warning("snapshot restore failed sid=%s: %s / 快照恢复失败", sid, exc)
             return api_error(str(exc), 410, "session_expired", restart=True)
         new_entry = {"code": code, "lang": saved_lang, "name": saved_name,
+                     "owner": saved_owner,
                      "created": time.time(), "used": time.time()}
         # 先写新快照再删旧快照：SQLite 写入失败会被吞掉，若先删就再也找不回原快照
         # Write the new snapshot first, then remove the old one: SQLite _sql_put
         # swallows write errors, so removing first would lose the only copy.
-        _snapshot_put(new_sid, new_entry)
+        if not _snapshot_put(new_sid, new_entry):
+            # 新快照没写成就不能删旧快照，否则唯一的恢复机会也没了
+            # Do not drop the old snapshot when the new one failed to persist.
+            return api_error("快照写入失败 / snapshot write failed", 500, "internal")
         _snapshot_remove(sid)
     log.info("session restored from snapshot %s -> %s / 会话已从快照恢复", sid, new_sid)
     return jsonify({"ok": True, "session": new_sid, "code": code, "lang": saved_lang})
@@ -1696,8 +1812,11 @@ def api_snapshots():
     if not _rate_ok():
         return api_error("请求过于频繁 / rate limit exceeded", 429, "rate_limited")
     _prune_snapshots()
+    owner = _req_owner()
     items = []
     for sid, entry in _snapshot_all().items():
+        if not _owner_allowed(entry, owner):
+            continue
         items.append({"id": sid, "lines": len(entry["code"]), "lang": entry["lang"],
                       "created": entry["created"], "used": entry["used"],
                       "name": entry.get("name", "")})
@@ -1714,12 +1833,15 @@ def api_snapshot_name(sid):
     name = data.get("name")
     if not isinstance(name, str) or len(name) > 80:
         return api_error("名称无效 / invalid name", 400, "bad_request")
-    entry = _snapshot_get(sid)
-    if entry is None:
-        return api_error("快照不存在 / snapshot not found", 404, "not_found")
-    entry["name"] = name.strip()
-    entry["used"] = time.time()
-    _snapshot_put(sid, entry)
+    # 读-改-写必须持同一把锁，否则与并发求值追加快照互相覆盖
+    # Hold the RMW lock so a concurrent eval cannot clobber the rename.
+    with _snapshot_rmw_lock:
+        entry = _snapshot_get(sid)
+        if not _owner_allowed(entry, _req_owner(data)):
+            return api_error("快照不存在 / snapshot not found", 404, "not_found")
+        entry["name"] = name.strip()
+        entry["used"] = time.time()
+        _snapshot_put(sid, entry)
     return jsonify({"ok": True, "id": sid, "name": entry["name"]})
 
 
@@ -1727,10 +1849,12 @@ def api_snapshot_name(sid):
 def api_snapshot_delete(sid):
     if not _rate_ok():
         return api_error("请求过于频繁 / rate limit exceeded", 429, "rate_limited")
-    entry = _snapshot_get(sid)
-    if entry is None:
-        return api_error("快照不存在 / snapshot not found", 404, "not_found")
-    _snapshot_remove(sid)
+    data = _json_body() or {}
+    with _snapshot_rmw_lock:
+        entry = _snapshot_get(sid)
+        if not _owner_allowed(entry, _req_owner(data)):
+            return api_error("快照不存在 / snapshot not found", 404, "not_found")
+        _snapshot_remove(sid)
     return jsonify({"ok": True, "id": sid})
 
 
@@ -1837,20 +1961,35 @@ def api_eval():
         if problem:
             return api_error(problem[1], 400, problem[0])
 
+    # 批量请求按命令数计费，避免一次 lines 数组绕过按请求的限流
+    # Charge per command so a single lines[] array cannot bypass the rate limit.
+    if len(lines) > 1 and not _rate_ok(len(lines) - 1):
+        return api_error("请求过于频繁 / rate limit exceeded", 429, "rate_limited")
+
     if not INTERP_BIN.is_file():
         return api_error(_missing_bin_msg(), 500, "internal")
 
     sid_in = data.get("session")
+    owner = _req_owner(data)
     try:
-        sid, interp = get_session(sid_in, lang, create=sid_in is None)
+        sid, interp = get_session(sid_in, lang, create=sid_in is None, owner=owner)
         if sid is None or interp is None:
             return api_error(
                 "会话已过期，正在重建 / session expired; rebuilding",
                 410, "session_expired", restart=True)
         outputs: list[dict] = []
-        for ln in lines:
-            outputs.extend(interp.send(ln))
-        _snapshot_record(sid, lines, lang)
+        done = 0
+        try:
+            for ln in lines:
+                outputs.extend(interp.send(ln))
+                done += 1
+        finally:
+            # 多行请求中途超时时，已执行的行仍要落盘，否则恢复后的会话缺少
+            # 这些定义，与超时前的真实状态不一致
+            # Record the successfully executed prefix even if a later line times
+            # out, so a restored session still contains earlier definitions.
+            if done:
+                _snapshot_record(sid, lines[:done], lang, set_lang=("lang" in data))
         _token_used(data.get("token"))
         with _sessions_lock:
             if sid in _sessions:
@@ -1894,7 +2033,16 @@ def api_race():
     line = data.get("line")
     if not isinstance(line, str) or not line.strip():
         return api_error("表达式为空 / empty expression", 400, "bad_request")
-    expr = line.strip()
+    # 必须逐行拆分并只接受单行：整段字符串直接拼进 ":trace …" 会让换行变成
+    # 一条未经校验的新命令，绕过 :load 路径检查和 :quit 拦截
+    # Split into lines and accept exactly one: embedding a multi-line string in
+    # ":trace …" turns the second line into an unverified command, bypassing the
+    # :load path check and the :quit refusal.
+    parts = [p for p in line.splitlines() if p.strip()]
+    if len(parts) != 1:
+        return api_error("竞速只接受单个表达式 / race accepts a single expression",
+                         400, "bad_request")
+    expr = parts[0].strip()
     # 竞速只接受表达式，不接受命令：每条策略都要用 :trace 收集步骤
     # The race accepts expressions only; each strategy is measured with :trace.
     if expr.startswith(":"):
@@ -1906,8 +2054,14 @@ def api_race():
     if not INTERP_BIN.is_file():
         return api_error(_missing_bin_msg(), 500, "internal")
     sid_in = data.get("session")
-    strategy = data.get("strategy") if data.get("strategy") in STRATEGIES else "applicative"
-    sid, interp = get_session(sid_in, lang, create=sid_in is None)
+    # need 不在竞速的四种策略里，但界面可能正选用它：恢复时必须原样保留，
+    # 否则竞速结束后会话策略被悄悄改成 applicative
+    # need is not raced, but the UI may be using it: preserve it on restore so a
+    # race does not silently switch the session to applicative order.
+    restore_strategy = data.get("strategy")
+    strategy = restore_strategy if restore_strategy in STRATEGIES + ("need",) else "applicative"
+    sid, interp = get_session(sid_in, lang, create=sid_in is None,
+                              owner=_req_owner(data))
     if sid is None or interp is None:
         return api_error(
             "会话已过期，正在重建 / session expired; rebuilding",
@@ -1933,7 +2087,7 @@ def api_race():
     except RuntimeError as exc:
         log.warning("race session dead sid=%s: %s / 策略竞速会话已退出", sid_in, exc)
         return api_error(str(exc), 410, "session_expired", restart=True)
-    _snapshot_record(sid, [expr], lang)
+    _snapshot_record(sid, [expr], lang, set_lang=("lang" in data))
     with _sessions_lock:
         if sid in _sessions:
             _sessions[sid]["used"] = time.time()
@@ -1965,6 +2119,8 @@ def api_eval_stream():
         problem = validate_line(ln)
         if problem:
             return api_error(problem[1], 400, problem[0])
+    if len(lines) > 1 and not _rate_ok(len(lines) - 1):
+        return api_error("请求过于频繁 / rate limit exceeded", 429, "rate_limited")
     if not INTERP_BIN.is_file():
         return api_error(_missing_bin_msg(), 500, "internal")
 
@@ -1975,7 +2131,8 @@ def api_eval_stream():
     # reject it here with the same 400 shape as /api/eval.
     if sid_in is not None and not isinstance(sid_in, str):
         return api_error("invalid session id", 400, "bad_request")
-    sid, interp = get_session(sid_in, lang, create=sid_in is None)
+    sid, interp = get_session(sid_in, lang, create=sid_in is None,
+                              owner=_req_owner(data))
     if sid is None or interp is None:
         return api_error(
             "会话已过期，正在重建 / session expired; rebuilding",
@@ -1991,7 +2148,9 @@ def api_eval_stream():
             for ln in lines:
                 for obj in interp.send_stream(ln):
                     yield sse(obj)
-            _snapshot_record(sid, lines, lang)
+                # 逐行落盘：中途超时也能保住已执行的定义
+                # Persist each completed line so a later timeout keeps earlier definitions.
+                _snapshot_record(sid, [ln], lang, set_lang=("lang" in data))
             with _sessions_lock:
                 if sid in _sessions:
                     _sessions[sid]["used"] = time.time()

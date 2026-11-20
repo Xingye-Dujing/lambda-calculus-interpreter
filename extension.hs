@@ -341,9 +341,11 @@ data EvalResult = EvalResult
 defaultLimit :: Int
 defaultLimit = 10000
 
--- 有界循环检测：在最近 cycleCheckLimit 个小项里查找重复，避免发散项白跑满步数
--- Bounded cycle detection: look for repeats in a rolling window of small terms,
--- so a divergent term is reported instead of silently burning the step budget.
+-- 有界循环检测：在最近 cycleCheckLimit 个小项里查找重复并标记 erCycle
+-- 它是诊断标记，不改归约终止条件：步数上限与 --timeout 仍按原样工作
+-- Bounded cycle detection flags repeats in a rolling window of small terms via
+-- erCycle. It is diagnostic only: the step limit and --timeout still govern
+-- termination, so divergent terms follow the normal limit/timeout paths.
 cycleCheckLimit :: Int
 cycleCheckLimit = 2000
 
@@ -549,14 +551,38 @@ data MFrame = FArg Expr [(String, MVal)] | FLamFrame String | FNeutral Expr
 
 data MState = MEval Expr [(String, MVal)] [MFrame] | MRet MVal [MFrame]
 
--- 当前作用域内由抽象机打开的 λ 绑定名 / Binder names opened by the machine.
--- 抽象机用裸字符串查环境；同名嵌套绑定会互相遮蔽并污染引号还原结果，
--- 因此每次打开 λ 时都取一个相对当前 frame 栈唯一的绑定名
--- The machine looks up the environment by raw name; nested binders that share
--- a name shadow each other and corrupt the quoted term. Pick a binder name
--- that is fresh with respect to the active frames every time a λ is opened.
+-- 配置中出现的所有变量名：绑定名、环境值与 frame 都要算进去
+-- 抽象机还原项时把 MFree u 展开成 Var u；若 u 与体中出现的自由变量同名就会捕获
+-- 因此打开 λ 时必须在“初始项里的所有名字 ∪ 当前配置里的所有名字”之外取新名
+-- All variable names in a configuration: binders, environment values and frames.
+-- Quoting expands MFree u into Var u; a binder that coincides with a free
+-- variable revealed from a thunk would capture it. Every generated binder must
+-- therefore avoid every name from the original term and from the live state.
+allExprNames :: Expr -> Set.Set String
+allExprNames (Var x)   = Set.singleton x
+allExprNames (Lam x b) = Set.insert x (allExprNames b)
+allExprNames (App f a) = allExprNames f `Set.union` allExprNames a
+
+nameMVal :: MVal -> Set.Set String
+nameMVal (MFree x)       = Set.singleton x
+nameMVal (MNeutral t)    = allExprNames t
+nameMVal (MThunk e env)  = allExprNames e `Set.union` nameEnv env
+nameMVal (MClos x b env) = Set.insert x (allExprNames b) `Set.union` nameEnv env
+
+nameEnv :: [(String, MVal)] -> Set.Set String
+nameEnv env = Set.fromList (map fst env) `Set.union` Set.unions (map (nameMVal . snd) env)
+
+nameFrame :: MFrame -> Set.Set String
+nameFrame (FArg a env)  = allExprNames a `Set.union` nameEnv env
+nameFrame (FLamFrame x) = Set.singleton x
+nameFrame (FNeutral h)  = allExprNames h
+
 frameNames :: [MFrame] -> Set.Set String
-frameNames stk = Set.fromList [x | FLamFrame x <- stk]
+frameNames stk = Set.unions (map nameFrame stk)
+
+machineAvoid :: Set.Set String -> Expr -> [(String, MVal)] -> [MFrame] -> Set.Set String
+machineAvoid forbidden e env stk =
+  forbidden `Set.union` allExprNames e `Set.union` nameEnv env `Set.union` frameNames stk
 
 quoteValM :: Int -> MVal -> Expr
 quoteValM _ (MFree x) = Var x
@@ -589,6 +615,10 @@ quoteStateM (MRet v stk) = foldl' addFrameM (quoteValM 12 v) stk
 machineEval :: Int -> Expr -> (Expr, Int, [TraceStep], Bool)
 machineEval limit e0 = go 0 0 (MEval e0 [] []) [] Set.empty
   where
+    -- 初始项里的全部名字永久禁用：归约只会揭示这些自由变量，不会凭空产生新的
+    -- Permanently reserve every name from the original term: reduction can only
+    -- reveal these free variables, never invent new ones.
+    forbidden = allExprNames e0
     -- 避免 limit*20 溢出后管理预算反而塌缩成 1000
     -- Avoid overflow collapsing the admin budget back to 1000.
     adminLimit = if limit > (maxBound - 100) `div` 20
@@ -620,7 +650,7 @@ machineEval limit e0 = go 0 0 (MEval e0 [] []) [] Set.empty
       | n >= limit && needsBeta st = (quoteStateM st, n, reverse acc, True)
       | otherwise = case st of
           MRet (MClos x b cenv) [] ->
-            let u = freshVar x (frameNames [])
+            let u = freshVar x (machineAvoid forbidden b cenv [])
             in go n (adm + 1) (MEval b ((x, MFree u) : cenv) [FLamFrame u]) acc seen
           MRet v [] -> (quoteValM 12 v, n, reverse acc, False)
           MEval (App f a) env stk ->
@@ -647,7 +677,7 @@ machineEval limit e0 = go 0 0 (MEval e0 [] []) [] Set.empty
                   after = quoteStateM st'
               in go (n + 1) (adm + 1) st' (step before after (n + 1) acc) seen
             _ ->
-              let u = freshVar x (frameNames stk)
+              let u = freshVar x (machineAvoid forbidden b env stk)
               in go n (adm + 1)
                       (MEval b ((x, MFree u) : env) (FLamFrame u : stk)) acc seen
           MRet v (FLamFrame x : rest) ->
@@ -670,9 +700,16 @@ machineEval limit e0 = go 0 0 (MEval e0 [] []) [] Set.empty
 -- 并行归约：一轮同时收缩所有互不包含的 redex
 -- Parallel reduction: contract every maximal redex in a single round.
 parallelStep :: Bool -> Expr -> (Expr, Int)
-parallelStep _eta (App (Lam x b) a) =
-  let (after, _) = substRename x a (freeVars a) b
-  in (after, 1)
+parallelStep eta (App (Lam x b) a) =
+  -- 真正的并行步：先并行归约函数体与实参，再收缩根 redex 并累加步数，
+  -- 否则根 redex 一存在时内部 redex 会被拖到后续轮次，退化为顺序归约
+  -- A real parallel step: reduce the body and argument first, then contract the
+  -- root redex and sum all counts; otherwise inner redexes are deferred to later
+  -- rounds and :par degenerates to sequential reduction.
+  let (b', n1) = parallelStep eta b
+      (a', n2) = parallelStep eta a
+      (after, _) = substRename x a' (freeVars a') b'
+  in (after, 1 + n1 + n2)
 parallelStep _eta (App f a) =
   let (f', n1) = parallelStep _eta f
       (a', n2) = parallelStep _eta a
@@ -1632,6 +1669,11 @@ parseCommand raw
            -- An out-of-range count must be reported, not silently parsed as
            -- an expression (e.g. :time 0 PLUS ONE TWO timed a different term).
            Just _ | not (null (trim rest)) -> Left usage
+           -- 裸整数（无论是否在 1-1000 内）都没有表达式，必须报用法错误，
+           -- 不能悄悄把 :time 0 / :time 5 当成邱奇数来计时
+           -- A bare integer has no expression: report usage instead of silently
+           -- timing it as a Church numeral (e.g. :time 0 or :time 5).
+           Just _ -> Left usage
            _ -> TimeOf 1 <$> parseExpr' src
     parseBench src =
       let txt = trim src
@@ -2072,12 +2114,16 @@ prettyFTy (FArr a b) = parenFTy a ++ " → " ++ prettyFTy b
 prettyFTy (FVarT a) = a
 prettyFTy (FTyCon t) = prettyTy t
 
-ftypeAlpha :: FTy -> FTy -> Bool
-ftypeAlpha (FForall a x) (FForall b y) = ftypeAlpha (substFTy b (TVar a) y) x
-ftypeAlpha (FArr a b) (FArr c d) = ftypeAlpha a c && ftypeAlpha b d
-ftypeAlpha (FVarT a) (FVarT b) = a == b
-ftypeAlpha (FTyCon a) (FTyCon b) = normalizeNames a == normalizeNames b
-ftypeAlpha _ _ = False
+-- 把 FVarT old 改名为 new，遇到同名 ∀ 绑定时停下以避免捕获
+-- Rename an FVarT, stopping under a ∀ that binds the same name to avoid capture.
+renameFTyVar :: String -> String -> FTy -> FTy
+renameFTyVar old new (FVarT a) | a == old    = FVarT new
+                               | otherwise   = FVarT a
+renameFTyVar old new (FArr a b) = FArr (renameFTyVar old new a) (renameFTyVar old new b)
+renameFTyVar old new (FForall a t)
+  | a == old || a == new = FForall a t
+  | otherwise = FForall a (renameFTyVar old new t)
+renameFTyVar _ _ t = t
 
 substFTy :: String -> Ty -> FTy -> FTy
 substFTy a r (FVarT b) | a == b = FTyCon r
@@ -2085,6 +2131,45 @@ substFTy a r (FForall b t) | a /= b = FForall b (substFTy a r t)
 substFTy a r (FArr x y) = FArr (substFTy a r x) (substFTy a r y)
 substFTy a r (FTyCon t) = FTyCon (substTy (Map.singleton a r) t)
 substFTy _ _ t = t
+
+-- 一阶合一：未标注 λ 产生的新类型变量要能被应用处的实参类型实例化，
+-- 原先只做精确相等检查会把 (\x. x) (\y. y) 这样的良类型应用误判为错误
+-- First-order unification: fresh variables from unannotated lambdas must be
+-- instantiated by the argument type at an application. Exact equality used to
+-- reject well-typed applications such as (\x. x) (\y. y).
+type FSubst = Map.Map String FTy
+
+ftFreeVars :: FTy -> Set.Set String
+ftFreeVars (FVarT a)     = Set.singleton a
+ftFreeVars (FArr a b)    = ftFreeVars a `Set.union` ftFreeVars b
+ftFreeVars (FForall a t) = Set.delete a (ftFreeVars t)
+ftFreeVars (FTyCon _)    = Set.empty
+
+applyFSubst :: FSubst -> FTy -> FTy
+applyFSubst s t@(FVarT a) = case Map.lookup a s of
+  Nothing -> t
+  Just t' -> applyFSubst s t'
+applyFSubst s (FArr a b)  = FArr (applyFSubst s a) (applyFSubst s b)
+applyFSubst s (FForall a t) = FForall a (applyFSubst (Map.delete a s) t)
+applyFSubst _ t = t
+
+unifyF :: FSubst -> FTy -> FTy -> Either String FSubst
+unifyF s x y = go (applyFSubst s x) (applyFSubst s y)
+  where
+    bind a t
+      | a `Set.member` ftFreeVars t = Left ("出现检查 / occurs check: " ++ a)
+      | otherwise = Right (Map.insert a t s)
+    go (FVarT a) (FVarT b) | a == b = Right s
+    go (FVarT a) t = bind a t
+    go t (FVarT a) = bind a t
+    go (FArr a1 a2) (FArr b1 b2) = do
+      s1 <- unifyF s a1 b1
+      unifyF s1 (applyFSubst s1 a2) (applyFSubst s1 b2)
+    go (FTyCon a) (FTyCon b)
+      | normalizeNames a == normalizeNames b = Right s
+    go (FForall a t1) (FForall b t2) = unifyF s t1 (renameFTyVar b a t2)
+    go t1 t2 = Left ("参数类型不匹配 / argument type mismatch: "
+                     ++ prettyFTy t1 ++ " vs " ++ prettyFTy t2)
 
 eraseF :: FExpr -> Expr
 eraseF (FEVar x) = Var x
@@ -2099,42 +2184,56 @@ tyFromScheme (Forall vs t) = foldr FForall (FTyCon t) vs
 
 -- 在类型环境中查名字：先查显式绑定，再查解释器预定义方案
 -- Look up a name: explicit bindings first, then interpreter schemes.
+-- n 是全局单调递增的新鲜变量序号：旧的 freshFTyName 只数当前 ctx，导致两个
+-- 独立的 (\x. x) 都拿到 _a0，应用时无法分辨彼此。s 是合一替换，ctx 把项变量
+-- 映射到 FTy；最后用 s 实例化结果类型
+-- n is a globally increasing fresh-variable counter: the old freshFTyName only
+-- counted the current ctx, so two independent (\x. x) both got _a0 and could not
+-- be distinguished at an application. s is the unification substitution, ctx maps
+-- term variables to FTy, and the result is instantiated with s at the end.
 inferF :: TypeEnv -> [(String, FTy)] -> FExpr -> Either String FTy
-inferF tenv ctx (FEVar x)
-  | Just t <- lookup x ctx = Right t
-  | Just sc <- Map.lookup x tenv = Right (tyFromScheme sc)
-  | otherwise = Left ("未绑定的名字 / unbound name: " ++ x)
-inferF tenv ctx (FExprLam x b) = do
-  let a = freshFTyName ctx
-  tb <- inferF tenv ((x, FVarT a) : ctx) b
-  return (FArr (FVarT a) tb)
-inferF tenv ctx (FEAnnLam x t b) = do
-  tb <- inferF tenv ((x, FTyCon t) : ctx) b
-  return (FArr (FTyCon t) tb)
-inferF tenv ctx (FEApp f a) = do
-  tf <- inferF tenv ctx f
-  ta <- inferF tenv ctx a
-  -- 带标注的 λ 把类型存成 FTyCon (TArr …)，应用时需还原为箭头
-  -- An annotated λ stores its type as FTyCon (TArr …); recover the arrow on application.
-  let fnTy = case tf of
-        FTyCon (TArr p r) -> FArr (FTyCon p) (FTyCon r)
-        other             -> other
-  case fnTy of
-    FArr p r | ftypeAlpha p ta -> Right r
-             | otherwise -> Left ("参数类型不匹配 / argument type mismatch: "
-                                  ++ prettyFTy p ++ " vs " ++ prettyFTy ta)
-    _ -> Left ("不是函数类型 / not a function type: " ++ prettyFTy tf)
-inferF tenv ctx (FETyLam a b) = FForall a <$> inferF tenv (ctx) b
-inferF tenv ctx (FETyApp f t) = do
-  tf <- inferF tenv ctx f
-  case tf of
-    FForall a body -> Right (substFTy a t body)
-    _ -> Left ("不是多态类型 / not a polymorphic type: " ++ prettyFTy tf)
+inferF tenv ctx expr = do
+  (ty, (_, s)) <- go 0 Map.empty ctx expr
+  Right (applyFSubst s ty)
+  where
+    fresh n = ("_a" ++ show n, n + 1)
 
-freshFTyName :: [(String, FTy)] -> String
-freshFTyName ctx = "_a" ++ show (length (filter (isTyVar . snd) ctx))
-  where isTyVar (FVarT _) = True
-        isTyVar _ = False
+    go :: Int -> FSubst -> [(String, FTy)] -> FExpr
+       -> Either String (FTy, (Int, FSubst))
+    go n s c (FEVar x) = case lookup x c of
+      Just t  -> Right (applyFSubst s t, (n, s))
+      Nothing -> case Map.lookup x tenv of
+        Just sc -> Right (tyFromScheme sc, (n, s))
+        Nothing -> Left ("未绑定的名字 / unbound name: " ++ x)
+    go n s c (FExprLam x b) =
+      let (a, n') = fresh n
+      in do
+        (tb, st') <- go n' s ((x, FVarT a) : c) b
+        Right (FArr (FVarT a) tb, st')
+    go n s c (FEAnnLam x t b) = do
+      (tb, st') <- go n s ((x, FTyCon t) : c) b
+      Right (FArr (FTyCon t) tb, st')
+    go n s c (FEApp f a) = do
+      (tf, (n1, s1)) <- go n s c f
+      (ta, (n2, s2)) <- go n1 s1 c a
+      -- 带标注的 λ 把类型存成 FTyCon (TArr …)，应用时需还原为箭头
+      -- An annotated λ stores its type as FTyCon (TArr …); recover the arrow on application.
+      let fnTy = case applyFSubst s2 tf of
+            FTyCon (TArr p r) -> FArr (FTyCon p) (FTyCon r)
+            other             -> other
+      case fnTy of
+        FArr p r -> do
+          s3 <- unifyF s2 p ta
+          Right (applyFSubst s3 r, (n2, s3))
+        other -> Left ("不是函数类型 / not a function type: " ++ prettyFTy other)
+    go n s c (FETyLam a b) = do
+      (tb, st') <- go n s c b
+      Right (FForall a tb, st')
+    go n s c (FETyApp f t) = do
+      (tf, st') <- go n s c f
+      case applyFSubst (snd st') tf of
+        FForall a body -> Right (applyFSubst (snd st') (substFTy a t body), st')
+        other -> Left ("不是多态类型 / not a polymorphic type: " ++ prettyFTy other)
 
 tyParser :: ReadP Ty
 tyParser = do
@@ -3246,7 +3345,10 @@ runCommand st (BenchOf n expr) = do
     , "elapsedMaxMs" .= JDec (maximum samples) ]
   return (Just st)
 runCommand st (Eval expr)
-  | rsStrategy st == Need = do
+  -- 抽象机只实现 β；开启 η 时退回带 η 的小步引擎，避免静默忽略 η 规则
+  -- The abstract machine implements β only; with η on, fall back to the step
+  -- engine so the η rule is not silently ignored (while the result still says eta:true).
+  | rsStrategy st == Need && not (rsEta st) = do
       let e' = expandTop (rsEnv st) expr
           (final, n, steps, adminHit) = machineEval (rsLimit st) e'
           -- machineEval 的轨迹已是正序，不能再反转
@@ -3479,27 +3581,46 @@ runCommand st (ShortestCmd a b) = do
   return (Just st)
 runCommand st (GrowthCmd expr) = do
   let e' = expandTop (rsEnv st) expr
+      -- 不能直接复用 evalTraceWith：它保留的轨迹被 traceLimit=500 截断，
+      -- 长归约的曲线会缺段、峰值也会被压低。这里单独走一遍完整步序列，
+      -- 只记录节点数并沿用同样的有界循环检测
+      -- evalTraceWith cannot be reused: its trace is capped at traceLimit=500,
+      -- so long reductions lose curve points and the reported peak is wrong.
+      -- Walk the full sequence, recording only sizes with bounded cycle detection.
       series strat =
-        let res = evalTraceWith (rsEta st) (rsLimit st) strat e'
-            pts = [ JObj [ "n" .= JNum (tsIndex s)
-                         , "before" .= JNum (exprSize (tsBefore s))
-                         , "after" .= JNum (exprSize (tsAfter s))
-                         , "rule" .= JStr (tsRule s) ]
-                  | s <- erSteps res ]
-        in (pts, erCount res, erLimitHit res)
-      (app, appN, appHit) = series Applicative
-      (nrm, nrmN, nrmHit) = series Normal
-      peak xs = case [v | JObj fs <- xs, Just (JNum v) <- [lookup "after" fs]] of
-                  [] -> 0
-                  vs -> maximum vs
+        let lim = rsLimit st
+            small x = exprSize x <= cycleTermLimit
+            loop !n !e !growthPeak !seen !acc
+              | n >= lim =
+                  let more = case stepFor (rsEta st) strat e of
+                        Nothing -> False
+                        Just _  -> True
+                  in (reverse acc, n, growthPeak, more)
+              | n > 0 && small e && Set.member e seen = (reverse acc, n, growthPeak, False)
+              | otherwise = case stepFor (rsEta st) strat e of
+                  Nothing -> (reverse acc, n, growthPeak, False)
+                  Just s ->
+                    let e2 = soWhole s
+                        sz = exprSize e2
+                        seen' = if small e2 && Set.size seen < cycleCheckLimit
+                                  then Set.insert e2 seen else seen
+                        pt = JObj [ "n" .= JNum (n + 1)
+                                  , "before" .= JNum (exprSize e)
+                                  , "after" .= JNum sz
+                                  , "rule" .= JStr (redRule (soRed s)) ]
+                    in loop (n + 1) e2 (max growthPeak sz) seen' (pt : acc)
+            (pts, cnt, gPeak, hit) = loop 0 e' (exprSize e') (Set.singleton e') []
+        in (pts, cnt, gPeak, hit)
+      (app, appN, appPeak, appHit) = series Applicative
+      (nrm, nrmN, nrmPeak, nrmHit) = series Normal
   emitL st "growth"
-    ("规模曲线：应用序 " ++ show appN ++ " 步 / 峰值 " ++ show (peak app)
-      ++ " 节点，正规序 " ++ show nrmN ++ " 步 / 峰值 " ++ show (peak nrm))
-    ("Growth: applicative " ++ show appN ++ " steps / peak " ++ show (peak app)
-      ++ " nodes, normal " ++ show nrmN ++ " steps / peak " ++ show (peak nrm))
+    ("规模曲线：应用序 " ++ show appN ++ " 步 / 峰值 " ++ show appPeak
+      ++ " 节点，正规序 " ++ show nrmN ++ " 步 / 峰值 " ++ show nrmPeak)
+    ("Growth: applicative " ++ show appN ++ " steps / peak " ++ show appPeak
+      ++ " nodes, normal " ++ show nrmN ++ " steps / peak " ++ show nrmPeak)
     [ "applicative" .= JArr app, "normal" .= JArr nrm
     , "applicativeSteps" .= JNum appN, "normalSteps" .= JNum nrmN
-    , "applicativePeak" .= JNum (peak app), "normalPeak" .= JNum (peak nrm)
+    , "applicativePeak" .= JNum appPeak, "normalPeak" .= JNum nrmPeak
     , "limitHit" .= JBool (appHit || nrmHit) ]
   return (Just st)
 runCommand st (ParCmd expr) = do

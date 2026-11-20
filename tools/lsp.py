@@ -21,6 +21,35 @@ _DOCS: dict[str, str] = {}
 _CACHE: dict[tuple[str, str], tuple[list[dict], str]] = {}
 
 
+def _version() -> str:
+    try:
+        return (ROOT / "VERSION").read_text(encoding="utf-8").strip()
+    except OSError:
+        return "1.0"
+
+
+# 诊断/悬停会把文档行喂给批处理解释器；有副作用的命令必须过滤掉，
+# 例如 :q 会让解释器提前退出、:edit 启动外部编辑器、:load 读取任意文件
+# Diagnostics/hover feed document lines to a batch interpreter; filter commands
+# with side effects such as :q (early exit), :edit (external editor) and :load.
+_UNSAFE_LSP_RE = re.compile(
+    r"^:(?:q|quit|edit|load|save|reset|del|reload|cancel|clear)\b", re.IGNORECASE)
+
+
+def _utf16_len(text: str) -> int:
+    """LSP columns are UTF-16 code units; Python len() counts code points."""
+    return sum(2 if ord(ch) > 0xFFFF else 1 for ch in text)
+
+
+def _safe_lsp_line(line: str) -> bool:
+    stripped = line.strip()
+    if not stripped or stripped.startswith(("--", "#")):
+        return False
+    if any(ord(c) < 32 for c in line):
+        return False
+    return not _UNSAFE_LSP_RE.match(stripped)
+
+
 def find_binary() -> Path | None:
     """Locate the compiled extension binary, mirroring web/app.py.
 
@@ -123,18 +152,24 @@ def diagnostics(text: str) -> list[dict]:
     优先用解释器给出真实诊断，失败时退回静态检查。
     """
     lines = text.splitlines()
-    batches = run_extension(lines)
+    # 只发送安全的行，并保留“原始行号 -> 批次下标”的对应关系
+    # Only send safe lines and keep the original line-number mapping.
+    pairs = [(n, ln) for n, ln in enumerate(lines) if _safe_lsp_line(ln)]
+    batches = run_extension([ln for _, ln in pairs])
     out: list[dict] = []
     if batches:
-        for n, objects in enumerate(batches[:len(lines)]):
+        for (n, source), objects in zip(pairs, batches):
             bad = [o for o in objects if o.get("kind") in ("error", "fail")]
             if not bad:
                 continue
             msg = bad[0].get("textZh") or bad[0].get("textEn") or bad[0].get("text", "")
             pos = bad[0].get("pos")
-            start = max(0, (pos - 1) if isinstance(pos, int) else 0)
+            codepoint_start = max(0, (pos - 1) if isinstance(pos, int) else 0)
+            # 解释器返回的列按 Unicode 码点计，LSP 要的是 UTF-16 代码单元
+            # The interpreter reports code-point columns; LSP wants UTF-16 code units.
+            start = _utf16_len(source[:codepoint_start])
             out.append({"range": {"start": {"line": n, "character": start},
-                                  "end": {"line": n, "character": len(lines[n])}},
+                                  "end": {"line": n, "character": _utf16_len(source)}},
                         "severity": 1,
                         "source": "lambda-interpreter",
                         "message": str(msg)})
@@ -146,7 +181,7 @@ def diagnostics(text: str) -> list[dict]:
             continue
         if s.startswith(":") and s.split()[0] not in KNOWN:
             out.append({"range": {"start": {"line": n, "character": 0},
-                                  "end": {"line": n, "character": len(line)}},
+                                  "end": {"line": n, "character": _utf16_len(line)}},
                         "severity": 2,
                         "message": f"unknown command / 未知命令: {s.split()[0]}"})
     return out
@@ -161,7 +196,7 @@ def real_hover(word: str, text: str) -> str:
     if key in _CACHE:
         return _CACHE[key][1]
     defs = [ln for ln in text.splitlines()
-            if ln.strip() and not ln.strip().startswith(("--", "#")) and "=" in ln]
+            if _safe_lsp_line(ln) and "=" in ln]
     result = ""
     batches = run_extension(defs + [f":type {word}"])
     if batches:
@@ -189,10 +224,16 @@ def handle(msg: dict) -> dict | None:
     rid = msg.get("id")
     if method == "initialize":
         return {"jsonrpc": "2.0", "id": rid, "result": {
-            "capabilities": {"hoverProvider": True, "completionProvider": {}},
-            "serverInfo": {"name": "lambda-lsp", "version": "1.0"}}}
-    if method in ("initialized", "shutdown", "exit"):
+            # 不声明 textDocumentSync 时 LSP 默认为 None，合规客户端永远不会发
+            # didOpen/didChange，诊断功能形同虚设。1 = Full sync
+            "capabilities": {"hoverProvider": True, "completionProvider": {},
+                             "textDocumentSync": 1},
+            "serverInfo": {"name": "lambda-lsp", "version": _version()}}}
+    if method in ("initialized", "exit"):
         return None
+    if method == "shutdown" and rid is not None:
+        # shutdown 是带 id 的请求，必须回复；否则客户端会一直等待直到超时
+        return {"jsonrpc": "2.0", "id": rid, "result": None}
     if method in ("textDocument/didOpen", "textDocument/didChange"):
         uri = (params.get("textDocument") or {}).get("uri", "")
         if method == "textDocument/didOpen":
