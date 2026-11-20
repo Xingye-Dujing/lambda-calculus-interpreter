@@ -801,8 +801,12 @@ check("foreground variable defined",
 check("font scale wired", html.includes("--font-scale")
       && html.includes('root.style.setProperty("--font-scale"')
       && html.includes("var(--font-scale"), "font-size control is a no-op");
+check("editor font scales too", html.includes("--ed-fs:calc(13.5px * var(--font-scale,1))"),
+      "command editor ignores the font-size control");
 check("ctrl-enter joins continuations", html.includes("splitLogicalCommands(seg.text)"),
       "ctrl+enter sends raw continuation lines");
+check("ctrl-enter removes the whole line", html.includes('.replace(/\\n$/, "")'),
+      "ctrl+enter leaves a blank line in the editor");
 state.selected = {redexes: [{i: 1, path: "1", term: "x"}]};
 const hot = sandbox.window.__test.astSvg({k: "app", c: [
   {k: "var", label: "f"}, {k: "app", c: [{k: "var", label: "x"}, {k: "var", label: "y"}]}

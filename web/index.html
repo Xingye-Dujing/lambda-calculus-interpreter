@@ -120,7 +120,7 @@
   .term-line{flex:none;display:flex;align-items:flex-start;gap:9px;margin-top:10px;font-family:var(--mono);font-size:calc(13.5px * var(--font-scale,1));border-top:1px solid var(--border);padding-top:11px;}
   .prompt{color:var(--prompt);flex:none;user-select:none;font-weight:600;padding-top:2px;}
   .input-wrap{flex:1;min-width:0;position:relative;
-    --ed-font:var(--mono); --ed-fs:13.5px; --ed-lh:1.7; --ed-padv:2px; --ed-padh:0px;}
+    --ed-font:var(--mono); --ed-fs:calc(13.5px * var(--font-scale,1)); --ed-lh:1.7; --ed-padv:2px; --ed-padh:0px;}
   .editor-row{display:flex;align-items:stretch;}
   /* 行号列与编辑器共享字体、行高、内边距 / the gutter shares font, leading and padding */
   .gutter{flex:none;min-width:2.2em;text-align:right;overflow:hidden;user-select:none;pointer-events:none;
@@ -3767,7 +3767,12 @@
       var parts = splitLogicalCommands(seg.text);
       var one = parts.length ? parts.join(" ") : "";
       if (!one) return;
-      cmd.value = (cmd.value.slice(0, seg.start) + cmd.value.slice(seg.end)).replace(/^\n/, "");
+      // 删掉整行（含其换行符），否则中间的续行会留下空行
+      // Remove the whole logical line including one newline, so executing a
+      // middle command does not leave a blank line behind.
+      var left = cmd.value.slice(0, seg.start).replace(/\n$/, "");
+      var right = cmd.value.slice(seg.end).replace(/^\n/, "");
+      cmd.value = left + (left && right ? "\n" : "") + right;
       cmd.style.height = "auto";
       pushEditor(cmd.value);
       syncEditor();
