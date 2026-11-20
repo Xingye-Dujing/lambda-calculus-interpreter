@@ -3351,6 +3351,12 @@ def test_bugfix_regressions(b: Path) -> None:
     ft = one([":ftype (\\x. x) (\\y. y)"], b)
     check("systemf application unifies", ft.get("kind") == "ftype"
           and "→" in ft.get("type", ""), str(ft)[:200])
+    # 未标注绑定在应用位也要能推断：(f x) 中 f 的类型还是变量
+    # An unannotated binder in function position must still infer: f's type is
+    # a variable at the application.
+    ft2 = one([r":ftype \f. \x. f x"], b)
+    check("systemf unannotated application", ft2.get("kind") == "ftype"
+          and "→" in ft2.get("type", ""), str(ft2)[:200])
     # 裸 :time 计数必须报用法错误
     tm = one([":time 0"], b)
     check("time bare count errors", tm.get("kind") == "error", str(tm)[:200])

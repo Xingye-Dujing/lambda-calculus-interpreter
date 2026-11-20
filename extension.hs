@@ -2294,13 +2294,25 @@ inferF tenv ctx expr = do
       (ta, (n2, s2)) <- go n1 s1 c a
       -- 带标注的 λ 把类型存成 FTyCon (TArr …)，应用时需还原为箭头
       -- An annotated λ stores its type as FTyCon (TArr …); recover the arrow on application.
-      let fnTy = case applyFSubst s2 tf of
+      let fnTy0 = case applyFSubst s2 tf of
             FTyCon (TArr p r) -> FArr (FTyCon p) (FTyCon r)
             other             -> other
+      -- 函数位若是 ∀，先用新鲜类型变量实例化它
+      -- Instantiate a ∀ in function position with a fresh type variable.
+      let (fnTy, n3) = case fnTy0 of
+            FForall v t -> let (r, n') = fresh n2 in (renameFTyVar v r t, n')
+            other       -> (other, n2)
       case fnTy of
         FArr p r -> do
           s3 <- unifyF s2 p ta
-          Right (applyFSubst s3 r, (n2, s3))
+          Right (applyFSubst s3 r, (n3, s3))
+        -- 未标注 λ 绑定的类型还是变量：引入结果变量并与箭头类型合一
+        -- An unannotated binder still has a type variable: unify it with an
+        -- arrow type built from the argument and a fresh result variable.
+        FVarT v -> do
+          let (r, n4) = fresh n3
+          s3 <- unifyF s2 (FVarT v) (FArr ta (FVarT r))
+          Right (applyFSubst s3 (FVarT r), (n4, s3))
         other -> Left ("不是函数类型 / not a function type: " ++ prettyFTy other)
     go n s c (FETyLam a b) = do
       (tb, st') <- go n s c b

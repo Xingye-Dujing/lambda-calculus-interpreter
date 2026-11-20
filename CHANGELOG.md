@@ -73,6 +73,8 @@
   Tooling: LSP hover converts UTF-16 columns and fixes the word-end boundary, diagnostics keep both languages, mutating aliases such as `:delete`/`:undo` are filtered; the core-sync manifest registers 25 previously untracked shared declarations; the screenshot script lets Chrome pick its debug port and captures at the real scale.
 - 步数边界与抽象机：`:growth`/`:par` 在恰好用满步数且已归一时不再误报截断，`:par` 的一轮不再被吞掉；抽象机对中性 thunk 不再误判 β；`:machine` 在 η 开启时与小步引擎一致；跨步引用统一命名，轨迹前后项真正首尾相接。
   Step-limit boundaries: `:growth`/`:par` no longer report truncation at the exact limit when already normal, and `:par` no longer drops its first round; the machine no longer invents β work for neutral thunks; `:machine` honours η like the step engine; quoted binders use stable names so trace steps truly chain.
+- System F 应用在函数位是未标注绑定（类型仍为变量）时不再误报“不是函数类型”，改为引入结果变量并合一。
+  System F application now unifies a type-variable function position with an arrow instead of rejecting it as "not a function type".
 - `:time <n> <expr>` 现在先去掉次数再解析表达式，不再解析错误对象。
   `:time <n> <expr>` now strips the run count before parsing the expression.
 - 失效会话返回 410 + restart 而不是误报 408；流式求值的超时不再因心跳间隔而超时后延。
