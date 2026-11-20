@@ -25,7 +25,7 @@ import System.Console.Haskeline
 import Text.ParserCombinators.ReadP
 
 versionString :: String
-versionString = "lambda-calculus-interpreter 2.2.3 (minimal)"
+versionString = "lambda-calculus-interpreter 2.3.0 (minimal)"
 
 -- ---------------------------------------------------------------------------
 -- 双语支持 Bilingual support

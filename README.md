@@ -168,7 +168,7 @@ and arm64, then publishes them to a GitHub Release with SHA-256 checksums.
 ## Version
 
 `VERSION` at the repository root is the single source of truth (currently
-2.2.3); the Cabal package version and `./extension -v|--version` follow it.
+2.3.0); the Cabal package version and `./extension -v|--version` follow it.
 See [CHANGELOG.md](./CHANGELOG.md) for the release history.
 
 ## Usage

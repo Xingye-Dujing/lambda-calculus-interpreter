@@ -4,7 +4,7 @@
 > The body of this file is in English; the latest release also has a Chinese
 > summary above its English entry.
 
-## 未发布 / Unreleased
+## 2.3.0 — 2026-11-20
 
 ### 新增 / Added
 
@@ -122,10 +122,11 @@
 
 ## 最新版本中文摘要 / Latest release in Chinese
 
-### 2.2.3 — 2026-11-14
+### 2.3.0 — 2026-11-20
 
-- 修复：测试套件与核心同步工具现在无论控制台代码页如何都以 UTF-8 输出，
-  Windows CI（cp1252）打印中文失败详情时不再崩溃。
+- 新增归约分析（`:shortest` / `:growth`）、System F 显式多态（`:ftype`）、按需策略共享抽象机、`:machine` / `:stats` / `:par`、Church/Scott 编码切换，以及网页的笔记、对比、竞速与会话快照面板。
+- 修复归约引擎的步数边界与变量捕获、抽象机的 thunk 共享与轨迹衔接、System F 未标注应用推断；Web 端补齐快照归属持久化、TTL 回收、跨 worker 原子追加与输入校验；LSP、截图工具与构建文档一并修正。
+- 测试扩展到 71 组且全部通过；发布产物由 CI 构建并附 SHA-256 校验文件。
 
 ## 2.2.3 — 2026-11-14
 
