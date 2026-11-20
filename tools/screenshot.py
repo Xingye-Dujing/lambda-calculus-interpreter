@@ -32,7 +32,6 @@ import base64
 import json
 import os
 import shutil
-import socket
 import subprocess
 import sys
 import tempfile
@@ -67,15 +66,21 @@ CANDIDATES = [
 ]
 
 
-def _reserve_port() -> tuple[int, socket.socket]:
-    """Bind an ephemeral loopback port and hold the socket until Chrome starts.
-
-    预留一个回环端口并保持套接字，直到 Chrome 接管，消除选端口与绑定间的竞态。
+def _devtools_port(profile: Path, timeout: float = 20.0) -> int:
+    """让 Chrome 自己选调试端口，从 profile 里读回，彻底避开端口抢占竞态
+    Let Chrome pick its own debugging port and read it from the profile, which
+    removes the reserve-then-release TOCTOU window entirely.
     """
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    sock.bind(("127.0.0.1", 0))
-    return int(sock.getsockname()[1]), sock
+    marker = profile / "DevToolsActivePort"
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if marker.is_file():
+            try:
+                return int(marker.read_text(encoding="utf-8").splitlines()[0].strip())
+            except (OSError, ValueError, IndexError):
+                pass
+        time.sleep(0.1)
+    raise RuntimeError("Chrome 没有写入调试端口 / Chrome did not publish a DevTools port")
 
 
 def find_chrome() -> str:
@@ -214,7 +219,7 @@ class Shooter:
         data = self.c.call("Page.captureScreenshot", format="png",
                            captureBeyondViewport=False,
                            clip={"x": 0, "y": 0, "width": self.width,
-                                 "height": height, "scale": 1})
+                                 "height": height, "scale": self.scale})
         self.out.mkdir(parents=True, exist_ok=True)
         path = self.out / name
         path.write_bytes(base64.b64decode(data["data"]))
@@ -227,22 +232,22 @@ def capture(url: str, out: Path, only: str | None,
     # Validate Chrome first: find_chrome() exits before the profile is created,
     # so a missing binary can never leave a temp directory behind.
     chrome = find_chrome()
-    port, sock = _reserve_port()
     profile = tempfile.mkdtemp(prefix="lambda-shot-")
     proc = None
     try:
-        # Release the reserved socket only once Chrome is about to bind it,
-        # keeping the TOCTOU window as small as possible.
-        sock.close()
+        # Chrome 自己挑端口并写进 profile，避免预留端口后释放的竞态窗口
+        # Chrome picks the port itself and records it in the profile, so there
+        # is no reserve-then-release race with another process.
         proc = subprocess.Popen(
             [chrome, "--headless=new", "--disable-gpu", "--hide-scrollbars",
              "--no-first-run", "--no-default-browser-check",
              "--force-prefers-color-scheme=light",
-             f"--remote-debugging-port={port}", f"--user-data-dir={profile}",
+             "--remote-debugging-port=0", f"--user-data-dir={profile}",
              "--remote-allow-origins=*",
              f"--window-size={width},{height}", "about:blank"],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
+        port = _devtools_port(Path(profile))
         tab = wait_for_page(port)
         shooter = Shooter(CDP(tab["webSocketDebuggerUrl"]), out, width, height, scale)
         shooter.prepare(url)

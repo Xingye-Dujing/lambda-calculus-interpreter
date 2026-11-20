@@ -3257,6 +3257,35 @@ def test_gallery_tokens_lsp_benchmark(b: Path) -> None:
           and any(isinstance(d, dict) and "NOPE" in str(d.get("message", ""))
                   for d in bad_diags),
           str(bad_opened)[:240])
+    check("lsp diagnostics bilingual", isinstance(bad_diags, list)
+          and any("/" in str(d.get("message", ""))
+                  and "Parse error" in str(d.get("message", ""))
+                  for d in bad_diags), str(bad_diags)[:240])
+
+    tools_dir = str(ROOT / "tools")
+    if tools_dir not in _sys.path:
+        _sys.path.insert(0, tools_dir)
+    import lsp as lspmod  # noqa: WPS433
+    # 非 BMP 字符（数学粗体 A）每个占两个 UTF-16 单元，LSP 偏移必须换算
+    # Non-BMP characters take two UTF-16 units each; LSP columns must be converted.
+    nonbmp = "\U0001d400\U0001d400PLUS ONE"
+    check("lsp hover utf16", lspmod.word_at(nonbmp, 0, 11) == "ONE",
+          repr(lspmod.word_at(nonbmp, 0, 11)))
+    check("lsp hover word end", lspmod.word_at("PLUS ONE", 0, 4) == "",
+          repr(lspmod.word_at("PLUS ONE", 0, 4)))
+    check("lsp filters mutating aliases",
+          not lspmod._safe_lsp_line(":delete foo")
+          and not lspmod._safe_lsp_line(":undo")
+          and not lspmod._safe_lsp_line(":redo"), "unsafe alias not filtered")
+
+    shot_src = (ROOT / "tools" / "screenshot.py").read_text(encoding="utf-8")
+    check("screenshot real scale", '"scale": self.scale' in shot_src,
+          "clip scale still hardcoded to 1")
+    check("screenshot no port race", "--remote-debugging-port=0" in shot_src
+          and "DevToolsActivePort" in shot_src, "port reservation race remains")
+    sync_src = (ROOT / "tools" / "check_core_sync.py").read_text(encoding="utf-8")
+    check("core sync manifest covers db view", '"deBruijnView"' in sync_src
+          and '"exprSize"' in sync_src, "shared declaration missing from manifest")
 
     with tempfile.TemporaryDirectory() as td:
         db = Path(td) / "bench.json"

@@ -49,6 +49,14 @@ MUST_EXIST = (
     "parseExpr", "parseLam", "parseApp", "parseAtom", "parseParens",
     "parseLet", "parseIf", "notKeyword", "parseList", "typeTextP", "trim",
     "stripTrailingComment", "parenBalance", "readReplLine",
+    # 其余当前一致的核心声明也要登记，否则单边修改不会被发现
+    # Keep every currently identical core declaration on the manifest so a
+    # one-sided edit cannot slip past CI.
+    "astBudget", "deBruijnView", "evalTraceWith", "evalWHNF", "exprSize",
+    "greedyMany", "greedySepBy", "greedySepBy1", "greedySome", "historyPath",
+    "isChurchBoolean", "keywordBoundary", "lambdaSep", "letBinder",
+    "letBinderPrefix", "longestP", "parseLang", "parseVar", "readIntIn",
+    "renderMsg", "runParserFull", "say", "shorten", "spaces", "stripLetBinder",
 )
 
 # 这些声明必须逐字一致；语义分叉（Env / JSON / fast 模式）不在此列
@@ -62,6 +70,11 @@ MUST_MATCH = (
     "parseLet", "notKeyword", "typeTextP", "parseParens", "trim",
     "parseIf", "parseList",
     "stripTrailingComment", "parenBalance", "readReplLine",
+    "astBudget", "deBruijnView", "evalTraceWith", "evalWHNF", "exprSize",
+    "greedyMany", "greedySepBy", "greedySepBy1", "greedySome", "historyPath",
+    "isChurchBoolean", "keywordBoundary", "lambdaSep", "letBinder",
+    "letBinderPrefix", "longestP", "parseLang", "parseVar", "readIntIn",
+    "renderMsg", "runParserFull", "say", "shorten", "spaces", "stripLetBinder",
 )
 
 # 这些声明也必须一致，但不参与 --fix 复制：它们的形态依赖各自文件的类型

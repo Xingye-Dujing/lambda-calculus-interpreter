@@ -69,6 +69,8 @@
   Unhashable `lang` values now fall back to `both` instead of raising 500 on six routes; the token store is capped and pruned so unauthenticated `/api/token` calls cannot grow it without bound.
 - 网页：Ctrl+Enter 执行续行命令不再把裸换行拆成多条；补上未定义的 `--fg`；字号按钮改为缩放所有声明字号；证明摘要随语言切换刷新；手动归约条每步更新当前项。
   Web UI: Ctrl+Enter now joins continuation lines instead of sending raw newlines; the undefined `--fg` is declared; the font-size control scales every declared size; proof meta follows language switches; the manual bar updates its current term on every step.
+- 工具：LSP 悬停正确换算 UTF-16 列并修正词尾边界，诊断保留中英双语，过滤 `:delete`/`:undo` 等有副作用别名；核心同步清单补齐 25 个原本未登记的共享声明；截图脚本改用 Chrome 自选调试端口并按真实倍率截取。
+  Tooling: LSP hover converts UTF-16 columns and fixes the word-end boundary, diagnostics keep both languages, mutating aliases such as `:delete`/`:undo` are filtered; the core-sync manifest registers 25 previously untracked shared declarations; the screenshot script lets Chrome pick its debug port and captures at the real scale.
 - `:time <n> <expr>` 现在先去掉次数再解析表达式，不再解析错误对象。
   `:time <n> <expr>` now strips the run count before parsing the expression.
 - 失效会话返回 410 + restart 而不是误报 408；流式求值的超时不再因心跳间隔而超时后延。

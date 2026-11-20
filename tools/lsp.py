@@ -33,7 +33,8 @@ def _version() -> str:
 # Diagnostics/hover feed document lines to a batch interpreter; filter commands
 # with side effects such as :q (early exit), :edit (external editor) and :load.
 _UNSAFE_LSP_RE = re.compile(
-    r"^:(?:q|quit|edit|load|save|reset|del|reload|cancel|clear)\b", re.IGNORECASE)
+    r"^:(?:q|quit|edit|load|save|reset|del|delete|undo|redo|reload|cancel|clear|"
+    r"begin|step|run|end|back|forward|goto)\b", re.IGNORECASE)
 
 
 def _utf16_len(text: str) -> int:
@@ -125,6 +126,18 @@ KNOWN = set(PRELUDE) | set(COMMANDS) | {"rec", "let", "in", "if", "then", "else"
 _WORD_CHARS = re.compile(r"[:'’\w]+", re.UNICODE)
 
 
+def _utf16_index(row: str, character: int) -> int:
+    """把 LSP 的 UTF-16 偏移换算成 Python 的码点下标，越界返回 -1
+    Convert a UTF-16 code-unit column to a code-point index (-1 if out of range).
+    """
+    units = 0
+    for i, ch in enumerate(row):
+        if units == character:
+            return i
+        units += 2 if ord(ch) > 0xFFFF else 1
+    return len(row) if units == character else -1
+
+
 def word_at(text: str, line: int, character: int) -> str:
     """Return the identifier at a zero-based (line, character) position.
 
@@ -138,10 +151,13 @@ def word_at(text: str, line: int, character: int) -> str:
     if line >= len(rows):
         return ""
     row = rows[line]
-    if character > len(row):
+    idx = _utf16_index(row, character)
+    if idx < 0:
         return ""
     for match in _WORD_CHARS.finditer(row):
-        if match.start() <= character <= match.end():
+        # 右端点开区间：紧邻单词后的位置不属于该词
+        # Half-open range: the position right after a word is not inside it.
+        if match.start() <= idx < match.end():
             return match.group(0)
     return ""
 
@@ -162,7 +178,10 @@ def diagnostics(text: str) -> list[dict]:
             bad = [o for o in objects if o.get("kind") in ("error", "fail")]
             if not bad:
                 continue
-            msg = bad[0].get("textZh") or bad[0].get("textEn") or bad[0].get("text", "")
+            # 解释器以 --lang both 运行，text 同时含中英两种语言
+            # The interpreter runs with --lang both, so text carries both languages.
+            msg = (bad[0].get("text") or bad[0].get("textEn")
+                   or bad[0].get("textZh") or "")
             pos = bad[0].get("pos")
             codepoint_start = max(0, (pos - 1) if isinstance(pos, int) else 0)
             # 解释器返回的列按 Unicode 码点计，LSP 要的是 UTF-16 代码单元
@@ -210,7 +229,8 @@ def real_hover(word: str, text: str) -> str:
         else:
             bad = next((o for o in objs if o.get("kind") in ("error", "fail")), None)
             if bad:
-                result = str(bad.get("textZh") or bad.get("text", ""))
+                result = str(bad.get("text") or bad.get("textEn")
+                             or bad.get("textZh") or "")
     if not result:
         kind = "command" if word.startswith(":") else ("prelude" if word in PRELUDE else "name")
         result = f"`{word}` — {kind} (offline / 离线)"
