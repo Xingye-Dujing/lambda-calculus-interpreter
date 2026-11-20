@@ -3385,6 +3385,27 @@ def test_bugfix_regressions(b: Path) -> None:
           str(shared)[:240])
     check("machine trace chains", len(shtr) == 2 and shtr[0]["after"] == shtr[1]["before"],
           str(shtr)[:240])
+    # 步数边界：已在步数上限处归一的结果不能误报 limitHit
+    # Step-limit boundaries: a term already normal at the limit must not be
+    # reported as truncated.
+    neutral = one([":steps 1", r":machine (\x. x z) (f a)"], b)
+    check("machine neutral thunk no false limit", neutral.get("limitHit") is False
+          and neutral.get("term") == "f a z", str(neutral)[:200])
+    grow_edge = one([":steps 6", ":growth PLUS TWO THREE"], b)
+    check("growth exact limit clean", grow_edge.get("limitHit") is False,
+          str(grow_edge)[:200])
+    par_edge = one([":steps 1", r":par (\x. x) z"], b)
+    check("par exact limit performs round", par_edge.get("steps") == 1
+          and par_edge.get("term") == "z" and par_edge.get("limitHit") is False,
+          str(par_edge)[:200])
+    chain = one([":machine SUCC ONE"], b)
+    ctr = chain.get("trace", [])
+    check("machine long trace chains", len(ctr) > 2
+          and all(ctr[i]["after"] == ctr[i + 1]["before"] for i in range(len(ctr) - 1)),
+          str(ctr)[:240])
+    eta_outs = run([":eta on", r":machine \x. f x"], b)
+    eta_m = eta_outs[1][0] if eta_outs[1] else {}
+    check("machine honours eta", eta_m.get("term") == "f", str(eta_m)[:200])
 
     try:
         import flask  # noqa: F401
