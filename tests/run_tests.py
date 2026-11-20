@@ -37,6 +37,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -3082,6 +3083,26 @@ def test_snapshot_ownership(b: Path) -> None:
                 check(f"owned snapshot pruned {suffix}",
                       webapp._snapshot_get(stale_sid) is None,
                       str(webapp._snapshot_get(stale_sid))[:160])
+                if suffix == "sqlite":
+                    # 跨 worker 并发追加不能丢行：事务要串行化读-改-写
+                    # Concurrent appenders must not lose lines: the transaction
+                    # serialises the read-modify-write across workers.
+                    shared = "shared-" + suffix
+
+                    def append(tag):
+                        for i in range(20):
+                            webapp._snapshot_record(shared, [f"{tag}-{i}"], "en",
+                                                    owner=owner)
+
+                    threads = [threading.Thread(target=append, args=(str(k),))
+                               for k in range(4)]
+                    for t in threads:
+                        t.start()
+                    for t in threads:
+                        t.join()
+                    lines = webapp._snapshot_get(shared)["code"]
+                    check("sqlite append atomic", len(lines) == 80
+                          and len(set(lines)) == 80, f"{len(lines)} lines")
                 client.delete(f"/api/session/{sid}")
     finally:
         webapp.SNAPSHOT_DB = old_db

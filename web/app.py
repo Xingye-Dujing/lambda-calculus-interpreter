@@ -1014,6 +1014,52 @@ def _owner_sql(owner: str | None) -> tuple[str, tuple]:
     return "(owner IS NULL OR owner=?)", (owner,)
 
 
+def _sql_append(sid: str, lines, lang: str, set_lang: bool,
+                owner: str | None) -> None:
+    """跨 worker 原子的快照追加：读-改-写放在同一个 BEGIN IMMEDIATE 事务里
+    Atomic append across workers: the read-modify-write runs in one transaction.
+    """
+    path = _snapshot_db_path()
+    assert path is not None
+    now = time.time()
+    conn = sqlite3.connect(str(path), timeout=10)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT code, lang, created, used, name, owner FROM snapshots WHERE id=?",
+            (sid,),
+        ).fetchone()
+        if row:
+            try:
+                stored = json.loads(row[0])
+            except (TypeError, ValueError):
+                stored = []
+            code = [x for x in stored if isinstance(x, str)] if isinstance(stored, list) else []
+            used_lang, created = row[1], float(row[2])
+            name, saved_owner = row[4] or "", row[5] or None
+        else:
+            code, used_lang, created = [], lang, now
+            name, saved_owner = "", owner
+        for ln in lines:
+            text = str(ln).strip()
+            if text:
+                code.append(text)
+        if set_lang and lang in ALLOWED_LANGS:
+            used_lang = lang
+        conn.execute(
+            "INSERT OR REPLACE INTO snapshots "
+            "(id, code, lang, created, used, name, owner) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (sid, json.dumps(code[-MAX_SNAPSHOT_LINES:], ensure_ascii=False),
+             used_lang, created, now, name, saved_owner),
+        )
+        conn.commit()
+    except (sqlite3.Error, TypeError, ValueError) as exc:
+        conn.rollback()
+        log.warning("snapshot sqlite append failed / SQLite 快照追加失败: %s", exc)
+    finally:
+        conn.close()
+
+
 def _sql_rename(sid: str, name: str, owner: str | None, used: float) -> bool:
     clause, args = _owner_sql(owner)
     try:
@@ -1186,12 +1232,17 @@ def _snapshot_record(sid: str, lines, lang: str, set_lang: bool = True,
         with _sessions_lock:
             session = _sessions.get(sid)
             owner = session.get("owner") if session else None
-    # 整个读-改-写必须持锁，否则两个并发 eval 会基于同一旧快照各自追加，
-    # 后写者覆盖先写者
+    # SQLite 下用 BEGIN IMMEDIATE 事务保证跨 worker 的读-改-写原子性；
+    # JSON 文件模式下用进程内的 RLock
+    # SQLite uses BEGIN IMMEDIATE for cross-worker atomicity; the JSON file
+    # backend relies on the process-local RLock.
+    if _use_sqlite():
+        with _snapshot_rmw_lock:
+            _sql_append(sid, lines, lang, set_lang, owner)
+        return
     # RLock 不与 _snapshots_lock 形成环：get/put 各自获取后即释放
     # Hold the whole read-modify-write so two concurrent evals cannot both read the
-    # same old snapshot and let the later write clobber the earlier one. RLock does
-    # not cycle with _snapshots_lock: get/put each acquire and release it separately.
+    # same old snapshot and let the later write clobber the earlier one.
     with _snapshot_rmw_lock:
         now = time.time()
         entry = _snapshot_get(sid) or {
