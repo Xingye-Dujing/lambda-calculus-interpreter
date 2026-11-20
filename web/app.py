@@ -922,8 +922,15 @@ def _sql_conn():
         conn.execute(
             "CREATE TABLE IF NOT EXISTS snapshots ("
             "id TEXT PRIMARY KEY, code TEXT NOT NULL, lang TEXT NOT NULL, "
-            "created REAL NOT NULL, used REAL NOT NULL, name TEXT NOT NULL DEFAULT '')"
+            "created REAL NOT NULL, used REAL NOT NULL, name TEXT NOT NULL DEFAULT '', "
+            "owner TEXT)"
         )
+        # 旧库可能还没有 owner 列；补齐后旧行保持 ownerless（向后兼容）
+        # Older databases may lack the owner column; add it and leave old rows
+        # ownerless for backwards compatibility.
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(snapshots)").fetchall()}
+        if "owner" not in cols:
+            conn.execute("ALTER TABLE snapshots ADD COLUMN owner TEXT")
         yield conn
         conn.commit()
     except Exception:
@@ -937,7 +944,7 @@ def _sql_get(sid: str) -> dict | None:
     try:
         with _sql_conn() as conn:
             row = conn.execute(
-                "SELECT code, lang, created, used, name FROM snapshots WHERE id=?",
+                "SELECT code, lang, created, used, name, owner FROM snapshots WHERE id=?",
                 (sid,),
             ).fetchone()
     except sqlite3.Error as exc:
@@ -952,17 +959,19 @@ def _sql_get(sid: str) -> dict | None:
     if not isinstance(code, list) or not all(isinstance(x, str) for x in code):
         return None
     return {"code": code[-MAX_SNAPSHOT_LINES:], "lang": row[1],
-            "created": float(row[2]), "used": float(row[3]), "name": row[4] or ""}
+            "created": float(row[2]), "used": float(row[3]), "name": row[4] or "",
+            "owner": row[5] or None}
 
 
 def _sql_put(sid: str, entry: dict) -> bool:
     try:
         with _sql_conn() as conn:
             conn.execute(
-                "INSERT OR REPLACE INTO snapshots (id, code, lang, created, used, name) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT OR REPLACE INTO snapshots (id, code, lang, created, used, name, owner) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (sid, json.dumps(entry["code"], ensure_ascii=False), entry["lang"],
-                 entry["created"], entry["used"], entry.get("name", "")),
+                 entry["created"], entry["used"], entry.get("name", ""),
+                 entry.get("owner") or None),
             )
         return True
     except sqlite3.Error as exc:
@@ -974,27 +983,52 @@ def _sql_all() -> dict[str, dict]:
     try:
         with _sql_conn() as conn:
             rows = conn.execute(
-                "SELECT id, code, lang, created, used, name FROM snapshots"
+                "SELECT id, code, lang, created, used, name, owner FROM snapshots"
             ).fetchall()
     except sqlite3.Error as exc:
         log.warning("snapshot sqlite scan failed / SQLite 快照扫描失败: %s", exc)
         return {}
     out: dict[str, dict] = {}
-    for sid, raw, lang, created, used, name in rows:
+    for sid, raw, lang, created, used, name, owner in rows:
         try:
             code = json.loads(raw)
         except (TypeError, ValueError):
             continue
         if isinstance(code, list) and all(isinstance(x, str) for x in code):
             out[sid] = {"code": code[-MAX_SNAPSHOT_LINES:], "lang": lang,
-                        "created": float(created), "used": float(used), "name": name or ""}
+                        "created": float(created), "used": float(used), "name": name or "",
+                        "owner": owner or None}
     return out
 
 
-def _sql_delete(sid: str) -> None:
+def _owner_sql(owner: str | None) -> tuple[str, tuple]:
+    """SQL 谓词：旧的无主快照对所有客户端可见，其余只匹配自己的 owner
+    SQL predicate mirroring _owner_allowed for cross-process updates.
+    """
+    if owner is None:
+        return "owner IS NULL", ()
+    return "(owner IS NULL OR owner=?)", (owner,)
+
+
+def _sql_rename(sid: str, name: str, owner: str | None, used: float) -> bool:
+    clause, args = _owner_sql(owner)
     try:
         with _sql_conn() as conn:
-            conn.execute("DELETE FROM snapshots WHERE id=?", (sid,))
+            cur = conn.execute(
+                f"UPDATE snapshots SET name=?, used=? WHERE id=? AND {clause}",
+                (name, used, sid, *args),
+            )
+            return cur.rowcount > 0
+    except sqlite3.Error as exc:
+        log.warning("snapshot sqlite rename failed / SQLite 快照重命名失败: %s", exc)
+        return False
+
+
+def _sql_delete(sid: str, owner: str | None = None) -> None:
+    clause, args = _owner_sql(owner)
+    try:
+        with _sql_conn() as conn:
+            conn.execute(f"DELETE FROM snapshots WHERE id=? AND {clause}", (sid, *args))
     except sqlite3.Error as exc:
         log.warning("snapshot sqlite delete failed / SQLite 快照删除失败: %s", exc)
 
@@ -1030,9 +1064,15 @@ def _load_snapshots() -> None:
         name = entry.get("name", "")
         if not isinstance(name, str):
             name = ""
+        # owner 也必须持久化，否则重启后所有快照都变成公开可见
+        # Persist the owner too, or every snapshot becomes public after a restart.
+        owner = entry.get("owner")
+        if not isinstance(owner, str):
+            owner = None
         candidates.append((float(used), sid,
                            {"code": code[-MAX_SNAPSHOT_LINES:], "lang": lang,
-                            "created": float(created), "used": float(used), "name": name}))
+                            "created": float(created), "used": float(used), "name": name,
+                            "owner": owner}))
     candidates.sort(key=lambda item: item[0], reverse=True)
     with _snapshots_lock:
         for _, sid, entry in candidates[:MAX_SNAPSHOTS]:
@@ -1080,13 +1120,31 @@ def _snapshot_put(sid: str, entry: dict) -> bool:
         return _save_snapshots_locked()
 
 
-def _snapshot_remove(sid: str) -> None:
+def _snapshot_remove(sid: str, owner: str | None = None) -> None:
     if _use_sqlite():
-        _sql_delete(sid)
+        _sql_delete(sid, owner)
         return
     with _snapshots_lock:
-        if _snapshots.pop(sid, None) is not None:
+        entry = _snapshots.get(sid)
+        if entry is not None and _owner_allowed(entry, owner):
+            _snapshots.pop(sid, None)
             _save_snapshots_locked()
+
+
+def _snapshot_rename(sid: str, name: str, owner: str | None) -> bool:
+    """改名：SQLite 下用带 owner 条件的单条 UPDATE，跨进程也安全
+    Rename atomically; the SQLite path carries the owner in the UPDATE.
+    """
+    used = time.time()
+    if _use_sqlite():
+        return _sql_rename(sid, name, owner, used)
+    with _snapshot_rmw_lock:
+        entry = _snapshot_get(sid)
+        if not _owner_allowed(entry, owner):
+            return False
+        entry["name"] = name
+        entry["used"] = used
+        return _snapshot_put(sid, entry)
 
 
 def _prune_snapshots() -> None:
@@ -1506,6 +1564,19 @@ def get_session(sid: str | None, lang: str = "both",
     return new_sid, interp
 
 
+def _drop_session(sid: str | None) -> None:
+    """移除并终止一个会话，失败路径上不能留下孤儿解释器进程
+    Drop a session and kill its interpreter so failed operations leave no
+    orphaned process behind.
+    """
+    if not isinstance(sid, str):
+        return
+    with _sessions_lock:
+        entry = _sessions.pop(sid, None)
+    if entry:
+        entry["interp"].kill()
+
+
 # ---------------------------------------------------------------------------
 # 后台回收线程 / background reaper thread
 # ---------------------------------------------------------------------------
@@ -1763,6 +1834,10 @@ def api_session_restore(sid):
     lang = data.get("lang") if data.get("lang") in ALLOWED_LANGS else "both"
     owner = _req_owner(data)
     _prune_snapshots()
+    # 只在读取/校验和最终提交时持锁：回放最多 200 行、每行可能耗满超时，
+    # 全程持锁会让所有并发 eval 与快照管理请求一起阻塞
+    # Hold the lock only to read and to commit: replaying up to 200 lines while
+    # holding it would block every concurrent eval and snapshot request.
     with _snapshot_rmw_lock:
         entry = _snapshot_get(sid)
         if not _owner_allowed(entry, owner):
@@ -1777,28 +1852,35 @@ def api_session_restore(sid):
                 return api_error(problem[1], 400, problem[0])
         if not INTERP_BIN.is_file():
             return api_error(_missing_bin_msg(), 500, "internal")
-        new_sid, interp = get_session(None, saved_lang, owner=saved_owner)
-        try:
-            interp.send(":lang " + saved_lang)
-            for ln in code:
-                interp.send(ln)
-        except TimeoutError:
-            log.warning("snapshot restore timeout sid=%s / 快照恢复超时", sid)
-            return api_error(_timeout_msg(lang), 408, "timeout", timeout=True)
-        except RuntimeError as exc:
-            log.warning("snapshot restore failed sid=%s: %s / 快照恢复失败", sid, exc)
-            return api_error(str(exc), 410, "session_expired", restart=True)
-        new_entry = {"code": code, "lang": saved_lang, "name": saved_name,
-                     "owner": saved_owner,
-                     "created": time.time(), "used": time.time()}
-        # 先写新快照再删旧快照：SQLite 写入失败会被吞掉，若先删就再也找不回原快照
-        # Write the new snapshot first, then remove the old one: SQLite _sql_put
-        # swallows write errors, so removing first would lose the only copy.
+    new_sid, interp = get_session(None, saved_lang, owner=saved_owner)
+    try:
+        interp.send(":lang " + saved_lang)
+        for ln in code:
+            interp.send(ln)
+    except TimeoutError:
+        _drop_session(new_sid)
+        log.warning("snapshot restore timeout sid=%s / 快照恢复超时", sid)
+        return api_error(_timeout_msg(lang), 408, "timeout", timeout=True)
+    except RuntimeError as exc:
+        _drop_session(new_sid)
+        log.warning("snapshot restore failed sid=%s: %s / 快照恢复失败", sid, exc)
+        return api_error(str(exc), 410, "session_expired", restart=True)
+    new_entry = {"code": code, "lang": saved_lang, "name": saved_name,
+                 "owner": saved_owner,
+                 "created": time.time(), "used": time.time()}
+    # 提交时重新校验归属，并先写新快照再删旧快照：SQLite 写入失败会被吞掉，
+    # 若先删就再也找不回原快照
+    # Recheck ownership at commit time, and write the new snapshot before
+    # removing the old one: SQLite _sql_put swallows write errors.
+    with _snapshot_rmw_lock:
+        current = _snapshot_get(sid)
+        if not _owner_allowed(current, owner):
+            _drop_session(new_sid)
+            return api_error("快照不存在或已过期 / snapshot not found", 404, "not_found")
         if not _snapshot_put(new_sid, new_entry):
-            # 新快照没写成就不能删旧快照，否则唯一的恢复机会也没了
-            # Do not drop the old snapshot when the new one failed to persist.
+            _drop_session(new_sid)
             return api_error("快照写入失败 / snapshot write failed", 500, "internal")
-        _snapshot_remove(sid)
+        _snapshot_remove(sid, owner)
     log.info("session restored from snapshot %s -> %s / 会话已从快照恢复", sid, new_sid)
     return jsonify({"ok": True, "session": new_sid, "code": code, "lang": saved_lang})
 
@@ -1833,16 +1915,13 @@ def api_snapshot_name(sid):
     name = data.get("name")
     if not isinstance(name, str) or len(name) > 80:
         return api_error("名称无效 / invalid name", 400, "bad_request")
-    # 读-改-写必须持同一把锁，否则与并发求值追加快照互相覆盖
-    # Hold the RMW lock so a concurrent eval cannot clobber the rename.
-    with _snapshot_rmw_lock:
-        entry = _snapshot_get(sid)
-        if not _owner_allowed(entry, _req_owner(data)):
-            return api_error("快照不存在 / snapshot not found", 404, "not_found")
-        entry["name"] = name.strip()
-        entry["used"] = time.time()
-        _snapshot_put(sid, entry)
-    return jsonify({"ok": True, "id": sid, "name": entry["name"]})
+    owner = _req_owner(data)
+    # SQLite 下用带 owner 条件的单条 UPDATE，避免跨 worker 的读-改-写竞态
+    # A single owner-conditional UPDATE also closes the cross-worker RMW race.
+    clean = name.strip()
+    if not _snapshot_rename(sid, clean, owner):
+        return api_error("快照不存在 / snapshot not found", 404, "not_found")
+    return jsonify({"ok": True, "id": sid, "name": clean})
 
 
 @app.route("/api/snapshot/<sid>", methods=["DELETE"])
@@ -1850,11 +1929,12 @@ def api_snapshot_delete(sid):
     if not _rate_ok():
         return api_error("请求过于频繁 / rate limit exceeded", 429, "rate_limited")
     data = _json_body() or {}
+    owner = _req_owner(data)
     with _snapshot_rmw_lock:
         entry = _snapshot_get(sid)
-        if not _owner_allowed(entry, _req_owner(data)):
+        if not _owner_allowed(entry, owner):
             return api_error("快照不存在 / snapshot not found", 404, "not_found")
-        _snapshot_remove(sid)
+        _snapshot_remove(sid, owner)
     return jsonify({"ok": True, "id": sid})
 
 

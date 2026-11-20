@@ -2977,6 +2977,82 @@ def test_snapshot_manager_sqlite(b: Path) -> None:
             webapp._snapshots.update(old_snaps)
 
 
+def test_snapshot_ownership(b: Path) -> None:
+    """快照归属必须跨后端、跨重启保持，失败恢复不能留下孤儿会话
+    Snapshot ownership must survive both backends and restarts; a failed
+    restore must not leave an orphan session.
+    """
+    try:
+        import flask  # noqa: F401
+    except ImportError:
+        skip("test_snapshot_ownership: Flask is not installed")
+        return
+    import sys as _sys
+    web_dir = str(ROOT / "web")
+    if web_dir not in _sys.path:
+        _sys.path.insert(0, web_dir)
+    import app as webapp  # noqa: WPS433
+    client = webapp.app.test_client()
+    old_db = webapp.SNAPSHOT_DB
+    old_snaps = dict(webapp._snapshots)
+    owner = "victim123456"
+    attacker = "attacker987654"
+    try:
+        for suffix in ("sqlite", "json"):
+            with tempfile.TemporaryDirectory() as td:
+                db = str(Path(td) / ("s." + suffix))
+                webapp.SNAPSHOT_DB = db
+                webapp._snapshots.clear()
+                webapp._load_snapshots()
+                sid = client.post("/api/session", json={"owner": owner}).get_json()["session"]
+                client.post("/api/eval", json={"session": sid, "line": "SECRET = \\x.x",
+                                               "owner": owner})
+                if suffix == "json":
+                    # 模拟重启：重新从磁盘读取，owner 不能丢
+                    webapp._snapshots.clear()
+                    webapp._load_snapshots()
+                owned = client.get("/api/snapshots?owner=" + owner).get_json()["snapshots"]
+                other = client.get("/api/snapshots?owner=" + attacker).get_json()["snapshots"]
+                check(f"ownership list {suffix}",
+                      any(x["id"] == sid for x in owned)
+                      and not any(x["id"] == sid for x in other), str(other)[:200])
+                for verb, path, payload in (
+                    ("post", f"/api/session/{sid}/restore", {}),
+                    ("post", f"/api/snapshot/{sid}/name", {"name": "hacked"}),
+                    ("delete", f"/api/snapshot/{sid}", {}),
+                ):
+                    payload["owner"] = attacker
+                    res = getattr(client, verb)(path, json=payload)
+                    check(f"ownership {verb} {suffix}", res.status_code == 404,
+                          str(res.status_code))
+                # 失败恢复不能累积会话
+                before = client.get("/api/health").get_json().get("sessions", 0)
+                real_send = webapp.Interpreter.send
+
+                def boom(self, line):
+                    if line.startswith("SECRET"):
+                        raise TimeoutError()
+                    return real_send(self, line)
+
+                webapp.Interpreter.send = boom
+                try:
+                    for _ in range(3):
+                        failed = client.post(f"/api/session/{sid}/restore",
+                                             json={"owner": owner})
+                        check(f"failed restore code {suffix}", failed.status_code == 408,
+                              str(failed.status_code))
+                finally:
+                    webapp.Interpreter.send = real_send
+                after = client.get("/api/health").get_json().get("sessions", 0)
+                check(f"failed restore no leak {suffix}", after <= before,
+                      f"before={before} after={after}")
+                client.delete(f"/api/session/{sid}")
+    finally:
+        webapp.SNAPSHOT_DB = old_db
+        webapp._snapshots.clear()
+        webapp._snapshots.update(old_snaps)
+
+
 def test_static_share_page(b: Path) -> None:
     try:
         import flask  # noqa: F401
@@ -3371,6 +3447,7 @@ TESTS.extend([
     test_machine_and_stats,
     test_type_derivation,
     test_snapshot_manager_sqlite,
+    test_snapshot_ownership,
     test_static_share_page,
     test_reference_differential,
     test_meta_and_systemf,
