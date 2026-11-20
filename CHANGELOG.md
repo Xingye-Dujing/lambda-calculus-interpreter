@@ -75,6 +75,8 @@
   Step-limit boundaries: `:growth`/`:par` no longer report truncation at the exact limit when already normal, and `:par` no longer drops its first round; the machine no longer invents β work for neutral thunks; `:machine` honours η like the step engine; quoted binders use stable names so trace steps truly chain.
 - System F 应用在函数位是未标注绑定（类型仍为变量）时不再误报“不是函数类型”，改为引入结果变量并合一。
   System F application now unifies a type-variable function position with an arrow instead of rejecting it as "not a function type".
+- 快照 TTL / 数量回收现在能删除带归属的快照（此前会被 owner 条件挡住）；旧接口按命令数计费；非字符串会话 id 统一返回 400；分享页响应头不再重复 charset。
+  Snapshot TTL/cap pruning can now delete owned snapshots (the owner filter used to block it); the legacy eval endpoint charges per command; non-string session ids return 400 consistently; share-page responses no longer duplicate the charset parameter.
 - `:time <n> <expr>` 现在先去掉次数再解析表达式，不再解析错误对象。
   `:time <n> <expr>` now strips the run count before parsing the expression.
 - 失效会话返回 410 + restart 而不是误报 408；流式求值的超时不再因心跳间隔而超时后延。

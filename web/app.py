@@ -1028,8 +1028,8 @@ def _sql_rename(sid: str, name: str, owner: str | None, used: float) -> bool:
         return False
 
 
-def _sql_delete(sid: str, owner: str | None = None) -> None:
-    clause, args = _owner_sql(owner)
+def _sql_delete(sid: str, owner: str | None = None, force: bool = False) -> None:
+    clause, args = ("1=1", ()) if force else _owner_sql(owner)
     try:
         with _sql_conn() as conn:
             conn.execute(f"DELETE FROM snapshots WHERE id=? AND {clause}", (sid, *args))
@@ -1125,13 +1125,16 @@ def _snapshot_put(sid: str, entry: dict) -> bool:
         return _save_snapshots_locked()
 
 
-def _snapshot_remove(sid: str, owner: str | None = None) -> None:
+def _snapshot_remove(sid: str, owner: str | None = None, force: bool = False) -> None:
+    """force 用于 TTL / 数量回收：清理必须能删掉任何人的快照
+    force is for TTL/cap pruning: maintenance must be able to remove any entry.
+    """
     if _use_sqlite():
-        _sql_delete(sid, owner)
+        _sql_delete(sid, owner, force)
         return
     with _snapshots_lock:
         entry = _snapshots.get(sid)
-        if entry is not None and _owner_allowed(entry, owner):
+        if entry is not None and (force or _owner_allowed(entry, owner)):
             _snapshots.pop(sid, None)
             _save_snapshots_locked()
 
@@ -1162,7 +1165,9 @@ def _prune_snapshots() -> None:
             break
         stale.append(min(candidates, key=lambda k: entries[k]["used"]))
     for sid in stale:
-        _snapshot_remove(sid)
+        # 回收不能受 owner 限制，否则带归属的快照永不过期
+        # Pruning must ignore ownership, or owned snapshots never expire.
+        _snapshot_remove(sid, force=True)
 
 
 def _snapshot_record(sid: str, lines, lang: str, set_lang: bool = True,
@@ -1433,10 +1438,10 @@ def _token_used(token) -> None:
 
 # 会话所有权：owner 是客户端自己生成并保存在 localStorage 的随机串
 # 它把快照绑定到浏览器，避免 /api/snapshots 列举所有人的会话或被任意删除
-# 旧数据（无 owner）只给同样不带 owner 的旧客户端访问，保持向后兼容
+# 旧数据（无 owner）对所有客户端可见，避免升级后历史会话“消失”，保持向后兼容
 # Session ownership: a random client-generated token stored in localStorage binds
 # snapshots to one browser, so /api/snapshots cannot enumerate or delete other
-# users' sessions. Legacy ownerless entries stay visible to ownerless clients.
+# users' sessions. Legacy ownerless entries stay visible to all for compatibility.
 def _req_lang(data: dict | None = None) -> str:
     """语言字段必须先判类型：数组/对象不可哈希，直接 in set 会抛 500
     Check the type first: unhashable JSON values would raise a 500.
@@ -1826,7 +1831,7 @@ def api_share_page_get(pid):
         entry = _pages.get(pid)
     if entry is None:
         return api_error("页面不存在 / page not found", 404, "not_found")
-    return Response(entry["html"], mimetype="text/html; charset=utf-8")
+    return Response(entry["html"], content_type="text/html; charset=utf-8")
 
 
 @app.route("/api/gallery", methods=["GET"])
@@ -2046,10 +2051,16 @@ def api_eval():
     legacy = data.get("code") or data.get("expr")
     if legacy is not None:
         try:
-            for ln in str(legacy).splitlines():
+            legacy_lines = str(legacy).splitlines()
+            for ln in legacy_lines:
                 problem = validate_line(ln)
                 if problem:
                     return api_error(problem[1], 400, problem[0])
+            # 旧接口同样按命令数计费，不能一个请求塞进几百条命令
+            # Charge per command here too, so one legacy request cannot smuggle
+            # hundreds of commands past the per-request limit.
+            if len(legacy_lines) > 1 and not _rate_ok(len(legacy_lines) - 1):
+                return api_error("请求过于频繁 / rate limit exceeded", 429, "rate_limited")
             if not INTERP_BIN.is_file():
                 return api_error(_missing_bin_msg(), 500, "internal")
             results = run_interpreter(str(legacy), lang)
@@ -2091,6 +2102,8 @@ def api_eval():
         return api_error(_missing_bin_msg(), 500, "internal")
 
     sid_in = data.get("session")
+    if sid_in is not None and not isinstance(sid_in, str):
+        return api_error("会话编号无效 / invalid session id", 400, "bad_request")
     owner = _req_owner(data)
     try:
         sid, interp = get_session(sid_in, lang, create=sid_in is None, owner=owner)
@@ -2175,6 +2188,8 @@ def api_race():
     if not INTERP_BIN.is_file():
         return api_error(_missing_bin_msg(), 500, "internal")
     sid_in = data.get("session")
+    if sid_in is not None and not isinstance(sid_in, str):
+        return api_error("会话编号无效 / invalid session id", 400, "bad_request")
     # need 不在竞速的四种策略里，但界面可能正选用它：恢复时必须原样保留，
     # 否则竞速结束后会话策略被悄悄改成 applicative
     # need is not raced, but the UI may be using it: preserve it on restore so a

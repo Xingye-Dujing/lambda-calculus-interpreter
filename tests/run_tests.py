@@ -2562,6 +2562,13 @@ def test_web_edge_cases(b: Path) -> None:
             r = client.post(path, json={"lang": [], "line": "x"})
             check(f"unhashable lang {path}", r.status_code < 500, str(r.status_code))
 
+        # 非字符串 session id 在各 eval 路由统一返回 400
+        # Non-string session ids get a consistent 400 across eval routes.
+        for path in ("/api/eval", "/api/eval/stream", "/api/race"):
+            r = client.post(path, json={"session": 123, "line": "I"})
+            check(f"session id type {path}", r.status_code == 400,
+                  str(r.status_code))
+
         # token 存储必须有上限，/api/token 不能无限增长
         # The token store must stay bounded under repeated /api/token calls.
         old_max = webapp.MAX_TOKENS
@@ -3065,6 +3072,16 @@ def test_snapshot_ownership(b: Path) -> None:
                 after = client.get("/api/health").get_json().get("sessions", 0)
                 check(f"failed restore no leak {suffix}", after <= before,
                       f"before={before} after={after}")
+                # TTL / 数量回收必须能删掉带归属的快照
+                # TTL/cap pruning must be able to remove owned snapshots.
+                stale_sid = "owned-stale-" + suffix
+                webapp._snapshot_put(stale_sid, {
+                    "code": ["I"], "lang": "en", "name": "", "owner": owner,
+                    "created": time.time() - 100000, "used": time.time() - 100000})
+                webapp._prune_snapshots()
+                check(f"owned snapshot pruned {suffix}",
+                      webapp._snapshot_get(stale_sid) is None,
+                      str(webapp._snapshot_get(stale_sid))[:160])
                 client.delete(f"/api/session/{sid}")
     finally:
         webapp.SNAPSHOT_DB = old_db
