@@ -543,11 +543,14 @@ fastNormalForm fuel e =
 -- term, so shared arguments are never copied. Each β step quotes the current
 -- configuration, giving exact steps and traces with sharing.
 data MVal = MClos String Expr [(String, MVal)]
-          | MThunk Expr [(String, MVal)]
+          -- 编号 thunk：第一次求值时把结果记入 memo，之后直接复用
+          -- Numbered thunk: its first result is memoised and reused on later looks.
+          | MThunk Int Expr [(String, MVal)]
           | MFree String
           | MNeutral Expr
 
-data MFrame = FArg Expr [(String, MVal)] | FLamFrame String | FNeutral Expr
+data MFrame = FArg Expr [(String, MVal)] | FLamFrame String
+            | FNeutral Expr | FUpdate Int
 
 data MState = MEval Expr [(String, MVal)] [MFrame] | MRet MVal [MFrame]
 
@@ -566,7 +569,7 @@ allExprNames (App f a) = allExprNames f `Set.union` allExprNames a
 nameMVal :: MVal -> Set.Set String
 nameMVal (MFree x)       = Set.singleton x
 nameMVal (MNeutral t)    = allExprNames t
-nameMVal (MThunk e env)  = allExprNames e `Set.union` nameEnv env
+nameMVal (MThunk _ e env) = allExprNames e `Set.union` nameEnv env
 nameMVal (MClos x b env) = Set.insert x (allExprNames b) `Set.union` nameEnv env
 
 nameEnv :: [(String, MVal)] -> Set.Set String
@@ -576,6 +579,7 @@ nameFrame :: MFrame -> Set.Set String
 nameFrame (FArg a env)  = allExprNames a `Set.union` nameEnv env
 nameFrame (FLamFrame x) = Set.singleton x
 nameFrame (FNeutral h)  = allExprNames h
+nameFrame (FUpdate _)   = Set.empty
 
 frameNames :: [MFrame] -> Set.Set String
 frameNames stk = Set.unions (map nameFrame stk)
@@ -584,36 +588,58 @@ machineAvoid :: Set.Set String -> Expr -> [(String, MVal)] -> [MFrame] -> Set.Se
 machineAvoid forbidden e env stk =
   forbidden `Set.union` allExprNames e `Set.union` nameEnv env `Set.union` frameNames stk
 
-quoteValM :: Int -> MVal -> Expr
-quoteValM _ (MFree x) = Var x
-quoteValM _ (MNeutral t) = t
-quoteValM d (MThunk e env) = quoteExprM d e env
-quoteValM d (MClos x b env) =
-  Lam x (quoteExprM d b (filter ((/= x) . fst) env))
+quoteValM :: Set.Set String -> Int -> MVal -> Expr
+quoteValM _ _ (MFree x) = Var x
+quoteValM _ _ (MNeutral t) = t
+quoteValM rs d (MThunk _ e env) = quoteExprM rs d e env
+quoteValM rs d (MClos x b env) = quoteLamM rs d x b env
 
-quoteExprM :: Int -> Expr -> [(String, MVal)] -> Expr
-quoteExprM d (Var x) env
-  | d > 0, Just v <- lookup x env = quoteValM (d - 1) v
+-- 引用 λ 时，环境值里若出现与绑定名同名的变量，直接代入会捕获它；
+-- 先换成全局新鲜名，保证引用出的前后项与真实归约一致且首尾相接
+-- Rewriting a binder whose name also occurs in an environment value would
+-- capture that variable. Rename it to a fresh name first, so quoted states are
+-- capture-free and chain correctly.
+quoteLamM :: Set.Set String -> Int -> String -> Expr -> [(String, MVal)] -> Expr
+quoteLamM rs d x b env =
+  let env1 = filter ((/= x) . fst) env
+      -- 与机器打开 λ 时的命名保持一致：原项里的名字和环境中出现的名字都避开
+      -- Match the machine's own fresh-name choice: avoid original-term names
+      -- and every name reachable from the environment.
+      avoid = nameEnv env1 `Set.union` allExprNames b `Set.union` rs
+      u = if x `Set.member` avoid then freshVar x avoid else x
+      b1 = if u == x then b else fst (substRename x (Var u) Set.empty b)
+  in Lam u (quoteExprM rs d b1 env1)
+
+quoteExprM :: Set.Set String -> Int -> Expr -> [(String, MVal)] -> Expr
+quoteExprM rs d (Var x) env
+  | d > 0, Just v <- lookup x env = quoteValM rs (d - 1) v
   | otherwise = Var x
-quoteExprM d (Lam x b) env =
-  Lam x (quoteExprM d b (filter ((/= x) . fst) env))
-quoteExprM d (App f a) env = App (quoteExprM d f env) (quoteExprM d a env)
+quoteExprM rs d (Lam x b) env = quoteLamM rs d x b env
+quoteExprM rs d (App f a) env =
+  App (quoteExprM rs d f env) (quoteExprM rs d a env)
 
-addFrameM :: Expr -> MFrame -> Expr
-addFrameM t (FArg a env) = App t (quoteExprM 12 a env)
-addFrameM t (FLamFrame x) = Lam x t
-addFrameM t (FNeutral h) = App h t
+addFrameM :: Set.Set String -> Expr -> MFrame -> Expr
+addFrameM rs t (FArg a env) = App t (quoteExprM rs 12 a env)
+addFrameM _ t (FLamFrame x) = Lam x t
+addFrameM _ t (FNeutral h) = App h t
+-- 记忆化帧在项上没有可见对应物，引用配置时直接略过
+-- A memoisation frame has no visible counterpart in the term.
+addFrameM _ t (FUpdate _)  = t
 
-quoteStateM :: MState -> Expr
-quoteStateM (MEval e env stk) = foldl' addFrameM (quoteExprM 12 e env) stk
-quoteStateM (MRet v stk) = foldl' addFrameM (quoteValM 12 v) stk
+quoteStateM :: Set.Set String -> MState -> Expr
+quoteStateM rs (MEval e env stk) =
+  let rs' = rs `Set.union` frameNames stk
+  in foldl' (addFrameM rs') (quoteExprM rs' 12 e env) stk
+quoteStateM rs (MRet v stk) =
+  let rs' = rs `Set.union` frameNames stk
+  in foldl' (addFrameM rs') (quoteValM rs' 12 v) stk
 
 -- 返回值末位表示是否因步数或内部管理预算中止；中止时的项只是中间配置，不是正规形
 -- The final flag reports whether the β-step or the internal admin budget was
 -- exhausted; in that case the returned term is an intermediate configuration,
 -- not a normal form.
 machineEval :: Int -> Expr -> (Expr, Int, [TraceStep], Bool)
-machineEval limit e0 = go 0 0 (MEval e0 [] []) [] Set.empty
+machineEval limit e0 = go 0 0 0 IM.empty (MEval e0 [] []) []
   where
     -- 初始项里的全部名字永久禁用：归约只会揭示这些自由变量，不会凭空产生新的
     -- Permanently reserve every name from the original term: reduction can only
@@ -634,68 +660,103 @@ machineEval limit e0 = go 0 0 (MEval e0 [] []) [] Set.empty
     -- step is still required, the reduction is truncated.
     needsBeta :: MState -> Bool
     needsBeta (MEval (Var x) env (FArg _ _ : _)) = case lookup x env of
-      Just (MClos _ _ _) -> True
-      _                  -> False
+      Just (MClos _ _ _)   -> True
+      Just (MThunk _ e e') -> thunkBeta e e'
+      _                    -> False
     needsBeta (MEval (Lam _ _) _ (FArg _ _ : _)) = True
     needsBeta (MRet (MClos _ _ _) (FArg _ _ : _)) = True
     needsBeta _ = False
 
+    -- thunk 里是否藏着还会触发 β 的表达式（用于步数上限判定）
+    -- Whether forcing this thunk could still trigger a β step.
+    thunkBeta :: Expr -> [(String, MVal)] -> Bool
+    thunkBeta (Lam _ _) _ = True
+    thunkBeta (App _ _) _ = True
+    thunkBeta (Var y) env = case lookup y env of
+      Just (MClos _ _ _)   -> True
+      Just (MThunk _ e e') -> thunkBeta e e'
+      _                    -> False
+
     step before after n acc =
       TraceStep n before after "β" "β (abstract machine) / 抽象机 β" : acc
-    go :: Int -> Int -> MState -> [TraceStep] -> Set.Set Expr
+
+    -- 一次 β：为绑定名取全局新鲜名，让引用出的前后项与机器真实配置一致（不捕获
+    -- 自由变量、前后项首尾相接），并把实参做成带编号的 thunk 供后续记忆化
+    -- One β step: rename the binder to a globally fresh name so quoted states
+    -- chain and cannot capture free variables, and number the argument thunk
+    -- so it can be memoised on its first use.
+    machineBeta :: MState -> String -> Expr -> [(String, MVal)] -> Expr
+             -> [(String, MVal)] -> [MFrame] -> Int -> Int -> Int
+             -> IM.IntMap MVal -> [TraceStep]
+             -> (Expr, Int, [TraceStep], Bool)
+    machineBeta beforeSt y b cenv a aenv rest n adm next memo acc =
+      let thunk = MThunk next a aenv
+          avoid = machineAvoid forbidden b ((y, thunk) : cenv) rest
+          u     = freshVar y avoid
+          b'    = fst (substRename y (Var u) Set.empty b)
+          st'   = MEval b' ((u, thunk) : cenv) rest
+      in go (n + 1) (adm + 1) (next + 1) memo st'
+             (step (quoteStateM forbidden beforeSt) (quoteStateM forbidden st') (n + 1) acc)
+
+    go :: Int -> Int -> Int -> IM.IntMap MVal -> MState -> [TraceStep]
        -> (Expr, Int, [TraceStep], Bool)
-    go n adm st acc seen
-      | isFinal st = (quoteStateM st, n, reverse acc, False)
-      | adm > adminLimit = (quoteStateM st, n, reverse acc, True)
-      | n >= limit && needsBeta st = (quoteStateM st, n, reverse acc, True)
+    go n adm next memo st acc
+      | isFinal st = (quoteStateM forbidden st, n, reverse acc, False)
+      | adm > adminLimit = (quoteStateM forbidden st, n, reverse acc, True)
+      | n >= limit && needsBeta st = (quoteStateM forbidden st, n, reverse acc, True)
       | otherwise = case st of
           MRet (MClos x b cenv) [] ->
             let u = freshVar x (machineAvoid forbidden b cenv [])
-            in go n (adm + 1) (MEval b ((x, MFree u) : cenv) [FLamFrame u]) acc seen
-          MRet v [] -> (quoteValM 12 v, n, reverse acc, False)
+            in go n (adm + 1) next memo
+                    (MEval b ((x, MFree u) : cenv) [FLamFrame u]) acc
+          MRet v [] -> (quoteValM forbidden 12 v, n, reverse acc, False)
           MEval (App f a) env stk ->
-            go n (adm + 1) (MEval f env (FArg a env : stk)) acc seen
+            go n (adm + 1) next memo (MEval f env (FArg a env : stk)) acc
           MEval (Var x) env stk -> case lookup x env of
-            Just (MThunk e e') -> go n (adm + 1) (MEval e e' stk) acc seen
+            Just (MThunk i e e') -> case IM.lookup i memo of
+              Just v  -> go n (adm + 1) next memo (MRet v stk) acc
+              Nothing -> go n (adm + 1) next memo
+                            (MEval e e' (FUpdate i : stk)) acc
             Just (MFree y) ->
-              go n (adm + 1) (MRet (MNeutral (Var y)) stk) acc seen
+              go n (adm + 1) next memo (MRet (MNeutral (Var y)) stk) acc
             Just (MNeutral t) ->
-              go n (adm + 1) (MRet (MNeutral t) stk) acc seen
+              go n (adm + 1) next memo (MRet (MNeutral t) stk) acc
             Just (MClos y b cenv) -> case stk of
               (FArg a aenv : rest) ->
-                let st' = MEval b ((y, MThunk a aenv) : cenv) rest
-                    before = quoteStateM st
-                    after = quoteStateM st'
-                in go (n + 1) (adm + 1) st' (step before after (n + 1) acc) seen
-              _ -> go n (adm + 1) (MRet (MClos y b cenv) stk) acc seen
+                machineBeta st y b cenv a aenv rest n adm next memo acc
+              _ -> go n (adm + 1) next memo (MRet (MClos y b cenv) stk) acc
             Nothing ->
-              go n (adm + 1) (MRet (MNeutral (Var x)) stk) acc seen
+              go n (adm + 1) next memo (MRet (MNeutral (Var x)) stk) acc
           MEval (Lam x b) env stk -> case stk of
             (FArg a aenv : rest) ->
-              let st' = MEval b ((x, MThunk a aenv) : env) rest
-                  before = quoteStateM st
-                  after = quoteStateM st'
-              in go (n + 1) (adm + 1) st' (step before after (n + 1) acc) seen
+              machineBeta st x b env a aenv rest n adm next memo acc
+            -- 正在强制 thunk：λ 本身就是它的弱首正规形，先作为闭包返回，
+            -- 由 FUpdate 记忆化后再交还给调用方的参数栈
+            -- Forcing a thunk: the λ is already the value; return it as a
+            -- closure so FUpdate can memoise it before the caller's stack runs.
+            (FUpdate _ : _) ->
+              go n (adm + 1) next memo (MRet (MClos x b env) stk) acc
             _ ->
               let u = freshVar x (machineAvoid forbidden b env stk)
-              in go n (adm + 1)
-                      (MEval b ((x, MFree u) : env) (FLamFrame u : stk)) acc seen
+              in go n (adm + 1) next memo
+                      (MEval b ((x, MFree u) : env) (FLamFrame u : stk)) acc
           MRet v (FLamFrame x : rest) ->
-            go n (adm + 1)
-              (MRet (MNeutral (Lam x (quoteValM 12 v))) rest) acc seen
+            go n (adm + 1) next memo
+              (MRet (MNeutral (Lam x (quoteValM forbidden 12 v))) rest) acc
           MRet (MClos x b cenv) (FArg a aenv : rest) ->
-            let st' = MEval b ((x, MThunk a aenv) : cenv) rest
-                before = quoteStateM st
-                after = quoteStateM st'
-            in go (n + 1) (adm + 1) st' (step before after (n + 1) acc) seen
+            machineBeta st x b cenv a aenv rest n adm next memo acc
           MRet (MFree x) (FArg a aenv : rest) ->
-            go n (adm + 1) (MEval a aenv (FNeutral (Var x) : rest)) acc seen
+            go n (adm + 1) next memo (MEval a aenv (FNeutral (Var x) : rest)) acc
           MRet (MNeutral h) (FArg a aenv : rest) ->
-            go n (adm + 1) (MEval a aenv (FNeutral h : rest)) acc seen
+            go n (adm + 1) next memo (MEval a aenv (FNeutral h : rest)) acc
+          MRet v (FUpdate i : rest) ->
+            go n (adm + 1) next (IM.insert i v memo) (MRet v rest) acc
           MRet v (FNeutral h : rest) ->
-            go n (adm + 1) (MRet (MNeutral (App h (quoteValM 12 v))) rest) acc seen
+            go n (adm + 1) next memo
+              (MRet (MNeutral (App h (quoteValM forbidden 12 v))) rest) acc
           MRet v (FArg a aenv : rest) ->
-            go n (adm + 1) (MEval a aenv (FNeutral (quoteValM 12 v) : rest)) acc seen
+            go n (adm + 1) next memo
+              (MEval a aenv (FNeutral (quoteValM forbidden 12 v) : rest)) acc
 
 -- 并行归约：一轮同时收缩所有互不包含的 redex
 -- Parallel reduction: contract every maximal redex in a single round.
@@ -3590,26 +3651,28 @@ runCommand st (GrowthCmd expr) = do
       series strat =
         let lim = rsLimit st
             small x = exprSize x <= cycleTermLimit
-            loop !n !e !growthPeak !seen !acc
-              | n >= lim =
-                  let more = case stepFor (rsEta st) strat e of
-                        Nothing -> False
-                        Just _  -> True
-                  in (reverse acc, n, growthPeak, more)
-              | n > 0 && small e && Set.member e seen = (reverse acc, n, growthPeak, False)
+            -- 循环检测只看“新项是否出现过”，绝不能检查刚放入 seen 的当前项，
+            -- 否则第一步之后就会误判为环、整条曲线只剩一个点
+            -- Detect a repeat by checking the NEW term against the terms seen
+            -- before; checking the current term (already inserted) would flag a
+            -- cycle after the very first step and truncate every curve.
+            loop !n !e !growthPeak !seen !cyc !acc
+              | cyc = (reverse acc, n, growthPeak, False)
+              | n >= lim = (reverse acc, n, growthPeak, True)
               | otherwise = case stepFor (rsEta st) strat e of
                   Nothing -> (reverse acc, n, growthPeak, False)
                   Just s ->
                     let e2 = soWhole s
                         sz = exprSize e2
+                        cyc' = cyc || (small e2 && Set.member e2 seen)
                         seen' = if small e2 && Set.size seen < cycleCheckLimit
                                   then Set.insert e2 seen else seen
                         pt = JObj [ "n" .= JNum (n + 1)
                                   , "before" .= JNum (exprSize e)
                                   , "after" .= JNum sz
                                   , "rule" .= JStr (redRule (soRed s)) ]
-                    in loop (n + 1) e2 (max growthPeak sz) seen' (pt : acc)
-            (pts, cnt, gPeak, hit) = loop 0 e' (exprSize e') (Set.singleton e') []
+                    in loop (n + 1) e2 (max growthPeak sz) seen' cyc' (pt : acc)
+            (pts, cnt, gPeak, hit) = loop 0 e' (exprSize e') (Set.singleton e') False []
         in (pts, cnt, gPeak, hit)
       (app, appN, appPeak, appHit) = series Applicative
       (nrm, nrmN, nrmPeak, nrmHit) = series Normal

@@ -61,6 +61,8 @@
 
 ### 修复 / Fixed
 
+- 归约引擎：`:growth` 不再把刚访问的项误判为环，步数与曲线现在完整；抽象机改为真正共享 thunk（调用按需），引用处的绑定重命名不再捕获自由变量，轨迹前后项首尾相接。
+  Reduction engines: `:growth` no longer flags a cycle after one step, so its step counts and curves are complete; the abstract machine now memoises thunks (call-by-need), and quoting binders no longer captures free variables, keeping trace steps chained.
 - `:time <n> <expr>` 现在先去掉次数再解析表达式，不再解析错误对象。
   `:time <n> <expr>` now strips the run count before parsing the expression.
 - 失效会话返回 410 + restart 而不是误报 408；流式求值的超时不再因心跳间隔而超时后延。

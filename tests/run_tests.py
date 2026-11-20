@@ -3240,6 +3240,27 @@ def test_bugfix_regressions(b: Path) -> None:
     check("growth full series", len(series) == grow.get("applicativeSteps")
           and grow.get("applicativePeak") == max(x["after"] for x in series),
           f"len={len(series)} steps={grow.get('applicativeSteps')}")
+    # 循环检测不能把刚加入的当前项误判成环：步数必须与 :nf 一致
+    # Cycle detection must not mistake the just-inserted term for a cycle:
+    # the reported step count must agree with :nf instead of stopping at one.
+    grow2 = one([":growth PLUS TWO THREE"], b)
+    nf2 = one([":nf PLUS TWO THREE"], b)
+    check("growth real step count", grow2.get("normalSteps") == nf2.get("steps")
+          and len(grow2.get("normal", [])) == nf2.get("steps"),
+          f"growth={grow2.get('normalSteps')} nf={nf2.get('steps')}")
+    # 抽象机引用配置不能捕获自由变量，且轨迹前后项必须首尾相接
+    # Quoting a machine state must not capture a free variable, and consecutive
+    # trace steps must chain.
+    cap = one([r":machine (\x. \y. x) y"], b)
+    tr = cap.get("trace", [])
+    free_eq = one([":conv " + tr[0]["after"] + r" , (\z. y)"], b) if tr else {}
+    check("machine trace no capture", free_eq.get("equal") is True, str(cap)[:240])
+    shared = one([r":machine (\x. x x) ((\y. y) z)"], b)
+    shtr = shared.get("trace", [])
+    check("machine shares thunks", shared.get("steps") == 2 and len(shtr) == 2,
+          str(shared)[:240])
+    check("machine trace chains", len(shtr) == 2 and shtr[0]["after"] == shtr[1]["before"],
+          str(shtr)[:240])
 
     try:
         import flask  # noqa: F401
