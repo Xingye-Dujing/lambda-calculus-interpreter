@@ -107,7 +107,7 @@ substRename x v fvV body =
 -- ---------------------------------------------------------------------------
 -- 求值策略 Evaluation strategies
 -- ---------------------------------------------------------------------------
-data Strategy = Applicative | Normal | CallByName | CallByValue
+data Strategy = Applicative | Normal | CallByName | CallByValue | Need
   deriving (Eq, Show)
 
 strategyLabelZh :: Strategy -> String
@@ -115,12 +115,14 @@ strategyLabelZh Applicative = "应用序（最左最内）"
 strategyLabelZh Normal      = "正规序（最左最外）"
 strategyLabelZh CallByName  = "按名调用（弱）"
 strategyLabelZh CallByValue = "按值调用（弱）"
+strategyLabelZh Need        = "按需（共享）"
 
 strategyLabelEn :: Strategy -> String
 strategyLabelEn Applicative = "applicative order (leftmost-innermost)"
 strategyLabelEn Normal      = "normal order (leftmost-outermost)"
 strategyLabelEn CallByName  = "call-by-name (weak)"
 strategyLabelEn CallByValue = "call-by-value (weak)"
+strategyLabelEn Need        = "call-by-need (shared thunks)"
 
 parseStrategy :: String -> Maybe Strategy
 parseStrategy s = lookup (map lower s)
@@ -128,6 +130,7 @@ parseStrategy s = lookup (map lower s)
   , ("normal", Normal), ("no", Normal)
   , ("cbn", CallByName), ("byname", CallByName)
   , ("cbv", CallByValue), ("byvalue", CallByValue)
+  , ("need", Need), ("sharing", Need)
   ]
   where lower c = if c >= 'A' && c <= 'Z' then toEnum (fromEnum c + 32) else c
 
@@ -166,6 +169,7 @@ orderOf Applicative = Order True  False False False
 orderOf Normal      = Order True  True  False False
 orderOf CallByName  = Order False True  False True
 orderOf CallByValue = Order False False True  True
+orderOf Need        = Order True  True  False False
 
 stepOnce :: Strategy -> Expr -> Maybe StepOut
 stepOnce strat = go
@@ -254,7 +258,8 @@ data TraceStep = TraceStep
 
 data EvalResult = EvalResult
   { erFinal :: Expr, erSteps :: [TraceStep], erCount :: Int
-  , erLimitHit :: Bool, erCycle :: Bool }
+  , erLimitHit :: Bool, erCycle :: Bool
+  , erBetaCount :: Int, erEtaCount :: Int }
 
 defaultLimit :: Int
 defaultLimit = 10000
@@ -277,17 +282,17 @@ cycleTermLimit = 400
 -- Evaluation loop; with keepTrace=False the trace is dropped (saves memory).
 evalUntil :: Bool -> Bool -> Int -> Strategy -> (Expr -> Bool) -> Expr -> EvalResult
 evalUntil eta keepTrace limit strat done e0 =
-  loop 1 e0 [] (Set.singleton e0) (Seq.singleton (0, e0)) False
+  loop 1 e0 [] (Set.singleton e0) (Seq.singleton (0, e0)) False 0 0
   where
-    loop !n e !acc !seen !window !cyc
-      | done e    = EvalResult e (reverse acc) (n - 1) False cyc
+    loop !n e !acc !seen !window !cyc !nb !ne
+      | done e    = EvalResult e (reverse acc) (n - 1) False cyc nb ne
       -- 恰好用满步数且已无 redex 时不算命中上限
       -- A normal term at the step limit is not a step-limit hit.
       | n > limit =
           let more = case stepFor eta strat e of
                        Nothing -> False
                        Just _  -> True
-          in EvalResult e (reverse acc) (n - 1) more cyc
+          in EvalResult e (reverse acc) (n - 1) more cyc nb ne
       | otherwise = case stepFor eta strat e of
           Just s ->
             let e'   = soWhole s
@@ -309,8 +314,12 @@ evalUntil eta keepTrace limit strat done e0 =
                                     (Set.insert e' (Set.delete old seen), rest)
                                 | otherwise -> (Set.insert e' seen, w)
                     else (seen, window)
-            in loop (n + 1) e' acc' seen' window' cyc'
-          Nothing -> EvalResult e (reverse acc) (n - 1) False cyc
+                -- β+α 也是 β 步：捕获避免重命名不改变规则类别
+                -- A capture-avoiding β step is still a β step.
+                nb' = if take 1 (redRule red) == "β" then nb + 1 else nb
+                ne' = if take 1 (redRule red) == "η" then ne + 1 else ne
+            in loop (n + 1) e' acc' seen' window' cyc' nb' ne'
+          Nothing -> EvalResult e (reverse acc) (n - 1) False cyc nb ne
 
 evalWith :: Bool -> Bool -> Int -> Strategy -> Expr -> EvalResult
 evalWith eta keepTrace limit strat =
@@ -362,9 +371,9 @@ pretty :: Expr -> String
 pretty e = go 0 e ""
   where
     go :: Int -> Expr -> ShowS
-    go _ (Var x)   = showString x
+    go _ (Var x)   = showString (stripLetBinder x)
     go p (Lam x b) = showParen (p > 0)
-      (showString "λ" . showString x . showString " → " . go 0 b)
+      (showString "λ" . showString (stripLetBinder x) . showString " → " . go 0 b)
     go p (App f a) = showParen (p > 1)
       (go 1 f . showChar ' ' . go 2 a)
 
@@ -378,8 +387,8 @@ shorten n s
       (pre, _)  -> take (n - 1) pre ++ "…"
 
 treeLines :: Expr -> [String]
-treeLines (Var x)   = ["• " ++ x]
-treeLines (Lam x b) = ("λ " ++ x) : fork "└ " "  " (treeLines b)
+treeLines (Var x)   = ["• " ++ stripLetBinder x]
+treeLines (Lam x b) = ("λ " ++ stripLetBinder x) : fork "└ " "  " (treeLines b)
 treeLines (App f a) = "App" : fork "├ " "│ " (treeLines f) ++ fork "└ " "  " (treeLines a)
 
 fork :: String -> String -> [String] -> [String]
@@ -391,7 +400,7 @@ deBruijnView e = go [] e ""
   where
     go bound (Var x) = case elemIndex x bound of
       Just i  -> showChar '#' . shows i
-      Nothing -> showString x
+      Nothing -> showString (stripLetBinder x)
     go bound (Lam x b) = showString "λ." . go (x : bound) b
     go bound (App f a) =
       showChar '(' . go bound f . showChar ' ' . go bound a . showChar ')'
@@ -427,11 +436,13 @@ longestP p = do
   s <- look
   case readP_to_S p s of
     []    -> pfail
-    (r:_) -> do
-      let (_, rest) = r
+    rs    -> do
+      -- readP_to_S 按消耗的字符数递增返回；最后一个才是最长匹配
+      -- readP_to_S returns results in increasing consumption order; last is longest.
+      let (r, rest) = last rs
           n = length s - length rest
       replicateM_ n get
-      return (fst r)
+      return r
 
 -- 真正的贪心 many：每一步只吸收一个最长匹配，不产生任何分支；
 -- ReadP 内建 many 会枚举每个前缀的结果，嵌套起来数目指数增长
@@ -509,9 +520,23 @@ notKeyword :: String -> ReadP ()
 notKeyword kw = do
   r <- look
   let (pre, post) = splitAt (length kw) r
-      boundary = null post || isSpace (head post)
-              || head post `elem` ("().=,;" :: String)
+      -- 关键字后若紧跟标识符字符则不是关键字（如 then[1] 的 then 是变量）
+      -- A keyword followed by an identifier character is a variable, e.g. then[1].
+      boundary = case post of
+        []    -> True
+        (c:_) -> not (isAlpha c || isDigit c || c `elem` ("_'" :: String)
+                       || c `elem` ("+*-/%^?!<>|&~#$" :: String))
   if pre == kw && boundary then pfail else return ()
+
+-- 关键字后不允许紧跟标识符字符：then[1] / then(x) 合法，thenx 非法
+-- A keyword must not be followed by an identifier char: then[1] ok, thenx not.
+keywordBoundary :: ReadP ()
+keywordBoundary = do
+  rest <- look
+  case rest of
+    (c:_) | isAlpha c || isDigit c || c `elem` ("_'" :: String)
+            || c `elem` ("+*-/%^?!<>|&~#$" :: String) -> pfail
+    _ -> return ()
 
 -- if c then t else f 脱糖为 IF c t f
 -- if c then t else f desugars to IF c t f.
@@ -522,13 +547,28 @@ parseIf = do
   c <- parseExpr
   spaces
   _ <- string "then"
-  _ <- munch1 isSpace
+  keywordBoundary
+  spaces
   t <- parseExpr
   spaces
   _ <- string "else"
-  _ <- munch1 isSpace
+  keywordBoundary
+  spaces
   f <- parseExpr
   return (App (App (App (Var "IF") c) t) f)
+
+-- let 绑定脱糖时使用内部前缀标记，与 extension.hs 保持一致
+-- let bindings carry an internal prefix after desugaring, matching extension.hs.
+letBinderPrefix :: String
+letBinderPrefix = "@let:"
+
+letBinder :: String -> String
+letBinder x = letBinderPrefix ++ x
+
+stripLetBinder :: String -> String
+stripLetBinder n
+  | take (length letBinderPrefix) n == letBinderPrefix = drop (length letBinderPrefix) n
+  | otherwise = n
 
 -- let x = e1; y = e2 in e3 支持顺序多绑定
 -- let x = e1; y = e2 in e3 supports sequential multiple bindings.
@@ -541,7 +581,10 @@ parseLet = do
   _ <- string "in"
   _ <- munch1 isSpace
   b <- parseExpr
-  return (foldr (\(x, v) acc -> App (Lam x acc) v) b binds)
+  return (foldr (\(x, v) acc ->
+            let bnd = letBinder x
+                acc' = fst (substRename x (Var bnd) (Set.singleton bnd) acc)
+            in App (Lam bnd acc') v) b binds)
   where
     parseBind = do
       x <- ident
@@ -555,13 +598,16 @@ parseLet = do
 -- A type annotation is syntax-checked and erased; :type expr : T verifies it.
 typeTextP :: ReadP String
 typeTextP = do
-  a <- atom
+  a <- appType
   (do spaces
       void (string "->" <|> string "→")
       spaces
       b <- typeTextP
       return (a ++ " -> " ++ b)) <++ return a
   where
+    -- 类型应用允许空格分隔的构造子，如 List Int / List (List Int)
+    -- Type application allows space-separated constructors, e.g. List Int.
+    appType = unwords <$> greedySome (atom <* spaces)
     atom =
       (do _ <- char '('
           spaces
@@ -679,6 +725,14 @@ stripTrailingComment = go []
 trim :: String -> String
 trim = dropWhile isSpace . reverse . dropWhile isSpace . reverse
 
+-- 解析整数并做范围检查：Read Int 对超大字面量会静默按补码回绕
+-- Parse an integer with a range check; Read Int wraps oversized literals.
+readIntIn :: Integer -> Integer -> String -> Maybe Int
+readIntIn lo hi s =
+  case reads s :: [(Integer, String)] of
+    [(n, "")] | n >= lo && n <= hi -> Just (fromInteger n)
+    _ -> Nothing
+
 data Command
   = Eval Expr
   | Trace Expr
@@ -709,13 +763,14 @@ parseCommand raw
             (Right . SetLang) (parseLang (trim rest))
   | Just rest <- stripPrefix ":strategy " s =
       maybe (Left (ParseError 1
-              ("未知策略，可用：applicative / normal / cbn / cbv"
-              , "Unknown strategy; use applicative / normal / cbn / cbv")))
+              ("未知策略，可用：applicative / normal / cbn / cbv / need / sharing"
+              , "Unknown strategy; use applicative / normal / cbn / cbv / need / sharing")))
             (Right . SetStrategy) (parseStrategy (trim rest))
   | Just rest <- stripPrefix ":steps " s =
-      case reads (trim rest) :: [(Int, String)] of
-        [(n, "")] | n > 0 -> Right (SetSteps n)
-        _ -> Left (ParseError 1 ("用法：:steps <正整数>", "Usage: :steps <positive integer>"))
+      case readIntIn 1 (fromIntegral (maxBound :: Int)) (trim rest) of
+        Just n  -> Right (SetSteps n)
+        Nothing -> Left (ParseError 1
+                    ("用法：:steps <正整数>", "Usage: :steps <positive integer>"))
   | s == ":eta" = Right (SetEta True)
   | Just rest <- stripPrefix ":eta " s =
       case map lower (trim rest) of
@@ -766,7 +821,10 @@ emit kind text = putStrLn (decorate kind ++ text)
 
 printEval :: ReplState -> EvalResult -> IO ()
 printEval st res = do
-  let final = erFinal res
+  -- 规则计数字段最小 REPL 不展示，此处引用以免 -Wall 报未使用
+  -- Reference the rule counters (not shown in the minimal REPL) to keep -Wall quiet.
+  let _ = erBetaCount res + erEtaCount res
+      final = erFinal res
       steps = erCount res
       stepTxt = if steps > 0
                   then "  (" ++ say st (show steps ++ " 步") (show steps ++ " steps") ++ ")"

@@ -33,6 +33,7 @@ import os
 import random
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -421,6 +422,24 @@ def test_manual_reduction(b: Path) -> None:
 
     results = run([":step"], b)
     check("step without begin", results[-1][0].get("kind") == "fail", str(results[-1]))
+
+    # :back 之后可以用 :forward 重做，新的 :step 会清空重做栈
+    # :forward redoes a step undone by :back; a fresh :step clears the redo stack.
+    results = run([":begin (\\x.x) ((\\y.y) z)", ":step", ":step",
+                   ":back", ":back", ":forward", ":forward", ":forward"], b)
+    first, second = results[1][0], results[2][0]
+    back1, back2 = results[3][0], results[4][0]
+    fwd1, fwd2, fwd3 = results[5][0], results[6][0], results[7][0]
+    check("back carries redo flag", back1.get("back") is True
+          and back1.get("canStepForward") is True, str(back1))
+    check("back to start", back2.get("step") == 0, str(back2))
+    check("forward restores step 1", fwd1.get("forward") is True
+          and fwd1.get("term") == first.get("term"), str(fwd1))
+    check("forward restores step 2", fwd2.get("forward") is True
+          and fwd2.get("term") == second.get("term"), str(fwd2))
+    check("forward at tip is a no-op", fwd3.get("kind") == "info", str(fwd3))
+    results = run([":begin (\\x.x) a", ":step", ":back", ":step", ":forward"], b)
+    check("fresh step clears redo", results[-1][0].get("kind") == "info", str(results[-1]))
 
 
 # ---------------------------------------------------------------------------
@@ -1540,9 +1559,12 @@ def test_style_conventions(b: Path) -> None:
     # 轻量规范检查，代替独立 linter / lightweight convention check instead of a linter.
     sources = (
         "main.hs", "extension.hs", "web/app.py", "web/index.html",
-        "tests/run_tests.py", "tests/ui_smoke.mjs", "tools/check_core_sync.py",
+        "tests/run_tests.py", "tests/ui_smoke.mjs", "tests/hypothesis_props.py",
+        "tools/check_core_sync.py", "tools/reference_eval.py", "tools/lsp.py",
+        "tools/benchmark.py", "docs/ARCHITECTURE.md",
         "README.md", "README-CN.md", "AGENTS.md", "CHANGELOG.md",
-        "CONTRIBUTING.md", "tools/screenshot.py", "lib/prelude.lam",
+        "CONTRIBUTING.md", "tools/screenshot.py", "lib/prelude.lam", "lib/scott.lam",
+        "lib/meta.lam",
         "Dockerfile", "web/requirements.txt", "desktop.py",
         "desktop-requirements.txt", "web/__init__.py",
         ".github/workflows/release.yml", ".github/workflows/ci.yml",
@@ -1635,6 +1657,15 @@ def test_web_21(b: Path) -> None:
           str(r.get_json()))
     r = client.post("/api/eval", json={"line": ":load /etc/passwd"})
     check("load error code", r.get_json().get("code") == "load_error", str(r.get_json()))
+
+    # 已死亡会话应提示重建（410），而不是误报超时（408）
+    # A dead interpreter is a rebuild signal (410), not a timeout (408).
+    dead_sid = client.post("/api/session").get_json()["session"]
+    webapp._sessions[dead_sid]["interp"].alive = False
+    r = client.post("/api/eval", json={"session": dead_sid, "line": "I"})
+    check("dead session returns 410",
+          r.status_code == 410 and r.get_json().get("restart") is True
+          and r.get_json().get("code") == "session_expired", str(r.get_json()))
 
     # 强制让解释器 send 超时，验证 408 的 JSON 形状与 timeout 标记
     # Force the interpreter send to time out and check the 408 JSON shape.
@@ -2021,6 +2052,17 @@ def test_web_stream_and_storage(b: Path) -> None:
               rl.get("textZh") != rl.get("textEn")
               and "请求" in rl.get("textZh", "")
               and "requests" in rl.get("textEn", ""), str(rl))
+        # 这些路由也会创建/终止解释器或读取分享，不能绕过限流
+        # These routes also spawn/kill interpreters or read shares, so they must
+        # not bypass the limiter.
+        r = client.post("/api/session/deadbeef/lang", json={"lang": "zh"})
+        check("lang route rate limited", r.status_code == 429, str(r.status_code))
+        r = client.post("/api/session/deadbeef/cancel", json={})
+        check("cancel route rate limited", r.status_code == 429, str(r.status_code))
+        r = client.delete("/api/session/deadbeef")
+        check("delete route rate limited", r.status_code == 429, str(r.status_code))
+        r = client.get("/api/share/deadbeef")
+        check("share get rate limited", r.status_code == 429, str(r.status_code))
     finally:
         webapp.RATE_LIMIT = old_rate
         webapp._rate_buckets.clear()
@@ -2035,12 +2077,1163 @@ def test_web_stream_and_storage(b: Path) -> None:
           f"alive={interp4.alive} sessions={len(webapp._sessions)}")
 
 
-# 这三个测试定义在 TESTS 列表之后，统一在末尾注册
-# These three are defined after the list, so register them together at the end.
+def test_web_coverage_and_desktop(b: Path) -> None:
+    try:
+        import flask  # noqa: F401
+    except ImportError:
+        skip("test_web_coverage_and_desktop: Flask is not installed")
+        return
+    import sys as _sys
+    web_dir = str(ROOT / "web")
+    if web_dir not in _sys.path:
+        _sys.path.insert(0, web_dir)
+    import app as webapp  # noqa: WPS433
+
+    client = webapp.app.test_client()
+    # 首页与字体是前端运行的前提，必须可直接访问
+    # The page and its font are required by the UI and must be served directly.
+    r = client.get("/")
+    check("index served", r.status_code == 200 and b'base href="./"' in r.data, str(r.status_code))
+    r = client.get("/fonts/APL385.ttf")
+    check("font served", r.status_code == 200 and len(r.data) > 0, str(r.status_code))
+
+    # Web 端 :save 默认关闭，设置 LAMBDA_ALLOW_SAVE=1 后才放行
+    # Web :save is off unless LAMBDA_ALLOW_SAVE=1 is set.
+    old_allow = webapp.ALLOW_SAVE
+    try:
+        webapp.ALLOW_SAVE = False
+        problem = webapp.validate_line(":save test.lam")
+        check("web save disabled", problem is not None and problem[0] == "load_error", str(problem))
+        webapp.ALLOW_SAVE = True
+        check("web save enabled", webapp.validate_line(":save test.lam") is None, "")
+    finally:
+        webapp.ALLOW_SAVE = old_allow
+
+    # LAMBDA_LOAD_ROOT=* 关闭路径限制
+    # LAMBDA_LOAD_ROOT=* disables path confinement.
+    old_root = os.environ.get("LAMBDA_LOAD_ROOT")
+    try:
+        os.environ["LAMBDA_LOAD_ROOT"] = "*"
+        check("load root disabled", webapp.load_root() is None, "")
+        check("load path unrestricted", webapp._check_path(":load /etc/passwd") is None, "")
+    finally:
+        if old_root is None:
+            os.environ.pop("LAMBDA_LOAD_ROOT", None)
+        else:
+            os.environ["LAMBDA_LOAD_ROOT"] = old_root
+
+    # 会话路径同样要把 --max-term-size 传给解释器
+    # The session path must forward --max-term-size too, not only legacy one-shot.
+    src = (ROOT / "web" / "app.py").read_text(encoding="utf-8")
+    check("session forwards max term size",
+          src.count('args += ["--max-term-size", MAX_TERM_SIZE]') >= 2, "")
+
+    # 桌面端辅助函数可独立调用：端口有效、数据目录可重复准备
+    # Desktop helpers work standalone: a valid port and an idempotent data dir.
+    root_str = str(ROOT)
+    if root_str not in _sys.path:
+        _sys.path.insert(0, root_str)
+    import desktop
+    port = desktop._free_port()
+    check("desktop free port", isinstance(port, int) and 1024 <= port <= 65535, str(port))
+    # 选端口时就保持监听，确认端口已真正被占用（无 TOCTOU 窗口）
+    # The chosen port is already listening, so no other process can steal it.
+    bound, sock = desktop._bind_port()
+    try:
+        probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        probe.settimeout(1)
+        try:
+            probe.connect(("127.0.0.1", bound))
+            held = True
+        except OSError:
+            held = False
+        finally:
+            probe.close()
+        check("desktop port held", held, f"port {bound} was not listening")
+    finally:
+        sock.close()
+    data = desktop._prepare_environment()
+    check("desktop data dir", isinstance(data, Path)
+          and data.name == ".lambda-calculus-interpreter", str(data))
+
+
+def test_fixes_round2(b: Path) -> None:
+    # 内联类型标注要接受构造子应用，如 List Int / List (List Int)
+    # Inline annotations must accept constructor application like List Int.
+    got = one(["(x : List Int)"], b)
+    check("annotation List Int parses",
+          got.get("kind") == "result" and got.get("term") == "x", str(got)[:200])
+    got = one(["(x : List (List Int))"], b)
+    check("nested annotation parses", got.get("kind") == "result", str(got)[:200])
+
+    # 标注里的类型变量是刚性的：t0 → t0 不是 a → b 的实例
+    # Annotation variables are rigid: t0 → t0 is not an instance of a → b.
+    got = one([":type \\x.x : a -> b"], b)
+    check("rigid annotation vars", got.get("kind") == "type"
+          and got.get("instantiable") is False, str(got)[:300])
+    got = one([":type \\x.x : Int -> Int"], b)
+    check("concrete annotation instance", got.get("instantiable") is True,
+          str(got)[:300])
+
+    # 超大整数必须报错，不能按补码回绕成一个看似合法的值
+    # Oversized integers must be rejected instead of wrapping around.
+    got = one([":steps 99999999999999999999999"], b)
+    check("overflow :steps rejected", got.get("code") == "parse_error", str(got)[:200])
+    got = one([":goto 99999999999999999999999"], b)
+    check("overflow :goto rejected", got.get("code") == "parse_error", str(got)[:200])
+    p = subprocess.run([str(b), "--timeout", "99999999999999999999999",
+                        "--eval", "I"], capture_output=True, cwd=str(ROOT), timeout=30)
+    check("overflow --timeout rejected", p.returncode != 0, str(p.returncode))
+
+    # :back / :forward / :goto 的输出要带上当前项的可归约位置
+    # Rewind commands must carry the redex list of the term they display.
+    res = run([":begin PLUS ONE TWO", ":step", ":back", ":forward", ":goto 0"], b)
+    for label, idx in (("back", 2), ("forward", 3), ("goto", 4)):
+        obj = res[idx][0] if idx < len(res) and res[idx] else {}
+        check(f"{label} keeps redex list", obj.get("kind") == "step"
+              and isinstance(obj.get("redexes"), list) and len(obj["redexes"]) > 0,
+              str(obj)[:200])
+    back = res[2][0] if len(res) > 2 and res[2] else {}
+    check("back to start disables back", back.get("canStepBack") is False,
+          str(back)[:200])
+
+    # 前端键盘修复的静态守卫 / static guards for the frontend keyboard fixes.
+    html = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
+    check("palette does not stack dialogs", "if (dialogOpen) return;" in html, "")
+    check("escape dismisses only autocomplete",
+          "e.stopPropagation(); closeAc();" in html, "")
+    check("replay keeps cancel disabled", "!state.replaying && inflight.length" in html, "")
+
+    # Web：行尾注释不能把 :quit 偷渡过白名单
+    # Web: a trailing comment must not smuggle :quit past the whitelist.
+    try:
+        import flask  # noqa: F401
+    except ImportError:
+        skip("test_fixes_round2: Flask is not installed")
+        return
+    import sys as _sys
+    web_dir = str(ROOT / "web")
+    if web_dir not in _sys.path:
+        _sys.path.insert(0, web_dir)
+    import app as webapp  # noqa: WPS433
+    client = webapp.app.test_client()
+    sid = client.post("/api/session", json={"lang": "en"}).get_json()["session"]
+    try:
+        r = client.post("/api/eval", json={"session": sid, "line": ":quit -- bye"})
+        check("cli_only comment bypass blocked", r.status_code == 400
+              and r.get_json().get("code") == "cli_only", str(r.get_json()))
+        r = client.post("/api/eval", json={"session": sid, "line": ":q # bye"})
+        check("cli_only hash bypass blocked", r.status_code == 400, str(r.status_code))
+        r = client.post("/api/eval", json={"session": sid, "line": "I"})
+        check("session survives cli_only attempt", r.status_code == 200,
+              str(r.status_code))
+        check("forward share whitelisted",
+              webapp.is_safe_share_command(":forward")
+              and webapp._valid_share({"code": [":forward"]}), "")
+        r = client.post("/api/eval/stream", json={"line": "I", "session": {"a": 1}})
+        check("stream rejects non-string session", r.status_code == 400,
+              str(r.status_code))
+    finally:
+        client.delete("/api/session/" + sid)
+
+
+def test_prove_feature(b: Path) -> None:
+    # :prove 给出两条归约序列与共同正规式
+    # :prove yields both reduction sequences and the common normal form.
+    got = one([":prove PLUS ONE TWO , SUCC (SUCC ONE)"], b)
+    check("proof kind", got.get("kind") == "proof", str(got)[:200])
+    check("proof convertible", got.get("convertible") is True
+          and got.get("limitHit") is False, str(got)[:200])
+    check("proof normal form", got.get("normalForm") == "λf → λx → f (f (f x))",
+          str(got.get("normalForm")))
+    check("proof two traces", len(got.get("leftTrace") or []) == 6
+          and len(got.get("rightTrace") or []) == 6
+          and got.get("leftSteps") == 6 and got.get("rightSteps") == 6,
+          str([len(got.get("leftTrace") or []), len(got.get("rightTrace") or [])]))
+    first = (got.get("leftTrace") or [{}])[0]
+    check("proof trace step shape",
+          all(k in first for k in ("n", "rule", "note", "before", "after")),
+          str(first)[:200])
+
+    # α 等价的两边步数为 0；不转换时给出明确结论且不留误导性的正规式
+    # Alpha-equal sides take 0 steps; a negative result has no normal form.
+    got = one([":prove \\x.x , \\y.y"], b)
+    check("proof alpha pair", got.get("convertible") is True
+          and got.get("leftSteps") == 0 and got.get("rightSteps") == 0,
+          str(got)[:200])
+    got = one([":prove \\x.x , \\y.y y"], b)
+    check("proof not convertible", got.get("convertible") is False
+          and got.get("normalForm") == "", str(got)[:200])
+
+    # 步数上限耗尽时结论为“无法判定”，不能误报不转换
+    # Hitting the step limit is inconclusive, not a negative result.
+    got = one([":steps 2", ":prove PLUS ONE TWO , I"], b)
+    check("proof limit inconclusive", got.get("limitHit") is True
+          and got.get("convertible") is False, str(got)[:200])
+
+    # .lam 文件可以原样回放 :prove 查询
+    # A .lam file may replay a :prove query just like :eq/:conv.
+    with tempfile.TemporaryDirectory() as td:
+        lam = Path(td) / "proof.lam"
+        lam.write_text(":prove PLUS ONE TWO , THREE\n", encoding="utf-8")
+        p = subprocess.run([str(b), "--batch", "--json", "--lang", "en"],
+                           input=(":load " + str(lam) + "\n").encode("utf-8"),
+                           capture_output=True,
+                           cwd=str(ROOT), timeout=30)
+        out = p.stdout.decode("utf-8", "replace")
+        check("proof replayed from .lam", '"kind":"proof"' in out
+              and '"convertible":true' in out, out[:200])
+
+    # 证明的两边都受 --max-term-size 约束
+    # Both sides of a proof respect --max-term-size.
+    p = subprocess.run([str(b), "--max-term-size", "2", "--json", "--eval",
+                        ":prove PLUS ONE TWO , I"], capture_output=True,
+                       cwd=str(ROOT), timeout=30)
+    check("proof bounded by max term size", b"term_too_large" in p.stdout,
+          p.stdout.decode("utf-8", "replace")[:200])
+
+    # Web 分享白名单要放行 :prove
+    # The web share whitelist must allow :prove.
+    try:
+        import flask  # noqa: F401
+    except ImportError:
+        skip("test_prove_feature: Flask is not installed")
+        return
+    import sys as _sys
+    web_dir = str(ROOT / "web")
+    if web_dir not in _sys.path:
+        _sys.path.insert(0, web_dir)
+    import app as webapp  # noqa: WPS433
+    check("proof share whitelisted",
+          webapp.is_safe_share_command(":prove PLUS ONE TWO , I"), "")
+    html = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
+    check("proof view present", "function renderProof()" in html
+          and 'state.selected.leftTrace' in html, "")
+    check("proof i18n keys",
+          all((k + ":") in html for k in
+              ("proofLeft", "proofRight", "proofCommon", "proofNoSel")), "")
+
+
+def test_edge_commands(b: Path) -> None:
+    # 缺参数与非法参数：统一 parse_error，而不是崩溃或静默接受
+    # Missing/invalid arguments must be parse errors, never crashes.
+    bad = [":def", ":search", ":type", ":nf", ":begin", ":step 0", ":goto -1",
+           ":eq \\x.x", ":conv \\x.x ,", ":prove \\x.x"]
+    for cmd, objs in zip(bad, run(bad, b)):
+        obj = objs[0] if objs else {}
+        check(f"bad args {cmd}", obj.get("code") == "parse_error", str(obj)[:160])
+
+    # 手动归约在没有 :begin 时的分支（:forward/:end 是提示而不是失败）
+    # Manual commands with no active reduction (forward/end are informational).
+    kinds = [objs[0].get("kind") if objs else "" for objs in run(
+        [":step", ":step 2", ":goto 0", ":back", ":forward", ":run", ":end"], b)]
+    check("manual no-state kinds",
+          kinds == ["fail", "fail", "fail", "fail", "info", "fail", "info"],
+          str(kinds))
+
+    # :goto 越界与 :step 序号越界
+    # Out-of-range goto and redex index.
+    res = run([":begin (\\x.x) 1", ":step", ":goto 99", ":step 99999"], b)
+    check("goto out of range", res[2][0].get("code") == "step_out_of_range",
+          str(res[2])[:200])
+    check("step index out of range", res[3][0].get("kind") == "fail", str(res[3])[:200])
+
+    # 加载不存在的文件、保存到不存在的目录都要给出失败码
+    # Missing load file and save into a missing directory both fail cleanly.
+    with tempfile.TemporaryDirectory() as td:
+        missing = Path(td) / "nope.lam"
+        got = one([":load " + str(missing)], b)
+        check("load missing fails", got.get("code") == "load_error", str(got)[:200])
+        got = one([":save " + str(Path(td) / "no" / "x.lam")], b)
+        check("save bad dir fails", got.get("kind") == "fail", str(got)[:200])
+
+    # :time 的次数必须在 1-1000；越界时报错，不能悄悄求别的表达式
+    # :time count must be 1-1000; out of range is an error, not a silent eval.
+    for cmd in (":time 0 PLUS ONE TWO", ":time 1001 \\x.x", ":time -1 \\x.x"):
+        got = one([cmd], b)
+        check(f"time out of range {cmd}", got.get("code") == "parse_error",
+              str(got)[:200])
+    got = one([":time 2 PLUS ONE TWO"], b)
+    check("time valid count", got.get("kind") == "result"
+          and got.get("runs") == 2, str(got)[:200])
+
+    # 列表字面量的边界：空表、单元素应用、嵌套、尾逗号/双逗号
+    # List literal edges: empty, application element, nesting, bad commas.
+    got = one(["[]"], b)
+    check("empty list", got.get("term") == "λn → λc → n", str(got)[:200])
+    got = one(["[a b]"], b)
+    check("list of application", got.get("kind") == "result"
+          and got.get("steps") == 2, str(got)[:200])
+    got = one(["[[a,b]]"], b)
+    check("nested list", got.get("kind") == "result", str(got)[:200])
+    for cmd in ("[a,]", "[a,,b]"):
+        got = one([cmd], b)
+        check(f"bad list {cmd}", got.get("code") == "parse_error", str(got)[:200])
+
+    # if / let 的嵌套
+    # Nested if and let.
+    for expr, want in (
+        ("if (if TRUE then TRUE else FALSE) then 1 else 2", "1"),
+        ("let x = 1 in let y = 2 in PLUS x y", "3"),
+        ("let x = 1; y = x in y", "1"),
+        ("if TRUE then if FALSE then 1 else 2 else 3", "2"),
+    ):
+        got = one([":int (" + expr + ")"], b)
+        check(f"nested {expr[:24]}", str(got.get("value")) == want, str(got)[:200])
+
+    # β 与 η 混合时 redex 的序号与规则
+    # Mixed β/η redex indexes and rules.
+    res = run([":eta on", ":begin (\\x. f x) ((\\y.y) z)", ":step 2"], b)
+    check("mixed redex count", res[1][0].get("redexCount") == 3, str(res[1])[:200])
+    check("eta picked by index", res[2][0].get("rule") == "η"
+          and res[2][0].get("redexCount") == 1, str(res[2])[:200])
+
+    # 快速模式下手动归约仍走步进引擎
+    # Manual stepping stays on the step engine in fast mode.
+    res = run([":fast on", ":begin (\\x.x) ((\\y.y) z)", ":step", ":run"], b)
+    check("fast manual step", res[2][0].get("kind") == "step"
+          and res[2][0].get("rule") == "β", str(res[2])[:200])
+    check("fast manual run", res[3][0].get("steps") == 1
+          and res[3][0].get("fastFallback") is False, str(res[3])[:200])
+
+    # Unicode 标识符与更宽的运算符字符集
+    # Unicode identifiers and the wider operator charset.
+    res = run(["名字 = \\x.x", "名字 ONE", "\\α.α", "a == b"], b)
+    check("unicode define", res[0][0].get("kind") == "define", str(res[0])[:200])
+    check("unicode apply", res[1][0].get("kind") == "result", str(res[1])[:200])
+    check("unicode lambda", res[2][0].get("kind") == "result", str(res[2])[:200])
+    check("operator charset", res[3][0].get("code") == "parse_error", str(res[3])[:200])
+
+
+def test_cli_and_differential_edges(b: Path) -> None:
+    def cli(*args: str, inp: str = ""):
+        return subprocess.run([str(b), *args], input=inp.encode("utf-8"),
+                              capture_output=True, cwd=str(ROOT), timeout=60)
+
+    # 短别名与重复的 -e（共享状态）
+    # Short aliases and repeatable -e with shared state.
+    version = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
+    p = cli("-v")
+    check("-v prints version", p.returncode == 0
+          and version.encode("utf-8") in p.stdout,
+          p.stdout.decode("utf-8", "replace")[:120])
+    p = cli("-j", "-e", "PLUS ONE TWO", "--lang", "en")
+    check("-j emits json lines", p.returncode == 0 and b'"kind":"result"' in p.stdout,
+          p.stdout.decode("utf-8", "replace")[:160])
+    p = cli("-e", "id = \\x.x", "-e", "id ONE", "--lang", "en")
+    text = p.stdout.decode("utf-8", "replace")
+    check("-e keeps state", p.returncode == 0 and "defined" in text
+          and "Church numeral 1" in text, text[:200])
+
+    # 互斥与非法取值：全部非零退出
+    # Mutual exclusions and invalid values all exit nonzero.
+    for args in (
+        ("--check", "--eval", "I", "lib/prelude.lam"),
+        ("--eval", "I", "--batch"),
+        ("--check",),
+        ("--strategy", "nope", "--eval", "I"),
+        ("--steps", "0", "--eval", "I"),
+        ("--lang=xx", "--eval", "I"),
+    ):
+        p = cli(*args)
+        check(f"cli rejects {args}", p.returncode != 0, str(p.returncode))
+
+    # --check --json 的结构化结果
+    # Structured --check --json output.
+    p = cli("--check", "--json", "test.lam", "--lang", "en")
+    lines = [json.loads(x) for x in p.stdout.decode("utf-8", "replace").splitlines() if x]
+    check("check json fail summary", p.returncode == 1 and lines[0].get("ok") is False
+          and lines[0].get("loaded") == 7 and lines[0].get("failed") == 2
+          and lines[0].get("code") == "command_failed", str(lines[:1])[:200])
+    check("check json line numbers", [o.get("line") for o in lines[1:]] == [2, 4]
+          and all(o.get("code") == "parse_error" for o in lines[1:]),
+          str(lines[1:])[:200])
+    p = cli("--check", "--json", "lib/prelude.lam", "--lang", "en")
+    lines = [json.loads(x) for x in p.stdout.decode("utf-8", "replace").splitlines() if x]
+    check("check json pass", p.returncode == 0 and lines[0].get("ok") is True
+          and lines[0].get("loaded") == 21, str(lines[:1])[:200])
+
+    # 启动时的策略与步数设置确实生效
+    # Startup strategy and step limit are applied.
+    p = cli("--batch", "--json", "--lang", "en", "--strategy", "cbn",
+            inp="x ((\\y.y) z)\n")
+    chunk = p.stdout.decode("utf-8", "replace").split("\x1e")[0]
+    got = [json.loads(x) for x in chunk.splitlines() if x.strip()][-1]
+    check("cli strategy applied", got.get("strategy") == "cbn"
+          and got.get("steps") == 0, str(got)[:200])
+    p = cli("--batch", "--json", "--lang", "en", "--steps", "3",
+            inp="((\\x.x x)(\\x.x x))\n")
+    chunk = p.stdout.decode("utf-8", "replace").split("\x1e")[0]
+    objs = [json.loads(x) for x in chunk.splitlines() if x.strip()]
+    got = objs[0]
+    check("cli steps applied", got.get("limitHit") is True
+          and got.get("steps") == 3 and got.get("cycle") is True, str(got)[:200])
+
+    # --json 不带 --batch：JSON Lines，但没有记录分隔符
+    # --json without --batch: JSON Lines without the RS sentinel.
+    p = cli("--json", "--lang", "en", inp="PLUS ONE TWO\n\\x.x\n")
+    text = p.stdout.decode("utf-8", "replace")
+    check("json only no sentinel", p.returncode == 0 and "\x1e" not in text
+          and text.count("λ>") >= 2, repr(text[:120]))
+
+    # main 与 extension 在 :steps 溢出上必须一致（回归先前 main 的补码回绕）
+    # main and extension agree on rejecting an overflowing :steps.
+    with tempfile.TemporaryDirectory() as td:
+        probe = Path(td) / "steps.lam"
+        probe.write_text(":steps 99999999999999999999999\n:q\n", encoding="utf-8")
+        main_bin = ROOT / ("main.exe" if os.name == "nt" else "main")
+        m = subprocess.run([str(main_bin)], input=probe.read_bytes(),
+                           capture_output=True, cwd=str(ROOT), timeout=30)
+        mtext = m.stdout.decode("utf-8", "replace")
+        check("main rejects overflow steps", "Usage" in mtext or "用法" in mtext,
+              mtext[:160])
+        check("extension rejects overflow steps",
+              one([":steps 99999999999999999999999"], b).get("code") == "parse_error", "")
+
+
+def test_web_edge_cases(b: Path) -> None:
+    try:
+        import flask  # noqa: F401
+    except ImportError:
+        skip("test_web_edge_cases: Flask is not installed")
+        return
+    import sys as _sys
+    web_dir = str(ROOT / "web")
+    if web_dir not in _sys.path:
+        _sys.path.insert(0, web_dir)
+    import app as webapp  # noqa: WPS433
+    client = webapp.app.test_client()
+
+    # 非对象 JSON 请求体：统一 400 bad_request，而不是 500
+    # Non-object JSON bodies: uniform 400 instead of 500.
+    for path in ("/api/session", "/api/eval", "/api/eval/stream",
+                 "/api/session/x/lang"):
+        r = client.post(path, json=[1, 2, 3])
+        check(f"non-object body {path}", r.status_code == 400
+              and r.get_json().get("code") == "bad_request",
+              f"{r.status_code} {r.get_json()}")
+
+    # 宽容解析：畸形/空 JSON 仍当作空对象
+    # Malformed/empty bodies stay tolerant.
+    for kwargs in ({"data": "{bad", "content_type": "application/json"},
+                   {"data": "", "content_type": "application/json"}):
+        r = client.post("/api/session", **kwargs)
+        check("tolerant json body", r.status_code == 200
+              and len(r.get_json().get("session", "")) == 32, str(r.get_json()))
+
+    sid = client.post("/api/session", json={"lang": "en"}).get_json()["session"]
+    try:
+        # 非法语言回退 both、/lang 非法值、未知会话、DELETE 幂等
+        # Invalid lang fallback, bad lang route, unknown session, idempotent delete.
+        r = client.post("/api/eval", json={"session": sid, "line": "BROKEN (", "lang": "fr"})
+        obj = r.get_json()["outputs"][0]
+        check("invalid lang falls back both",
+              bool(obj.get("textZh")) and "Parse error" in obj.get("textEn", ""),
+              str(obj)[:160])
+        r = client.post(f"/api/session/{sid}/lang", json={"lang": "fr"})
+        check("bad lang route", r.status_code == 200
+              and r.get_json().get("lang") == "both", str(r.get_json()))
+        r = client.post("/api/session/doesnotexist/lang", json={"lang": "en"})
+        check("lang unknown session", r.status_code == 410, str(r.status_code))
+        r = client.delete("/api/session/doesnotexist")
+        check("delete unknown idempotent", r.status_code == 200
+              and r.get_json().get("ok") is True, str(r.get_json()))
+
+        # {lines} 别名、空请求、行拆分、非字符串 line 的当前行为
+        # {lines} alias, empty requests, line splitting, non-string coercion.
+        r = client.post("/api/eval", json={"session": sid, "lines": ["a", "b"]})
+        check("lines alias", r.status_code == 200
+              and len(r.get_json()["outputs"]) == 2, str(r.get_json())[:160])
+        for payload in ({}, {"lines": []}, {"lines": "abc"}):
+            r = client.post("/api/eval", json=payload)
+            check("empty eval request", r.status_code == 400
+                  and r.get_json().get("code") == "bad_request", str(r.get_json()))
+        r = client.post("/api/eval", json={"session": sid, "line": "a\n\nb"})
+        check("inner blank line kept", r.status_code == 200
+              and len(r.get_json()["outputs"]) == 3, str(r.status_code))
+        r = client.post("/api/eval", json={"session": sid, "line": 123})
+        check("numeric line coerced", r.status_code == 200
+              and len(r.get_json()["outputs"]) == 1, str(r.status_code))
+
+        # 会话路径与 SSE 路径上的 term_too_large
+        # term_too_large on the session and streaming paths.
+        old_cap = webapp.MAX_TERM_SIZE
+        try:
+            webapp.MAX_TERM_SIZE = "20"
+            sid2 = client.post("/api/session", json={"lang": "en"}).get_json()["session"]
+            try:
+                r = client.post("/api/eval", json={"session": sid2,
+                                "line": "\\x." + "x " * 40})
+                check("session term cap", r.status_code == 200
+                      and r.get_json()["outputs"][0].get("code") == "term_too_large",
+                      str(r.get_json())[:160])
+                r = client.post("/api/eval/stream", json={"session": sid2,
+                                "line": "\\x." + "x " * 40})
+                frames = [json.loads(x[6:]) for x in
+                          r.get_data(as_text=True).splitlines() if x.startswith("data: ")]
+                check("stream term cap", any(f.get("code") == "term_too_large"
+                                             for f in frames), str(frames)[:200])
+            finally:
+                client.delete("/api/session/" + sid2)
+        finally:
+            webapp.MAX_TERM_SIZE = old_cap
+
+        # SSE 帧类型映射：heartbeat / timeout / expired / internal
+        # SSE frame mapping for every failure path.
+        old_send = webapp.Interpreter.send_stream
+        try:
+            def fake_stream(self, line):
+                yield {"kind": "heartbeat", "elapsedMs": 1}
+                raise error
+            for error, want, attr, val in (
+                (TimeoutError(), "timeout", "timeout", True),
+                (RuntimeError("dead"), "expired", "restart", True),
+                (ValueError("boom"), "error", "code", "internal"),
+            ):
+                webapp.Interpreter.send_stream = fake_stream
+                r = client.post("/api/eval/stream", json={"session": sid, "line": "I"})
+                frames = [json.loads(x[6:]) for x in
+                          r.get_data(as_text=True).splitlines() if x.startswith("data: ")]
+                kinds = [f.get("kind") for f in frames]
+                target = next((f for f in frames if f.get("kind") == want), {})
+                check(f"sse {want} frame", kinds[0] == "start" and want in kinds
+                      and target.get(attr) == val, str(frames)[:200])
+            webapp.Interpreter.send_stream = lambda self, line: iter([
+                {"kind": "heartbeat", "elapsedMs": 7}])
+            r = client.post("/api/eval/stream", json={"session": sid, "line": "I"})
+            frames = [json.loads(x[6:]) for x in
+                      r.get_data(as_text=True).splitlines() if x.startswith("data: ")]
+            check("sse heartbeat forwarded",
+                  any(f.get("kind") == "heartbeat" for f in frames), str(frames)[:200])
+        finally:
+            webapp.Interpreter.send_stream = old_send
+
+        # 删除会话后流式请求返回 410（HTTP 层，不是 SSE expired 帧）
+        # Streaming a deleted session returns HTTP 410.
+        sid2 = client.post("/api/session", json={"lang": "en"}).get_json()["session"]
+        client.delete("/api/session/" + sid2)
+        r = client.post("/api/eval/stream", json={"session": sid2, "line": "I"})
+        check("stream deleted session", r.status_code == 410
+              and r.get_json().get("restart") is True, str(r.get_json()))
+    finally:
+        client.delete("/api/session/" + sid)
+
+    # 分享载荷的类型/大小/控制字符矩阵
+    # Share payload type, size and control-character validation.
+    old_db = webapp.SHARE_DB
+    try:
+        webapp.SHARE_DB = "off"
+        bad_payloads = ([1], {"code": "x"}, {"code": ["ok", 5]},
+                        {"code": ["ok"] * 201}, {"code": ["x" * 70000]},
+                        {"code": ["a\x00b"]}, {"code": ["a\x1eb"]},
+                        {"code": ["a\ufeffb"]}, {"code": ["a\u2028b"]})
+        for payload in bad_payloads:
+            r = client.post("/api/share", json=payload)
+            check("share rejects bad payload", r.status_code == 400
+                  and r.get_json().get("code") == "bad_request",
+                  str(payload)[:80])
+        r = client.post("/api/share", json={"code": ["I"], "junk": {"a": 1}})
+        check("share allows extra fields", r.status_code == 200
+              and len(r.get_json().get("id", "")) == 10, str(r.get_json()))
+        check("share db off is memory only", webapp._share_db_path() is None, "")
+    finally:
+        webapp.SHARE_DB = old_db
+
+    # 限流按 X-Forwarded-For 分桶，并覆盖 /api/session
+    # Rate-limit buckets key on X-Forwarded-For and cover session creation.
+    # XFF 信任默认关闭；此测试显式开启以验证反向代理场景的分桶
+    # XFF trust is opt-in; enable it here to verify the reverse-proxy bucketing.
+    old_limit = webapp.RATE_LIMIT
+    old_trust = webapp.TRUST_XFF
+    try:
+        webapp.RATE_LIMIT = 1
+        webapp.TRUST_XFF = True
+        webapp._rate_buckets.clear()
+        for ip in ("1.2.3.4", "5.6.7.8"):
+            r1 = client.post("/api/session", json={}, headers={"X-Forwarded-For": ip})
+            r2 = client.post("/api/session", json={}, headers={"X-Forwarded-For": ip})
+            check(f"xff bucket {ip}", r1.status_code == 200 and r2.status_code == 429,
+                  f"{r1.status_code}/{r2.status_code}")
+        r = client.get("/api/health", headers={"X-Request-ID": "bad<> id!"})
+        check("request id sanitized", r.status_code == 200, str(r.status_code))
+    finally:
+        webapp.RATE_LIMIT = old_limit
+        webapp.TRUST_XFF = old_trust
+        webapp._rate_buckets.clear()
+
+    # 缺失解释器时 health 报告 available:false
+    # Health reports available:false when the interpreter is missing.
+    old_bin = webapp.INTERP_BIN
+    try:
+        webapp.INTERP_BIN = ROOT / "definitely-missing-extension"
+        r = client.get("/api/health")
+        body = r.get_json()
+        check("health unavailable", body.get("available") is False
+              and body.get("interpreter") == webapp.INTERP_BIN.name, str(body)[:200])
+    finally:
+        webapp.INTERP_BIN = old_bin
+
+
+def test_fast_step_differential(b: Path) -> None:
+    """Random well-typed terms: fast normalization must agree with the step engine.
+
+    随机良类型项：共享快速正规化必须与小步归约给出 α 等价的正规式。
+    """
+    rng = random.Random(20261120)
+
+    def gen(ctx, ty, depth):
+        # 类型是 ("o",) 或 ("->", 域, 值域)；ctx 是 (名字, 类型) 列表
+        # Types are ("o",) or ("->", domain, codomain); ctx is a (name, type) list.
+        same = [n for n, t in ctx if t == ty]
+        if depth <= 0:
+            if same:
+                return rng.choice(same)
+            if ty[0] == "->":
+                name = "v" + str(len(ctx))
+                return "(\\" + name + "." + gen(ctx + [(name, ty[1])], ty[2], 0) + ")"
+            return "u"
+        choices = ["app"]
+        if same:
+            choices.append("var")
+        if ty[0] == "->":
+            choices.append("lam")
+        pick = rng.choice(choices)
+        if pick == "var":
+            return rng.choice(same)
+        if pick == "lam":
+            name = "v" + str(len(ctx))
+            return "(\\" + name + "." + gen(ctx + [(name, ty[1])], ty[2], depth - 1) + ")"
+        dom = rng.choice([("o",), ("->", ("o",), ("o",))])
+        fn = gen(ctx, ("->", dom, ty), depth - 1)
+        arg = gen(ctx, dom, depth - 1)
+        return "(" + fn + " " + arg + ")"
+
+    arrow1 = ("->", ("o",), ("o",))
+    shapes = [("o",), arrow1, ("->", arrow1, ("o",))]
+    terms = []
+    for _ in range(40):
+        terms.append(gen([("u", ("o",))], rng.choice(shapes), rng.randint(2, 3)))
+
+    slow = run([":nf " + t for t in terms], b)
+    fast = run([":fast on"] + [":nf " + t for t in terms] + [":fast off"], b)
+    pairs = []
+    for i, t in enumerate(terms):
+        a = slow[i][0] if i < len(slow) and slow[i] else {}
+        c = fast[i + 1][0] if i + 1 < len(fast) and fast[i + 1] else {}
+        if a.get("limitHit") or c.get("limitHit") or not a.get("term") or not c.get("term"):
+            continue
+        pairs.append((t, a["term"], c["term"]))
+    check("fast/step differential has comparisons", len(pairs) >= 30,
+          f"only {len(pairs)} of {len(terms)} terms finished")
+
+    eqs = run([":eq " + x + " , " + y for _, x, y in pairs], b)
+    for i, (t, x, y) in enumerate(pairs):
+        objs = eqs[i] if i < len(eqs) else []
+        check(f"fast/step alpha {t[:60]}", bool(objs) and objs[0].get("equal") is True,
+              str(objs)[:200])
+
+    # 漂亮打印的结果必须能再被解析并归约到自身 / pretty output must reparse to itself
+    rt = run([":nf " + x for _, x, _ in pairs], b)
+    for i, (_, x, _) in enumerate(pairs):
+        objs = rt[i] if i < len(rt) else []
+        check(f"pretty roundtrip {x[:60]}", bool(objs) and objs[0].get("term") == x,
+              str(objs)[:200])
+
+
+def test_command_ui_coverage(b: Path) -> None:
+    """Every known REPL command must have a web UI entry.
+
+    每个已知 REPL 命令都必须在网页端有入口（命令面板也算入口）。
+    """
+    hs = (ROOT / "extension.hs").read_text(encoding="utf-8")
+    ui = (ROOT / "web/index.html").read_text(encoding="utf-8")
+
+    known_block = re.search(r"knownCommands\s*=\s*\[(.*?)\n\s*\]", hs, re.S)
+    cmds_block = re.search(r"var\s+CMDS\s*=\s*\[(.*?)\];", ui, re.S)
+    check("command catalogues found", bool(known_block) and bool(cmds_block))
+    if not known_block or not cmds_block:
+        return
+
+    known = set(re.findall(r'"(:[a-z]+)"', known_block.group(1)))
+    signatures = re.findall(r'"([^"]+)"', cmds_block.group(1))
+    catalogued = {s.strip().split()[0] for s in signatures if s.strip().startswith(":")}
+    check("known commands not empty", len(known) >= 30, str(len(known)))
+    missing = sorted(known - catalogued)
+    check("every command has a UI entry", not missing,
+          "missing from web CMDS: " + ", ".join(missing))
+
+
+def test_type_proposition(b: Path) -> None:
+    """:type must expose the Curry–Howard proposition as a type reading.
+
+    :type 需要同时给出把类型读成命题的中英文说明。
+    """
+    r = one([":type PLUS"], b, lang="zh")
+    formula = r.get("propositionFormula", "")
+    check("type proposition fields", bool(formula) and bool(r.get("propositionZh"))
+          and bool(r.get("propositionEn")), str(r)[:200])
+    check("type proposition notation", "⇒" in formula and "∀" in formula, formula)
+    check("type proposition bilingual",
+          "命题读法" in r.get("propositionZh", "")
+          and "proposition" in r.get("propositionEn", "").lower(), str(r)[:200])
+    proc = subprocess.run([str(b), "--lang", "zh"], input=b":type PLUS\n",
+                          capture_output=True, cwd=ROOT, timeout=30)
+    check("type proposition text mode",
+          "命题读法" in proc.stdout.decode("utf-8", "replace"))
+
+
+def test_race_and_snapshot(b: Path) -> None:
+    try:
+        import flask  # noqa: F401
+    except ImportError:
+        skip("test_race_and_snapshot: Flask is not installed")
+        return
+    import sys as _sys
+    web_dir = str(ROOT / "web")
+    if web_dir not in _sys.path:
+        _sys.path.insert(0, web_dir)
+    import app as webapp  # noqa: WPS433
+    client = webapp.app.test_client()
+
+    old_db = webapp.SNAPSHOT_DB
+    old_snaps = dict(webapp._snapshots)
+    with tempfile.TemporaryDirectory() as td:
+        webapp.SNAPSHOT_DB = str(Path(td) / "sessions.json")
+        webapp._snapshots.clear()
+        webapp._load_snapshots()
+        try:
+            sid = client.post("/api/session", json={"lang": "en"}).get_json()["session"]
+            try:
+                client.post("/api/eval", json={"session": sid, "line": ":let raceX = 5",
+                                               "lang": "en"})
+                rr = client.post("/api/race", json={"session": sid, "line": "PLUS raceX ONE",
+                                                    "lang": "en", "strategy": "cbn"})
+                body = rr.get_json()
+                check("race status", rr.status_code == 200 and body.get("ok") is True,
+                      str(body)[:200])
+                results = body.get("results", {})
+                check("race four strategies", set(results) == set(webapp.STRATEGIES),
+                      str(list(results)))
+                for name in webapp.STRATEGIES:
+                    obj = results.get(name, {})
+                    check(f"race result {name}",
+                          obj.get("kind") == "trace" and isinstance(obj.get("steps"), int)
+                          and obj.get("strategy") == name, str(obj)[:160])
+                aft = client.post("/api/eval", json={"session": sid,
+                                                     "line": "PLUS ONE TWO", "lang": "en"})
+                check("race restores strategy",
+                      aft.get_json()["outputs"][0].get("strategy") == "cbn",
+                      str(aft.get_json())[:160])
+                bad = client.post("/api/race", json={"session": sid, "line": ":nf ONE"})
+                check("race rejects commands", bad.status_code == 400,
+                      str(bad.get_json())[:160])
+
+                check("snapshot recorded",
+                      sid in webapp._snapshots
+                      and "PLUS raceX ONE" in webapp._snapshots[sid]["code"],
+                      str(webapp._snapshots.get(sid))[:200])
+                check("health snapshots",
+                      client.get("/api/health").get_json().get("snapshots", 0) >= 1)
+                client.delete(f"/api/session/{sid}")
+                rs = client.post(f"/api/session/{sid}/restore", json={"lang": "en"})
+                rb = rs.get_json()
+                check("restore status", rs.status_code == 200 and rb.get("ok") is True,
+                      str(rb)[:200])
+                new_sid = rb.get("session")
+                check("restore new session", bool(new_sid) and new_sid != sid,
+                      str(new_sid))
+                ev = client.post("/api/eval", json={"session": new_sid,
+                                                    "line": "PLUS raceX ONE", "lang": "en"})
+                objs = ev.get_json().get("outputs", [])
+                obj = objs[0] if objs else {}
+                check("restore keeps definitions",
+                      "Church numeral 6" in obj.get("hint", "")
+                      or "Church numeral 6" in obj.get("text", ""),
+                      str(obj)[:200])
+                check("restore rotates snapshot",
+                      sid not in webapp._snapshots and new_sid in webapp._snapshots)
+                miss = client.post("/api/session/doesnotexist/restore", json={})
+                check("restore missing snapshot", miss.status_code == 404,
+                      str(miss.status_code))
+
+                webapp.SNAPSHOT_DB = "off"
+                client.post("/api/eval", json={"session": new_sid, "line": "ONE",
+                                                "lang": "en"})
+                check("snapshot off", "ONE" not in webapp._snapshots[new_sid]["code"],
+                      str(webapp._snapshots.get(new_sid))[:200])
+            finally:
+                client.delete(f"/api/session/{sid}")
+        finally:
+            webapp.SNAPSHOT_DB = old_db
+            webapp._snapshots.clear()
+            webapp._snapshots.update(old_snaps)
+
+
+def test_scott_encoding(b: Path) -> None:
+    r = one([":encoding scott"], b)
+    check("scott encoding ack", r.get("encoding") == "scott" and "Scott" in r.get("text", ""),
+          str(r)[:160])
+    lit = one([":encoding scott", ":church 2"], b)
+    check("scott numeral literal", "λz → λs → s (λz → λs → z)" in lit.get("term", ""),
+          str(lit)[:200])
+    outs = run([":load lib/scott.lam", ":encoding scott",
+                ":int (SSUCC (SSUCC SZERO))",
+                ":int (STOCHURCH (SSUCC (SSUCC SZERO)))",
+                ":int (SFROMCHURCH 4)",
+                ":int (SLENGTH (SCONS ONE (SCONS TWO SNIL)))"], b)
+    for idx, expected in ((2, 2), (3, 2), (4, 4), (5, 2)):
+        obj = outs[idx][0] if idx < len(outs) and outs[idx] else {}
+        check(f"scott library {idx}", obj.get("value") == expected
+              and obj.get("encoding") == "scott", str(obj)[:200])
+    hint = one([":load lib/scott.lam", ":encoding scott", ":nf (SSUCC SZERO)"], b)
+    check("scott hint", "Scott numeral 1" in hint.get("hint", ""), str(hint)[:200])
+    one([":encoding church"], b)
+
+
+def test_machine_and_stats(b: Path) -> None:
+    outs = run([":machine PLUS ONE TWO", ":stats PLUS ONE TWO", ":nf PLUS ONE TWO"], b)
+    m = outs[0][0] if outs[0] else {}
+    s = outs[1][0] if outs[1] else {}
+    nf = outs[2][0] if outs[2] else {}
+    check("machine output", m.get("machine") is True and m.get("steps") == 6
+          and m.get("term") == nf.get("term"), str(m)[:200])
+    tr = m.get("trace", [])
+    check("machine trace", len(tr) == m.get("steps")
+          and all(x.get("before") and x.get("after") for x in tr), str(tr)[:200])
+    check("stats output", s.get("kindStats") is True and s.get("size", 0) > 0
+          and s.get("depth", 0) > 0 and s.get("normalForm") is True, str(s)[:200])
+    eq = one([":conv " + m.get("term", "") + " , " + nf.get("term", "")], b)
+    check("machine agrees with nf", eq.get("equal") is True, str(eq)[:200])
+    limited = one([":steps 3", ":machine (\\x.x x) (\\x.x x)"], b)
+    check("machine step limit", limited.get("limitHit") is True
+          and limited.get("steps") == 3, str(limited)[:200])
+
+
+def test_type_derivation(b: Path) -> None:
+    r = one([":type PLUS ONE"], b)
+    deriv = r.get("derivation", [])
+    check("derivation present", len(deriv) > 0, str(r)[:200])
+    kinds = {x.get("kind") for x in deriv}
+    check("derivation kinds", "unify" in kinds and "inst" in kinds, str(kinds))
+    check("derivation bilingual",
+          all(x.get("textZh") and x.get("textEn") for x in deriv), str(deriv)[:200])
+
+
+def test_snapshot_manager_sqlite(b: Path) -> None:
+    try:
+        import flask  # noqa: F401
+    except ImportError:
+        skip("test_snapshot_manager_sqlite: Flask is not installed")
+        return
+    import sys as _sys
+    web_dir = str(ROOT / "web")
+    if web_dir not in _sys.path:
+        _sys.path.insert(0, web_dir)
+    import app as webapp  # noqa: WPS433
+    client = webapp.app.test_client()
+    old_db = webapp.SNAPSHOT_DB
+    old_snaps = dict(webapp._snapshots)
+    with tempfile.TemporaryDirectory() as td:
+        webapp.SNAPSHOT_DB = str(Path(td) / "sessions.sqlite")
+        webapp._snapshots.clear()
+        webapp._load_snapshots()
+        try:
+            listed = client.get("/api/snapshots").get_json()
+            check("snapshot storage sqlite", listed.get("storage") == "sqlite", str(listed)[:160])
+            sid = client.post("/api/session", json={"lang": "en"}).get_json()["session"]
+            try:
+                client.post("/api/eval", json={"session": sid, "line": ":let mx = 7",
+                                               "lang": "en"})
+                rows = client.get("/api/snapshots").get_json()["snapshots"]
+                check("snapshot listed", any(x["id"] == sid for x in rows), str(rows)[:200])
+                rn = client.post(f"/api/snapshot/{sid}/name", json={"name": "my session"})
+                check("snapshot rename", rn.status_code == 200
+                      and rn.get_json().get("name") == "my session", str(rn.get_json())[:160])
+                # SQLite 模式下清掉内存缓存，模拟另一个 worker 直接读库
+                # Clear the in-memory cache to emulate another worker reading the DB.
+                webapp._snapshots.clear()
+                client.delete(f"/api/session/{sid}")
+                rs = client.post(f"/api/session/{sid}/restore", json={"lang": "en"})
+                rb = rs.get_json()
+                check("sqlite restore", rs.status_code == 200 and rb.get("ok") is True,
+                      str(rb)[:200])
+                new_sid = rb.get("session")
+                ev = client.post("/api/eval", json={"session": new_sid,
+                                                    "line": "PLUS mx ONE", "lang": "en"})
+                text = ev.get_json()["outputs"][0].get("hint", "")
+                check("sqlite restore history", "Church numeral 8" in text, str(text))
+                client.delete(f"/api/snapshot/{new_sid}")
+                gone = client.post(f"/api/session/{new_sid}/restore", json={})
+                check("snapshot delete", gone.status_code == 404, str(gone.status_code))
+                client.delete(f"/api/session/{new_sid}")
+            finally:
+                client.delete(f"/api/session/{sid}")
+        finally:
+            webapp.SNAPSHOT_DB = old_db
+            webapp._snapshots.clear()
+            webapp._snapshots.update(old_snaps)
+
+
+def test_static_share_page(b: Path) -> None:
+    try:
+        import flask  # noqa: F401
+    except ImportError:
+        skip("test_static_share_page: Flask is not installed")
+        return
+    import sys as _sys
+    web_dir = str(ROOT / "web")
+    if web_dir not in _sys.path:
+        _sys.path.insert(0, web_dir)
+    import app as webapp  # noqa: WPS433
+    client = webapp.app.test_client()
+    old_db = webapp.PAGE_DB
+    old_pages = dict(webapp._pages)
+    with tempfile.TemporaryDirectory() as td:
+        webapp.PAGE_DB = str(Path(td) / "pages.json")
+        webapp._pages.clear()
+        webapp._load_pages()
+        try:
+            r = client.post("/api/share/page", json={
+                "title": "demo", "lines": [
+                    {"zh": "中文 <b>", "en": "english &", "term": "λx. x"}],
+                "trace": [{"n": 1, "rule": "β", "before": "(λx.x) a", "after": "a"}]})
+            pid = r.get_json().get("id")
+            check("page created", r.status_code == 200 and bool(pid), str(r.get_json())[:160])
+            page = client.get(f"/api/share/page/{pid}")
+            body = page.get_data(as_text=True)
+            check("page html", page.status_code == 200 and "中文 &lt;b&gt;" in body
+                  and "english &amp;" in body and "λx. x" in body
+                  and "data-lang" in body and "trace-player" in body
+                  and "tp-play" in body and "β" in body, str(page.status_code))
+            check("pages counted", client.get("/api/health").get_json().get("pages", 0) >= 1)
+            check("page missing", client.get("/api/share/page/nope").status_code == 404)
+        finally:
+            webapp.PAGE_DB = old_db
+            webapp._pages.clear()
+            webapp._pages.update(old_pages)
+
+
+def test_reference_differential(b: Path) -> None:
+    import sys as _sys
+    root = str(ROOT)
+    if root not in _sys.path:
+        _sys.path.insert(0, root)
+    from tools import reference_eval as ref
+    import hypothesis_props as props
+
+    failures = props.run_properties()
+    check("property checks", not failures, "; ".join(failures[:3]))
+
+    rng = random.Random(20261121)
+    terms = [props.gen_term(rng, 3) for _ in range(30)]
+    outs = run([":nf " + t for t in terms], b)
+    compared = 0
+    for i, term in enumerate(terms):
+        obj = outs[i][0] if i < len(outs) and outs[i] else {}
+        if obj.get("limitHit") or not obj.get("term"):
+            continue
+        try:
+            expected = ref.normalize(term, limit=20000)
+        except (RuntimeError, SyntaxError, ValueError):
+            continue
+        check(f"reference nf {i}", ref.alpha_eq(expected, obj["term"]),
+              f"{term} -> {obj['term']} vs {expected}"[:200])
+        compared += 1
+    check("reference comparisons", compared >= 20, str(compared))
+
+
+def test_meta_and_systemf(b: Path) -> None:
+    meta = one([":load lib/meta.lam", ":strategy normal",
+                ":int ((EVAL RED_EX) (CONS THREE NIL))"], b)
+    check("meta circular evaluator", meta.get("value") == 3, str(meta)[:200])
+    ft = one([":ftype Λa. \\x : a. x"], b)
+    check("system f forall", ft.get("kind") == "ftype"
+          and ft.get("type") == "∀a. a → a" and ft.get("erased") == "λx → x"
+          and "Λa." in ft.get("fTerm", ""), str(ft)[:200])
+    inst = one([":ftype (Λa. \\x : a. x) [Int]"], b)
+    check("system f instantiation", inst.get("type") == "Int → Int", str(inst)[:200])
+    bad = one([":let rec bad : Int -> Int = \\x. TRUE"], b)
+    check("typed recursion rejects mismatch", bad.get("code") == "type_error",
+          str(bad)[:200])
+    good = one([":let rec good : Int -> Int = \\x. x", ":type good"], b)
+    check("typed recursion keeps scheme", good.get("type", "").startswith("Int"),
+          str(good)[:200])
+    need = one([":strategy need", "PLUS ONE TWO"], b)
+    check("need strategy reduces", need.get("term")
+          and "f (f (f x))" in need["term"], str(need)[:200])
+    par = one([":par (\\x.\\y.x) ((\\z.z) ONE) ((\\w.w) TWO)"], b)
+    check("parallel reduction", par.get("parallel") is True
+          and par.get("reductions", 0) >= 1 and par.get("trace"), str(par)[:200])
+    one([":strategy applicative"], b)
+
+
+def test_type_error_location(b: Path) -> None:
+    deriv = one([":type PLUS ONE"], b)
+    items = deriv.get("derivation", [])
+    check("derivation focus", bool(items) and all(x.get("focus") for x in items),
+          str(items[:2])[:200])
+    fail = one([":type (\\x.x x) (\\y.y y)"], b)
+    check("type error code", fail.get("code") == "type_error", str(fail)[:200])
+    check("type error failing subterm", bool(fail.get("failing")), str(fail)[:200])
+
+
+def test_gallery_tokens_lsp_benchmark(b: Path) -> None:
+    try:
+        import flask  # noqa: F401
+    except ImportError:
+        skip("test_gallery_tokens_lsp_benchmark: Flask is not installed")
+        return
+    import sys as _sys
+    web_dir = str(ROOT / "web")
+    if web_dir not in _sys.path:
+        _sys.path.insert(0, web_dir)
+    import app as webapp  # noqa: WPS433
+    client = webapp.app.test_client()
+    gal = client.get("/api/gallery").get_json()
+    check("gallery entries", gal.get("ok") and len(gal.get("examples", [])) >= 3)
+    tok = client.post("/api/token").get_json()
+    check("token issued", bool(tok.get("token")), str(tok)[:160])
+    check("health tokens", client.get("/api/health").get_json().get("tokens", 0) >= 1)
+
+    lsp = ROOT / "tools" / "lsp.py"
+    msg = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
+    data = json.dumps(msg).encode("utf-8")
+    payload = b"Content-Length: " + str(len(data)).encode() + b"\r\n\r\n" + data
+    proc = subprocess.run([sys.executable, str(lsp)], input=payload,
+                          capture_output=True, cwd=ROOT, timeout=30)
+    check("lsp handshake", b'"serverInfo"' in proc.stdout, proc.stdout[:160].decode("utf-8", "replace"))
+
+    def lsp_batch(messages):
+        payload = b""
+        for m in messages:
+            d = json.dumps(m).encode("utf-8")
+            payload += b"Content-Length: " + str(len(d)).encode() + b"\r\n\r\n" + d
+        p = subprocess.run([sys.executable, str(lsp)], input=payload,
+                           capture_output=True, cwd=ROOT, timeout=30)
+        body = p.stdout.decode("utf-8", "replace")
+        out = []
+        while True:
+            i = body.find("\r\n\r\n")
+            if i < 0:
+                break
+            m = re.search(r"Content-Length:\s*(\d+)", body[:i])
+            if not m:
+                break
+            n = int(m.group(1))
+            out.append(json.loads(body[i + 4:i + 4 + n]))
+            body = body[i + 4 + n:]
+        return out
+
+    replies = lsp_batch([
+        {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+        {"jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {"textDocument": {
+            "uri": "file:///tmp/a.lam", "text": "id = \\x.x\nPLUS ONE TWO\n"}}},
+        {"jsonrpc": "2.0", "id": 2, "method": "textDocument/hover", "params": {
+            "textDocument": {"uri": "file:///tmp/a.lam"},
+            "position": {"word": "PLUS"}}},
+    ])
+    opened = next((r for r in replies if r.get("method") == "textDocument/publishDiagnostics"), {})
+    valid_diags = opened.get("params", {}).get("diagnostics")
+    check("lsp valid document has no diagnostics", isinstance(valid_diags, list)
+          and not valid_diags, str(opened)[:200])
+    hover = next((r for r in replies if r.get("id") == 2), {})
+    value = hover.get("result", {}).get("contents", {}).get("value", "")
+    check("lsp real type hover", "(t0" in value or "→" in value, str(value)[:200])
+
+    # A bare "NOPE FOO" is a valid application of free variables, so use an
+    # unknown command instead; the interpreter flags it on that exact line.
+    bad_replies = lsp_batch([
+        {"jsonrpc": "2.0", "id": 3, "method": "initialize", "params": {}},
+        {"jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {"textDocument": {
+            "uri": "file:///tmp/bad.lam",
+            "text": "id = \\x.x\nPLUS ONE TWO\n:NOPE FOO\n"}}},
+    ])
+    bad_opened = next((r for r in bad_replies
+                       if r.get("method") == "textDocument/publishDiagnostics"), {})
+    bad_diags = bad_opened.get("params", {}).get("diagnostics")
+    check("lsp diagnostics from interpreter", isinstance(bad_diags, list)
+          and bool(bad_diags)
+          and any(isinstance(d, dict) and "NOPE" in str(d.get("message", ""))
+                  for d in bad_diags),
+          str(bad_opened)[:240])
+
+    with tempfile.TemporaryDirectory() as td:
+        db = Path(td) / "bench.json"
+        bench = subprocess.run([sys.executable, str(ROOT / "tools" / "benchmark.py"),
+                                "--bin", str(b), "--db", str(db)],
+                               capture_output=True, cwd=ROOT, timeout=180)
+        check("benchmark run", bench.returncode == 0 and db.is_file(),
+              bench.stderr[:200].decode("utf-8", "replace"))
+        chart = Path(td) / "chart.html"
+        chart_run = subprocess.run([sys.executable, str(ROOT / "tools" / "benchmark.py"),
+                                    "--db", str(db), "--chart", str(chart)],
+                                   capture_output=True, cwd=ROOT, timeout=60)
+        check("benchmark chart", chart_run.returncode == 0 and chart.is_file()
+              and "<svg" in chart.read_text(encoding="utf-8"))
+
+
+def test_parser_fuzz(b: Path) -> None:
+    rng = random.Random(20261122)
+    alphabet = list("λ\\()[]{}:->,.#$@! +-*/_'abcXYZ0129\x1e\n")
+    cases = ["".join(rng.choice(alphabet) for _ in range(rng.randint(0, 40)))
+             for _ in range(300)]
+    cases = [c.replace("\x1e", "").replace("\n", " ") for c in cases]
+    proc = subprocess.run([str(b), "--batch", "--json", "--lang", "en"],
+                          input=("\n".join(cases) + "\n").encode("utf-8"),
+                          capture_output=True, cwd=ROOT, timeout=120)
+    chunks = [c for c in proc.stdout.decode("utf-8", "replace").split("\x1e") if c.strip()]
+    check("fuzz one result per line", len(chunks) >= len(cases),
+          f"{len(chunks)} chunks for {len(cases)} cases")
+    for chunk in chunks[:len(cases)]:
+        try:
+            objs = [json.loads(line) for line in chunk.splitlines() if line.strip()]
+        except ValueError:
+            objs = []
+        check("fuzz valid json", bool(objs) and isinstance(objs[0].get("kind"), str),
+              chunk[:120])
+
+
+def test_shortest_and_growth(b: Path) -> None:
+    sh = one([":shortest PLUS ONE TWO , THREE"], b)
+    check("shortest found", sh.get("kind") == "shortest" and sh.get("found") is True
+          and sh.get("steps") == 6 and len(sh.get("trace", [])) == 6
+          and sh.get("visited", 0) > 0, str(sh)[:240])
+    grow = one([":growth (\\x.x) (PLUS TWO TWO)"], b)
+    check("growth series", grow.get("kind") == "growth"
+          and len(grow.get("applicative", [])) == grow.get("applicativeSteps")
+          and len(grow.get("normal", [])) == grow.get("normalSteps")
+          and grow.get("applicativePeak", 0) > 0, str(grow)[:240])
+    check("growth compares strategies", grow.get("applicativeSteps") == grow.get("normalSteps"),
+          str(grow)[:160])
+
+
+# 这些测试定义在 TESTS 列表之后，统一在末尾注册
+# These tests are defined after the list, so register them together at the end.
 TESTS.extend([
     test_web_stream_and_storage,
     test_property_extensions,
     test_new_features,
+    test_web_coverage_and_desktop,
+    test_fixes_round2,
+    test_prove_feature,
+    test_edge_commands,
+    test_cli_and_differential_edges,
+    test_web_edge_cases,
+    test_fast_step_differential,
+    test_command_ui_coverage,
+    test_type_proposition,
+    test_race_and_snapshot,
+    test_scott_encoding,
+    test_machine_and_stats,
+    test_type_derivation,
+    test_snapshot_manager_sqlite,
+    test_static_share_page,
+    test_reference_differential,
+    test_meta_and_systemf,
+    test_type_error_location,
+    test_gallery_tokens_lsp_benchmark,
+    test_parser_fuzz,
+    test_shortest_and_growth,
 ])
 
 

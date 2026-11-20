@@ -67,11 +67,15 @@ CANDIDATES = [
 ]
 
 
-def _free_port() -> int:
-    """Pick an unused loopback port for the DevTools endpoint."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.bind(("127.0.0.1", 0))
-        return int(sock.getsockname()[1])
+def _reserve_port() -> tuple[int, socket.socket]:
+    """Bind an ephemeral loopback port and hold the socket until Chrome starts.
+
+    预留一个回环端口并保持套接字，直到 Chrome 接管，消除选端口与绑定间的竞态。
+    """
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind(("127.0.0.1", 0))
+    return int(sock.getsockname()[1]), sock
 
 
 def find_chrome() -> str:
@@ -220,18 +224,25 @@ class Shooter:
 
 def capture(url: str, out: Path, only: str | None,
             width: int, height: int, scale: float) -> None:
+    # Validate Chrome first: find_chrome() exits before the profile is created,
+    # so a missing binary can never leave a temp directory behind.
+    chrome = find_chrome()
+    port, sock = _reserve_port()
     profile = tempfile.mkdtemp(prefix="lambda-shot-")
-    port = _free_port()
-    proc = subprocess.Popen(
-        [find_chrome(), "--headless=new", "--disable-gpu", "--hide-scrollbars",
-         "--no-first-run", "--no-default-browser-check",
-         "--force-prefers-color-scheme=light",
-         f"--remote-debugging-port={port}", f"--user-data-dir={profile}",
-         "--remote-allow-origins=*",
-         f"--window-size={width},{height}", "about:blank"],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    )
+    proc = None
     try:
+        # Release the reserved socket only once Chrome is about to bind it,
+        # keeping the TOCTOU window as small as possible.
+        sock.close()
+        proc = subprocess.Popen(
+            [chrome, "--headless=new", "--disable-gpu", "--hide-scrollbars",
+             "--no-first-run", "--no-default-browser-check",
+             "--force-prefers-color-scheme=light",
+             f"--remote-debugging-port={port}", f"--user-data-dir={profile}",
+             "--remote-allow-origins=*",
+             f"--window-size={width},{height}", "about:blank"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
         tab = wait_for_page(port)
         shooter = Shooter(CDP(tab["webSocketDebuggerUrl"]), out, width, height, scale)
         shooter.prepare(url)
@@ -277,11 +288,13 @@ def capture(url: str, out: Path, only: str | None,
             shooter.panel_bottom()
             shooter.shot("guide.png")
     finally:
-        proc.terminate()
-        try:
-            proc.wait(timeout=5)
-        except Exception:  # noqa: BLE001
-            proc.kill()
+        sock.close()
+        if proc is not None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except Exception:  # noqa: BLE001
+                proc.kill()
         shutil.rmtree(profile, ignore_errors=True)
 
 

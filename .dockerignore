@@ -27,5 +27,19 @@ venv/
 .openchamber/
 out/
 node_modules/
+# 运行时状态文件：由服务在运行时生成，不能烘进镜像
+# Runtime state: created by the service at runtime, never baked into the image
 web/shares.json
 web/shares.json.tmp
+web/sessions.json
+web/sessions.json.tmp
+web/tokens.json
+web/tokens.json.tmp
+web/sharepages.json
+web/sharepages.json.tmp
+web/benchmarks.json
+web/benchmarks.json.tmp
+web/*.sqlite
+web/*.sqlite.tmp
+web/*.db
+web/*.db.tmp

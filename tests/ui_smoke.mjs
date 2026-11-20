@@ -24,9 +24,12 @@ let script = match[1];
 
 // 暴露内部状态给测试 / expose internals for the test.
 const marker = "})();";
-const idx = script.lastIndexOf(marker);
+let idx = script.lastIndexOf(marker);
+while (idx >= 0 && script.slice(idx).trim() !== marker) {
+  idx = script.lastIndexOf(marker, idx - 1);
+}
 if (idx < 0) { console.error("IIFE end not found"); process.exit(1); }
-script = script.slice(0, idx) + "window.__test = { state: state, findBracketPair: findBracketPair, highlight: highlight, I18N: I18N, newSession: newSession, renderOutput: renderOutput, addErrorSnippet: addErrorSnippet, isStreamFailure: isStreamFailure, streamEval: streamEval, splitLogicalCommands: splitLogicalCommands, renderTrace: renderTrace, logicalCommandAt: logicalCommandAt, isSafeShareCommand: isSafeShareCommand, applySharePayload: applySharePayload, applyTranscriptLang: applyTranscriptLang, safeShareCode: safeShareCode };\n" + script.slice(idx);
+script = script.slice(0, idx) + "window.__test = { state: state, findBracketPair: findBracketPair, highlight: highlight, I18N: I18N, newSession: newSession, renderOutput: renderOutput, addErrorSnippet: addErrorSnippet, isStreamFailure: isStreamFailure, streamEval: streamEval, splitLogicalCommands: splitLogicalCommands, renderTrace: renderTrace, logicalCommandAt: logicalCommandAt, isSafeShareCommand: isSafeShareCommand, applySharePayload: applySharePayload, applyTranscriptLang: applyTranscriptLang, safeShareCode: safeShareCode, renderProof: renderProof, renderRedexes: renderRedexes, setManual: setManual, traceMarkdown: traceMarkdown, traceLatex: traceLatex, fileStamp: fileStamp, applyTheme: applyTheme, renderRace: renderRace, renderType: renderType, proofLatex: proofLatex, proofMarkdown: proofMarkdown, renderExercises: renderExercises, renderSessions: renderSessions, fuzzyCommands: fuzzyCommands, levenshtein: levenshtein, proofDiamond: proofDiamond, EXERCISES: EXERCISES, renderNotebook: renderNotebook, renderCompare: renderCompare, traceAnimation: traceAnimation, astSvg: astSvg, markTypeFailure: markTypeFailure, renderGrowth: renderGrowth };\n" + script.slice(idx);
 
 function makeEl(tag = "div") {
   const el = {
@@ -73,7 +76,16 @@ function makeEl(tag = "div") {
       }
       return el._q[sel];
     },
-    querySelectorAll() { return []; },
+    querySelectorAll(sel) {
+      // 只解析简单的“类名”选择器，足够让历史文本重渲染等逻辑可测
+      // Resolve simple class-only selectors so transcript re-render is testable.
+      var want = String(sel || "").split(/[.\s]+/).filter(Boolean);
+      if (!want.length || !el.children) return [];
+      return el.children.filter(function(c) {
+        var cls = String((c && c.className) || "").split(/\s+/);
+        return want.every(function(w) { return cls.indexOf(w) >= 0; });
+      });
+    },
     closest() { return makeEl(); },
     contains() { return true; },
     focus() {}, blur() {}, click() {}, select() {}, setSelectionRange() {}, scrollIntoView() {},
@@ -199,6 +211,140 @@ check("fail line shows its code",
       String(failLine && failLine.title || "").includes("term_too_large"),
       String(failLine && failLine.title));
 
+// 切换语言时警告的错误码徽标要保留，int/church 的元信息要跟着翻译
+// Language switching keeps a warning's code badge and translates int meta.
+const metaOf = (line) => line && line._metaEl ? line._metaEl : null;
+check("warn meta is the code",
+      String(metaOf(warnLine) && metaOf(warnLine).textContent) === "timeout",
+      String(metaOf(warnLine) && metaOf(warnLine).textContent));
+const beforeInt = outEl2.children.length;
+sandbox.window.__test.renderOutput({ kind: "int", text: "3", value: 3 }, "", false);
+const intLine = outEl2.children[beforeInt];
+// 桩里的 querySelector 返回缓存的占位节点，元信息就挂在它上面
+// The stub's querySelector returns a cached placeholder holding the meta span.
+const intMeta = () => metaOf(intLine);
+check("int meta bilingual by default",
+      String(intMeta() && intMeta().textContent).includes("Church"),
+      String(intMeta() && intMeta().textContent));
+const savedLang = state.lang;
+state.lang = "en";
+sandbox.window.__test.applyTranscriptLang();
+check("warn keeps code after lang switch",
+      String(metaOf(warnLine) && metaOf(warnLine).textContent) === "timeout",
+      String(metaOf(warnLine) && metaOf(warnLine).textContent));
+check("int meta translated after lang switch",
+      String(intMeta() && intMeta().textContent) === "Church → int",
+      String(intMeta() && intMeta().textContent));
+state.lang = savedLang;
+sandbox.window.__test.applyTranscriptLang();
+
+// :prove 结果应选中证明对象，并在 Trace 面板渲染两条归约序列
+// A :prove result selects the proof and renders both sequences in the panel.
+const beforeProof = outEl2.children.length;
+sandbox.window.__test.renderOutput({
+  kind: "proof", text: "beta-convertible", textZh: "β 可转换", textEn: "beta-convertible",
+  convertible: true, limitHit: false,
+  left: "(\\x.x) a", right: "(\\y.y) a", normalForm: "a",
+  leftSteps: 1, rightSteps: 1,
+  leftTrace: [{ n: 1, rule: "β", note: "β", before: "(\\x.x) a", after: "a" }],
+  rightTrace: [{ n: 1, rule: "β", note: "β", before: "(\\y.y) a", after: "a" }],
+  traceTruncated: false,
+}, "(\\x.x) a , (\\y.y) a", false);
+check("proof result selected", !!(state.selected && state.selected.leftTrace),
+      String(state.selected && Object.keys(state.selected)));
+check("proof view rendered",
+      String(document.getElementById("panel").innerHTML).includes("proof-list")
+      && String(document.getElementById("panel").innerHTML).includes("proof-summary"),
+      String(document.getElementById("panel").innerHTML).slice(0, 160));
+
+// 步骤行的 canStepBack/canStepForward 必须同步到手动控制按钮
+// Step output's back/forward flags must drive the manual control buttons.
+const T = sandbox.window.__test;
+T.renderOutput({ kind: "step", term: "a", before: "(\\x.x) a", rule: "β",
+  canStepBack: false, canStepForward: false, redexes: [] }, "", false);
+check("back disabled at step 0", document.getElementById("m-back").disabled === true
+      && document.getElementById("m-forward").disabled === true, "");
+T.renderOutput({ kind: "step", term: "b", before: "a", rule: "β",
+  canStepBack: true, canStepForward: true, redexes: [] }, "", false);
+check("back/forward enabled", document.getElementById("m-back").disabled === false
+      && document.getElementById("m-forward").disabled === false, "");
+
+// 嵌套括号、转义与续行切分
+// Nested brackets, escaping and logical-command splitting.
+check("nested brackets", JSON.stringify(T.findBracketPair("((a))", 1)) === "[0,4]"
+      && JSON.stringify(T.findBracketPair("((a))", 2)) === "[1,3]",
+      JSON.stringify(T.findBracketPair("((a))", 1)));
+check("unmatched bracket", T.findBracketPair("(a", 1) === null
+      && T.findBracketPair("a)", 2) === null, "");
+const hlEsc = String(T.highlight("<a>&", []));
+check("highlight escapes input", hlEsc.includes("&lt;") && hlEsc.includes("&gt;")
+      && hlEsc.includes("&amp;"), hlEsc);
+check("logical split blanks", JSON.stringify(T.splitLogicalCommands("A\n\nB")) === '["A","B"]',
+      JSON.stringify(T.splitLogicalCommands("A\n\nB")));
+check("logical split bracket", JSON.stringify(T.splitLogicalCommands("[a,\nb] C"))
+      === '["[a, b] C"]', JSON.stringify(T.splitLogicalCommands("[a,\nb] C")));
+check("logical split null", JSON.stringify(T.splitLogicalCommands(null)) === "[]", "");
+
+// 分享命令白名单的更多分支
+// More share-command whitelist branches.
+const shareCmd = T.isSafeShareCommand;
+check("share rejects edit/save/clear", !shareCmd(":edit x") && !shareCmd(":save")
+      && !shareCmd(":clear") && !shareCmd(null), "");
+check("share allows comment/indent/case", shareCmd("# note") && shareCmd("  :steps 5  ")
+      && shareCmd(":STRATEGY normal") && shareCmd("a\tb"), "");
+check("share rejects control chars", !shareCmd("a\ufeffb") && !shareCmd("x\u2029y"), "");
+
+// applySharePayload 的接受路径（主题/语言/策略/步数/开关/代码上限）
+// applySharePayload accept path.
+// 记录并恢复启动时 #state= 的校验结果（下面 share payload 用例会覆盖它们）
+// Remember the crafted-link assertions below; the payload test overwrites state.
+const savedLimit = state.limit;
+T.applySharePayload({ theme: "dark", lang: "en", strategy: "cbn", limit: 500,
+  eta: true, fast: true, code: Array.from({length: 205}, (_, i) => "OK" + i) });
+const acceptedState = {
+  theme: state.theme, lang: state.lang, strategy: document.getElementById("strategy").value,
+  limit: state.limit, eta: state.eta, fast: state.fast, codeLines: state.codeLines.slice(),
+};
+check("share payload state", acceptedState.theme === "dark" && acceptedState.lang === "en"
+      && acceptedState.strategy === "cbn" && acceptedState.limit === 500
+      && acceptedState.eta === true && acceptedState.fast === true,
+      JSON.stringify(acceptedState));
+check("share payload code cap", acceptedState.codeLines.length === 200,
+      "" + acceptedState.codeLines.length);
+T.applyTheme("light");
+state.limit = savedLimit;
+state.lang = "both";
+state.eta = false;
+state.fast = false;
+state.codeLines = ["PLUS ONE TWO"];
+document.getElementById("strategy").value = "applicative";
+
+// 手动控制状态矩阵与 redex 渲染
+// Manual control state and redex rendering.
+T.setManual(true, "(\\x.x) a");
+check("manual on", document.getElementById("m-begin").disabled === true
+      && document.getElementById("m-back").disabled === false
+      && document.getElementById("m-forward").disabled === true, "");
+state.redexes = [{ i: 1, path: "1", term: "(\\x.x) a", rule: "β" }];
+T.renderRedexes();
+check("redex button rendered",
+      String(document.getElementById("redex-list").innerHTML).includes("data-redex=\"1\""),
+      String(document.getElementById("redex-list").innerHTML).slice(0, 120));
+T.setManual(false);
+check("manual off", document.getElementById("m-begin").disabled === false
+      && state.redexes.length === 0, "");
+
+// 导出辅助函数
+// Export helpers.
+check("file stamp", /^\d{8}-\d{6}$/.test(T.fileStamp()), T.fileStamp());
+const md = T.traceMarkdown({ term: "T", trace: [{ n: 1, rule: "β", note: "n",
+  before: "a", after: "b" }] });
+check("trace markdown", md.includes("## 1. β") && md.includes("before:")
+      && md.includes("after:"), md.slice(0, 120));
+const tex = T.traceLatex({ term: "a\\b_100%", trace: [] });
+check("trace latex escapes", tex.includes("\\textbackslash")
+      && tex.includes("\\_") && tex.includes("\\%"), tex.slice(0, 200));
+
 // 界面文案必须有中英文两套 / every UI string needs both languages.
 const I18N = sandbox.window.__test.I18N;
 const usedKeys = Array.from(new Set((html.match(/\bt\("([A-Za-z0-9_]+)"\)/g) || [])
@@ -207,6 +353,12 @@ const missingKeys = usedKeys.filter((k) => !I18N[k]);
 check("i18n keys complete", missingKeys.length === 0, missingKeys.join(","));
 const untranslated = usedKeys.filter((k) => I18N[k] && (!I18N[k].zh || !I18N[k].en));
 check("i18n strings bilingual", untranslated.length === 0, untranslated.join(","));
+// Guide steps now come from I18N too; every row must carry both languages.
+const guideKeys = Array.from({ length: 9 }, (_, i) => `guide${i + 1}`);
+const badGuide = guideKeys.filter((k) => !I18N[k + "H"] || !I18N[k + "B"]
+  || !I18N[k + "H"].zh || !I18N[k + "H"].en
+  || !I18N[k + "B"].zh || !I18N[k + "B"].en);
+check("guide i18n complete", badGuide.length === 0, badGuide.join(","));
 
 // Crafted share state must be validated field by field.
 check("share code filtered",
@@ -462,7 +614,21 @@ const failed = await sandbox.window.__test.streamEval("\\x");
 check("stream reports a backend failure",
       failed && failed.status === 500 && failed.data && failed.data.error === "boom",
       JSON.stringify(failed));
+sandbox.fetch = async () => ({
+  ok: false, status: 429,
+  json: async () => ({ ok: false, code: "rate_limited", error: "rate limit exceeded" }),
+});
+const rejected = await sandbox.window.__test.streamEval("PLUS ONE TWO");
+check("stream surfaces backend rejection",
+      rejected && rejected.status === 429
+      && rejected.data && rejected.data.code === "rate_limited",
+      JSON.stringify(rejected));
 sandbox.fetch = realFetch;
+
+// 重做按钮与本地化 / redo button and its localization
+check("forward button present", html.includes('id="m-forward"'), "m-forward missing");
+check("forward label bilingual", I18N.forwardB && I18N.forwardB.zh && I18N.forwardB.en,
+      JSON.stringify(I18N.forwardB));
 
 // 多行输入按命令行的规则拼接 / multi-line input joins like the CLI REPL
 const splitLogicalCommands = sandbox.window.__test.splitLogicalCommands;
@@ -526,6 +692,137 @@ check("logicalCommandAt picks the first command", seg && seg.text === "PLUS ONE 
 const seg2 = sandbox.window.__test.logicalCommandAt("PLUS ONE TWO\nI", 14);
 check("logicalCommandAt picks the second command", seg2 && seg2.text === "I",
       JSON.stringify(seg2));
+
+// 新增 UI：竞速面板、命题读法、证明导出与快照恢复
+// New UI: race panel, proposition reading, proof exports and snapshot restore.
+check("race tab present", html.includes('data-tab="race"'), "race tab missing");
+check("race endpoint wired", html.includes("api/race"), "race route missing");
+check("snapshot restore wired", html.includes("/restore"), "restore route missing");
+check("proposition fields paired", /propositionZh[\s\S]{0,120}propositionEn/.test(html),
+      "proposition fields not paired");
+check("proof export buttons", html.includes("data-proof-export"),
+      "proof export buttons missing");
+state.raceResults = {};
+["applicative", "normal", "cbn", "cbv"].forEach(function(k){
+  state.raceResults[k] = { kind: "trace", strategy: k, steps: 2, final: "x",
+    trace: [{ n: 1, rule: "β", before: "a", after: "x" }] };
+});
+const raceHtml = sandbox.window.__test.renderRace();
+check("race lists all four strategies",
+      ["applicative", "normal", "cbn", "cbv"].every(function(k){ return raceHtml.includes(k); }),
+      String(raceHtml).slice(0, 240));
+check("race view-trace buttons", raceHtml.includes("data-race-view"),
+      "no per-strategy trace button");
+state.raceResults = null;
+state.selected = { left: "a", right: "b", normalForm: "c",
+  leftTrace: [{ n: 1, rule: "β", before: "a", after: "c" }],
+  rightTrace: [{ n: 1, rule: "β", before: "b", after: "c" }] };
+const proofTex = sandbox.window.__test.proofLatex(state.selected);
+check("proof LaTeX has both sequences",
+      proofTex.includes("Left reduction") && proofTex.includes("Right reduction")
+      && proofTex.includes("\\begin{document}"), String(proofTex).slice(0, 240));
+check("proof Markdown has both sequences",
+      sandbox.window.__test.proofMarkdown(state.selected).includes("Right reduction"));
+state.selected = { type: "t0 → t0", typeZh: "t0 → t0", typeEn: "t0 -> t0",
+  propositionZh: "命题读法：t0 ⇒ t0", propositionEn: "As a proposition: t0 ⇒ t0" };
+check("type panel shows proposition",
+      sandbox.window.__test.renderType().includes("命题读法"));
+state.selected = null;
+
+// 新功能 UI：编码、抽象机、统计、练习、会话、推导与汇合图
+// New UI: encoding, machine, stats, exercises, sessions, derivation, confluence.
+check("encoding selector present", html.includes('id="sel-encoding"'), "encoding select missing");
+check("new commands in catalogue",
+      [":machine", ":stats", ":encoding"].every(function(c){ return html.includes(c); }),
+      "new command missing from CMDS");
+check("exercises tab present", html.includes('data-tab="exercises"'), "exercises tab missing");
+check("sessions tab present", html.includes('data-tab="sessions"'), "sessions tab missing");
+check("static page button", html.includes('id="static-page"'), "static page button missing");
+check("snapshot routes wired", html.includes("api/snapshots") && html.includes("/restore")
+      && html.includes("/name"), "session manager routes missing");
+const levenshtein = sandbox.window.__test.levenshtein;
+check("fuzzy distance", levenshtein(":stratgy", ":strategy") === 1,
+      String(levenshtein(":stratgy", ":strategy")));
+const near = sandbox.window.__test.fuzzyCommands(":stratgy", 2);
+check("fuzzy suggestion finds command", near.indexOf(":strategy") >= 0, JSON.stringify(near));
+check("intent entries exist", html.includes("怎么求阶乘")
+      && html.includes("how to compute factorial"), "intent entries missing");
+check("exercises render",
+      sandbox.window.__test.renderExercises().includes("ex-input-0"), "exercise cards missing");
+check("exercise count", sandbox.window.__test.EXERCISES.length >= 5, "too few exercises");
+state.sessionRows = [{id: "abc", lines: 3, lang: "en", created: 1, used: 1, name: "demo"}];
+check("sessions render",
+      sandbox.window.__test.renderSessions().includes("data-sess-restore"), "session rows missing");
+state.sessionRows = [];
+state.selected = {left: "a", right: "b", normalForm: "c", leftSteps: 2, rightSteps: 3,
+  leftTrace: [{n: 1, before: "a", after: "c"}],
+  rightTrace: [{n: 1, before: "b", after: "c"}]};
+check("proof diamond svg", sandbox.window.__test.proofDiamond(state.selected).includes("<svg"),
+      "confluence diagram missing");
+state.selected = {type: "t0 → t0", typeZh: "t0 → t0", typeEn: "t0 -> t0",
+  derivation: [{kind: "unify", textZh: "统一", textEn: "unify"}]};
+check("derivation panel", sandbox.window.__test.renderType().includes("unify"),
+      "derivation not rendered");
+state.selected = null;
+
+// 第三轮 UI：笔记本、对比、动画、热区与无障碍
+// Third round UI: notebook, compare, animation, redex heatmap, a11y.
+check("notebook tab", html.includes('data-tab="notebook"'), "notebook tab missing");
+check("compare tab", html.includes('data-tab="compare"'), "compare tab missing");
+check("notebook render", sandbox.window.__test.renderNotebook().includes("data-nb-run"),
+      "notebook cells missing");
+check("compare render", sandbox.window.__test.renderCompare().includes("data-cmp-conv"),
+      "compare controls missing");
+check("animation export wired", html.includes("traceAnimation"), "animation export missing");
+check("animation html has frames",
+      sandbox.window.__test.traceAnimation({trace: [{n: 1, before: "a", after: "b"}]})
+        .includes('class="frame"'), "animation frames missing");
+check("need strategy option", html.includes('value="need"'), "need strategy missing");
+check("a11y controls", html.includes("data-a11y-contrast") && html.includes("aria-live"),
+      "accessibility controls missing");
+state.selected = {redexes: [{i: 1, path: "1", term: "x"}]};
+const hot = sandbox.window.__test.astSvg({k: "app", c: [
+  {k: "var", label: "f"}, {k: "app", c: [{k: "var", label: "x"}, {k: "var", label: "y"}]}
+]});
+check("ast redex heatmap", hot.includes("ast-redex") && hot.includes("data-redex-node"),
+      String(hot).slice(0, 300));
+// 深化：System F 面板、类型错误高亮、推导跳转、WebM、双会话
+// Deepened: System F panel, type-error highlight, derivation jump, WebM, two sessions.
+state.selected = null;
+sandbox.window.__test.renderOutput({kind: "ftype", type: "∀a. a → a",
+  erased: "λx → x", fTerm: "Λa. \\x : a. x",
+  proposition: "∀a. a ⇒ a", text: "System F type: ∀a. a → a"}, ":ftype ...", false);
+check("ftype selects type tab", state.tab === "type" && !!state.selected.erased,
+      String(state.tab));
+check("ftype panel shows erased term",
+      sandbox.window.__test.renderType().includes("λx → x"), "erased term missing");
+state.selected = {type: "t0", typeZh: "t0", typeEn: "t0",
+  derivation: [{kind: "unify", textZh: "统一", textEn: "unify", focus: "PLUS ONE"}]};
+const derivHtml = sandbox.window.__test.renderType();
+check("derivation focus button", derivHtml.includes("data-deriv-focus"),
+      String(derivHtml).slice(0, 200));
+state.selected = null;
+const animWebm = sandbox.window.__test.traceAnimation({
+  trace: [{n: 1, before: "a", after: "b"}]});
+check("animation records webm", animWebm.includes("MediaRecorder")
+      && animWebm.includes("video/webm") && animWebm.includes("record WebM"),
+      String(animWebm).slice(0, 200));
+check("compare uses two sessions",
+      html.includes("data-cmp-run") && html.includes("leftSession")
+      && html.includes("rightSession"), "compare sessions missing");
+check("type error highlight wired", html.includes("markTypeFailure")
+      && html.includes("type-err"), "type error highlight missing");
+
+// 最短路径与规模曲线 / shortest path and growth chart
+check("shortest command in UI", html.includes(":shortest") && html.includes(":growth"),
+      "shortest/growth UI missing");
+check("growth tab", html.includes('data-tab="growth"'), "growth tab missing");
+state.growth = {applicative: [{n: 1, after: 5}, {n: 2, after: 9}], normal: [{n: 1, after: 3}],
+                applicativeSteps: 2, normalSteps: 1, applicativePeak: 9, normalPeak: 3};
+const growthHtml = sandbox.window.__test.renderGrowth();
+check("growth chart renders", growthHtml.includes("<polyline") && growthHtml.includes("9"),
+      String(growthHtml).slice(0, 200));
+state.growth = null;
 
 if (failures.length) {
   console.error("FAILURES:\n  " + failures.join("\n  "));

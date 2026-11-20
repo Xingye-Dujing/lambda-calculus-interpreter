@@ -19,10 +19,14 @@ RUN pip install --no-cache-dir -r web/requirements.txt
 ENV LAMBDA_INTERP_DIR=/app \
     HOST=0.0.0.0 \
     PORT=8081 \
-    LAMBDA_SHARE_DB=/app/web/shares.json
+    LAMBDA_SHARE_DB=/app/web/shares.json \
+    LAMBDA_SNAPSHOT_DB=/app/web/sessions.json \
+    LAMBDA_PAGE_DB=/app/web/sharepages.json \
+    LAMBDA_TOKEN_DB=/app/web/tokens.json
 EXPOSE 8081
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s \
-  CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/api/health', timeout=2)"
+  CMD python -c "import os,urllib.request; urllib.request.urlopen('http://127.0.0.1:'+os.environ.get('PORT','8081')+'/api/health', timeout=2)"
 # 单进程多线程：会话与解释器子进程都在本进程内
 # Single process, multiple threads: sessions and child interpreters live here.
-CMD ["waitress-serve", "--listen=0.0.0.0:8081", "--threads=16", "web.app:app"]
+# Shell form so ${PORT} expands at runtime; web/app.py and waitress both honor it.
+CMD waitress-serve --listen=0.0.0.0:${PORT} --threads=16 web.app:app

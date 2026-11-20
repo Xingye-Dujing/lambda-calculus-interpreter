@@ -15,7 +15,7 @@ fi
 # 本机优化默认关闭，保证产物可移植 / Native tuning is opt-in for portable binaries
 NATIVE=""
 if [ "${LAMBDA_NATIVE:-0}" = "1" ]; then
-    NATIVE="-optlc-O3 -optlc-march=native"
+    NATIVE="-optc-O3 -optc-march=native"
 fi
 
 # GNU ld 专属链接参数仅用于 Linux / GNU ld-specific link flags on Linux only

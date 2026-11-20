@@ -94,14 +94,26 @@ def declarations(path: Path) -> dict[str, str]:
 
 
 def declaration_spans(path: Path) -> dict[str, tuple[int, int]]:
-    """Return name -> (start, end) zero-based line spans."""
+    """Return name -> (start, end) zero-based line spans.
+
+    A name may begin several top-level blocks: a type signature plus several
+    equations (a multi-clause function). declarations() joins every such block
+    into one declaration, so the span must cover the whole definition, from the
+    first start to the end of the last block. Otherwise --fix would replace only
+    the final equation with only the final source equation, leaving earlier
+    differing clauses in place (and possibly orphaned).
+    """
     lines = path.read_text(encoding="utf-8").splitlines()
     starts = [(i, m.group(1)) for i, line in enumerate(lines)
               if (m := DECL_START.match(line))]
     spans: dict[str, tuple[int, int]] = {}
     for k, (i, name) in enumerate(starts):
         end = starts[k + 1][0] if k + 1 < len(starts) else len(lines)
-        spans[name] = (i, end)
+        if name in spans:
+            prev_start, prev_end = spans[name]
+            spans[name] = (min(prev_start, i), max(prev_end, end))
+        else:
+            spans[name] = (i, end)
     return spans
 
 

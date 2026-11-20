@@ -8,12 +8,13 @@ import qualified Data.IntMap.Strict as IM
 import qualified Data.Set as Set
 import qualified Data.Sequence as Seq
 import Control.Applicative ((<|>))
-import Control.Exception (catch, mask_, throwIO, SomeException, IOException, AsyncException(..))
+import Control.Exception (catch, mask_, throwIO, SomeException, IOException,
+                          AsyncException(..), fromException)
 import Control.Monad (void, when, unless, forM_, forM, guard, foldM, replicateM_, zipWithM_)
 import Control.Monad.IO.Class (liftIO)
 import Data.Char (isAlpha, isDigit, isSpace, ord, toLower)
 import Data.List (elemIndex, find, stripPrefix, isPrefixOf, isInfixOf, intercalate, foldl', sort)
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, isJust)
 import Numeric (showHex, showFFloat)
 import System.Directory (getHomeDirectory, renameFile, removeFile)
 import System.IO.Error (isDoesNotExistError)
@@ -153,7 +154,7 @@ alphaEq = go [] []
 -- ---------------------------------------------------------------------------
 -- 求值策略 Evaluation Strategies
 -- ---------------------------------------------------------------------------
-data Strategy = Applicative | Normal | CallByName | CallByValue
+data Strategy = Applicative | Normal | CallByName | CallByValue | Need
   deriving (Eq, Show)
 
 strategyId :: Strategy -> String
@@ -161,12 +162,14 @@ strategyId Applicative = "applicative"
 strategyId Normal      = "normal"
 strategyId CallByName  = "cbn"
 strategyId CallByValue = "cbv"
+strategyId Need        = "need"
 
 strategyLabel :: Strategy -> String
 strategyLabel Applicative = "应用序（最左最内）"
 strategyLabel Normal      = "正规序（最左最外）"
 strategyLabel CallByName  = "按名调用（弱）"
 strategyLabel CallByValue = "按值调用（弱）"
+strategyLabel Need        = "按需（抽象机共享 thunk）"
 
 parseStrategy :: String -> Maybe Strategy
 parseStrategy s = lookup (map lower s)
@@ -174,6 +177,7 @@ parseStrategy s = lookup (map lower s)
   , ("normal", Normal), ("no", Normal), ("lazy", Normal)
   , ("cbn", CallByName), ("byname", CallByName), ("name", CallByName)
   , ("cbv", CallByValue), ("byvalue", CallByValue)
+  , ("need", Need), ("sharing", Need)
   ]
   where lower c = if c >= 'A' && c <= 'Z' then toEnum (fromEnum c + 32) else c
 
@@ -228,6 +232,7 @@ orderOf Applicative = Order True  False False False
 orderOf Normal      = Order True  True  False False
 orderOf CallByName  = Order False True  False True
 orderOf CallByValue = Order False False True  True
+orderOf Need        = Order True  True  False False
 
 stepOnce :: Strategy -> Expr -> Maybe StepOut
 stepOnce strat = go
@@ -328,6 +333,9 @@ data EvalResult = EvalResult
   , erCount    :: Int
   , erLimitHit :: Bool
   , erCycle    :: Bool
+  -- 不受轨迹截断影响的完整规则计数 / full rule counters, unaffected by trace truncation
+  , erBetaCount :: Int
+  , erEtaCount  :: Int
   }
 
 defaultLimit :: Int
@@ -351,17 +359,17 @@ trailLimit = 2000
 -- Evaluation loop; with keepTrace=False the trace is dropped (saves memory).
 evalUntil :: Bool -> Bool -> Int -> Strategy -> (Expr -> Bool) -> Expr -> EvalResult
 evalUntil eta keepTrace limit strat done e0 =
-  loop 1 e0 [] (Set.singleton e0) (Seq.singleton (0, e0)) False
+  loop 1 e0 [] (Set.singleton e0) (Seq.singleton (0, e0)) False 0 0
   where
-    loop !n e !acc !seen !window !cyc
-      | done e    = EvalResult e (reverse acc) (n - 1) False cyc
+    loop !n e !acc !seen !window !cyc !nb !ne
+      | done e    = EvalResult e (reverse acc) (n - 1) False cyc nb ne
       -- 恰好用满步数且已无 redex 时不算命中上限
       -- A normal term at the step limit is not a step-limit hit.
       | n > limit =
           let more = case stepFor eta strat e of
                        Nothing -> False
                        Just _  -> True
-          in EvalResult e (reverse acc) (n - 1) more cyc
+          in EvalResult e (reverse acc) (n - 1) more cyc nb ne
       | otherwise = case stepFor eta strat e of
           Just s ->
             let e'   = soWhole s
@@ -383,8 +391,12 @@ evalUntil eta keepTrace limit strat done e0 =
                                     (Set.insert e' (Set.delete old seen), rest)
                                 | otherwise -> (Set.insert e' seen, w)
                     else (seen, window)
-            in loop (n + 1) e' acc' seen' window' cyc'
-          Nothing -> EvalResult e (reverse acc) (n - 1) False cyc
+                -- β+α 也是 β 步：捕获避免重命名不改变规则类别
+                -- A capture-avoiding β step is still a β step.
+                nb' = if take 1 (redRule red) == "β" then nb + 1 else nb
+                ne' = if take 1 (redRule red) == "η" then ne + 1 else ne
+            in loop (n + 1) e' acc' seen' window' cyc' nb' ne'
+          Nothing -> EvalResult e (reverse acc) (n - 1) False cyc nb ne
 
 evalWith :: Bool -> Bool -> Int -> Strategy -> Expr -> EvalResult
 evalWith eta keepTrace limit strat =
@@ -520,6 +532,180 @@ fastNormalForm fuel e =
 -- 归约位置 Redex positions：列出项中所有 β-redex，并可按序号归约
 -- All β-redexes with paths, so the user can pick which one to contract.
 -- ---------------------------------------------------------------------------
+-- ---------------------------------------------------------------------------
+-- 带轨迹的环境抽象机 / traced environment machine
+-- ---------------------------------------------------------------------------
+-- 它以环境 + 参数栈代替整项重写，因此不会复制共享参数；每个 β 步都把当前
+-- 配置引用成真实的前后项，所以既有共享的性能，也有精确步数与轨迹
+-- It uses an environment and an argument stack instead of rewriting the whole
+-- term, so shared arguments are never copied. Each β step quotes the current
+-- configuration, giving exact steps and traces with sharing.
+data MVal = MClos String Expr [(String, MVal)]
+          | MThunk Expr [(String, MVal)]
+          | MFree String
+          | MNeutral Expr
+
+data MFrame = FArg Expr [(String, MVal)] | FLamFrame String | FNeutral Expr
+
+data MState = MEval Expr [(String, MVal)] [MFrame] | MRet MVal [MFrame]
+
+-- 当前作用域内由抽象机打开的 λ 绑定名 / Binder names opened by the machine.
+-- 抽象机用裸字符串查环境；同名嵌套绑定会互相遮蔽并污染引号还原结果，
+-- 因此每次打开 λ 时都取一个相对当前 frame 栈唯一的绑定名
+-- The machine looks up the environment by raw name; nested binders that share
+-- a name shadow each other and corrupt the quoted term. Pick a binder name
+-- that is fresh with respect to the active frames every time a λ is opened.
+frameNames :: [MFrame] -> Set.Set String
+frameNames stk = Set.fromList [x | FLamFrame x <- stk]
+
+quoteValM :: Int -> MVal -> Expr
+quoteValM _ (MFree x) = Var x
+quoteValM _ (MNeutral t) = t
+quoteValM d (MThunk e env) = quoteExprM d e env
+quoteValM d (MClos x b env) =
+  Lam x (quoteExprM d b (filter ((/= x) . fst) env))
+
+quoteExprM :: Int -> Expr -> [(String, MVal)] -> Expr
+quoteExprM d (Var x) env
+  | d > 0, Just v <- lookup x env = quoteValM (d - 1) v
+  | otherwise = Var x
+quoteExprM d (Lam x b) env =
+  Lam x (quoteExprM d b (filter ((/= x) . fst) env))
+quoteExprM d (App f a) env = App (quoteExprM d f env) (quoteExprM d a env)
+
+addFrameM :: Expr -> MFrame -> Expr
+addFrameM t (FArg a env) = App t (quoteExprM 12 a env)
+addFrameM t (FLamFrame x) = Lam x t
+addFrameM t (FNeutral h) = App h t
+
+quoteStateM :: MState -> Expr
+quoteStateM (MEval e env stk) = foldl' addFrameM (quoteExprM 12 e env) stk
+quoteStateM (MRet v stk) = foldl' addFrameM (quoteValM 12 v) stk
+
+-- 返回值末位表示是否因步数或内部管理预算中止；中止时的项只是中间配置，不是正规形
+-- The final flag reports whether the β-step or the internal admin budget was
+-- exhausted; in that case the returned term is an intermediate configuration,
+-- not a normal form.
+machineEval :: Int -> Expr -> (Expr, Int, [TraceStep], Bool)
+machineEval limit e0 = go 0 0 (MEval e0 [] []) [] Set.empty
+  where
+    -- 避免 limit*20 溢出后管理预算反而塌缩成 1000
+    -- Avoid overflow collapsing the admin budget back to 1000.
+    adminLimit = if limit > (maxBound - 100) `div` 20
+                   then maxBound else max 1000 (limit * 20 + 100)
+    -- 配置已归约到值时即使正好用满预算也不算截断
+    -- Reaching a value exactly at the budget is not a truncation.
+    isFinal :: MState -> Bool
+    isFinal (MRet _ []) = True
+    isFinal _           = False
+
+    -- n 达到上限后只允许纯管理步收尾；一旦还需要 β 步就判定为截断
+    -- Past the step budget, allow only administrative steps to finish; if a β
+    -- step is still required, the reduction is truncated.
+    needsBeta :: MState -> Bool
+    needsBeta (MEval (Var x) env (FArg _ _ : _)) = case lookup x env of
+      Just (MClos _ _ _) -> True
+      _                  -> False
+    needsBeta (MEval (Lam _ _) _ (FArg _ _ : _)) = True
+    needsBeta (MRet (MClos _ _ _) (FArg _ _ : _)) = True
+    needsBeta _ = False
+
+    step before after n acc =
+      TraceStep n before after "β" "β (abstract machine) / 抽象机 β" : acc
+    go :: Int -> Int -> MState -> [TraceStep] -> Set.Set Expr
+       -> (Expr, Int, [TraceStep], Bool)
+    go n adm st acc seen
+      | isFinal st = (quoteStateM st, n, reverse acc, False)
+      | adm > adminLimit = (quoteStateM st, n, reverse acc, True)
+      | n >= limit && needsBeta st = (quoteStateM st, n, reverse acc, True)
+      | otherwise = case st of
+          MRet (MClos x b cenv) [] ->
+            let u = freshVar x (frameNames [])
+            in go n (adm + 1) (MEval b ((x, MFree u) : cenv) [FLamFrame u]) acc seen
+          MRet v [] -> (quoteValM 12 v, n, reverse acc, False)
+          MEval (App f a) env stk ->
+            go n (adm + 1) (MEval f env (FArg a env : stk)) acc seen
+          MEval (Var x) env stk -> case lookup x env of
+            Just (MThunk e e') -> go n (adm + 1) (MEval e e' stk) acc seen
+            Just (MFree y) ->
+              go n (adm + 1) (MRet (MNeutral (Var y)) stk) acc seen
+            Just (MNeutral t) ->
+              go n (adm + 1) (MRet (MNeutral t) stk) acc seen
+            Just (MClos y b cenv) -> case stk of
+              (FArg a aenv : rest) ->
+                let st' = MEval b ((y, MThunk a aenv) : cenv) rest
+                    before = quoteStateM st
+                    after = quoteStateM st'
+                in go (n + 1) (adm + 1) st' (step before after (n + 1) acc) seen
+              _ -> go n (adm + 1) (MRet (MClos y b cenv) stk) acc seen
+            Nothing ->
+              go n (adm + 1) (MRet (MNeutral (Var x)) stk) acc seen
+          MEval (Lam x b) env stk -> case stk of
+            (FArg a aenv : rest) ->
+              let st' = MEval b ((x, MThunk a aenv) : env) rest
+                  before = quoteStateM st
+                  after = quoteStateM st'
+              in go (n + 1) (adm + 1) st' (step before after (n + 1) acc) seen
+            _ ->
+              let u = freshVar x (frameNames stk)
+              in go n (adm + 1)
+                      (MEval b ((x, MFree u) : env) (FLamFrame u : stk)) acc seen
+          MRet v (FLamFrame x : rest) ->
+            go n (adm + 1)
+              (MRet (MNeutral (Lam x (quoteValM 12 v))) rest) acc seen
+          MRet (MClos x b cenv) (FArg a aenv : rest) ->
+            let st' = MEval b ((x, MThunk a aenv) : cenv) rest
+                before = quoteStateM st
+                after = quoteStateM st'
+            in go (n + 1) (adm + 1) st' (step before after (n + 1) acc) seen
+          MRet (MFree x) (FArg a aenv : rest) ->
+            go n (adm + 1) (MEval a aenv (FNeutral (Var x) : rest)) acc seen
+          MRet (MNeutral h) (FArg a aenv : rest) ->
+            go n (adm + 1) (MEval a aenv (FNeutral h : rest)) acc seen
+          MRet v (FNeutral h : rest) ->
+            go n (adm + 1) (MRet (MNeutral (App h (quoteValM 12 v))) rest) acc seen
+          MRet v (FArg a aenv : rest) ->
+            go n (adm + 1) (MEval a aenv (FNeutral (quoteValM 12 v) : rest)) acc seen
+
+-- 并行归约：一轮同时收缩所有互不包含的 redex
+-- Parallel reduction: contract every maximal redex in a single round.
+parallelStep :: Bool -> Expr -> (Expr, Int)
+parallelStep _eta (App (Lam x b) a) =
+  let (after, _) = substRename x a (freeVars a) b
+  in (after, 1)
+parallelStep _eta (App f a) =
+  let (f', n1) = parallelStep _eta f
+      (a', n2) = parallelStep _eta a
+  in (App f' a', n1 + n2)
+parallelStep eta (Lam x b)
+  -- :eta on 时也收缩 η-redex：λx. f x ≡ f（x 不在 f 中自由出现）
+  -- With :eta on also contract η-redexes: λx. f x ≡ f when x is not free in f.
+  | eta, App f (Var y) <- b, x == y, x `Set.notMember` freeVars f = (f, 1)
+  | otherwise = let (b', n) = parallelStep eta b in (Lam x b', n)
+parallelStep _ e = (e, 0)
+
+-- 广度优先搜索最短归约路径 / BFS for the shortest reduction path
+shortestPath :: Bool -> Int -> Expr -> Expr -> (Maybe [TraceStep], Int, Bool)
+shortestPath eta limit start target = go [(start, [], 0)] [] 0
+  where
+    maxConfigs = 4000
+    go [] _ visitedN = (Nothing, visitedN, False)
+    go ((cur, path, depth):rest) seen visitedN
+      | alphaEq cur target = (Just (reverse path), visitedN, False)
+      | visitedN >= maxConfigs = (Nothing, visitedN, True)
+      | depth >= limit = (Nothing, visitedN, True)
+      | otherwise =
+          let seen' = cur : seen
+              stepOf (Redex p _ _) = case stepAt eta p cur of
+                Nothing -> Nothing
+                Just so -> Just ( soWhole so
+                                , TraceStep (depth + 1) cur (soWhole so)
+                                    (redRule (soRed so)) (redNote (soRed so)) )
+              fresh = [ (e', TraceStep (depth + 1) cur e' r n : path, depth + 1)
+                      | Just (e', TraceStep _ _ _ r n) <- map stepOf (redexInfos eta cur)
+                      , not (any (alphaEq e') seen') ]
+          in go (rest ++ fresh) seen' (visitedN + length fresh)
+
 type Path = [Int]
 
 isBetaRedex :: Expr -> Bool
@@ -643,6 +829,49 @@ isChurchNumeral (Lam f (Lam x body))
     go _ _ = Nothing
 isChurchNumeral _ = Nothing
 
+-- 数值编码：邱奇编码与 Scott 编码
+-- Number encodings: Church and Scott.
+data Encoding = Church | Scott deriving (Eq, Show)
+
+encodingId :: Encoding -> String
+encodingId Church = "church"
+encodingId Scott  = "scott"
+
+parseEncoding :: String -> Maybe Encoding
+parseEncoding s
+  | s == "church" = Just Church
+  | s == "scott"  = Just Scott
+  | otherwise     = Nothing
+
+-- Scott 数：λz.λs. s (s (... z))，s 的参数是前驱，消除时只取用一支
+-- A Scott numeral is λz.λs. s (s (... z)); s receives the predecessor.
+scottNumeral :: Integer -> Expr
+scottNumeral 0 = Lam "z" (Lam "s" (Var "z"))
+scottNumeral n = Lam "z" (Lam "s" (App (Var "s") (scottNumeral (n - 1))))
+
+isScottNumeral :: Expr -> Maybe Integer
+isScottNumeral (Lam z (Lam s body))
+  | z == s    = Nothing
+  | otherwise = go body
+  where
+    go (Var x')         | x' == z = Just 0
+    go (App (Var s') p) | s' == s =
+        -- 同时接受紧凑写法 λz.λs. s (s (... z)) 和嵌套写法
+        -- Accept both the flat λz.λs. s (s (... z)) and the nested form.
+        case isScottNumeral p of
+          Just k  -> Just (k + 1)
+          Nothing -> (1 +) <$> go p
+    go _ = Nothing
+isScottNumeral _ = Nothing
+
+numeralTerm :: Encoding -> Integer -> Expr
+numeralTerm Church = churchNumeral
+numeralTerm Scott  = scottNumeral
+
+-- 识别邱奇数或 Scott 数 / recognize either numeral encoding
+numeralValue :: Expr -> Maybe Integer
+numeralValue e = isChurchNumeral e <|> isScottNumeral e
+
 isChurchBoolean :: Expr -> Maybe Bool
 isChurchBoolean (Lam t (Lam f (Var t'))) | t == t' && t /= f = Just True
 isChurchBoolean (Lam _ (Lam f (Var f'))) | f == f' = Just False
@@ -679,23 +908,27 @@ combinatorOf e = fst <$> find (alphaEq e . snd) combinators
 -- Hints keep both languages so the client can switch without replaying.
 valueHintMsg :: Expr -> Msg
 valueHintMsg e = case (isChurchNumeral e, isChurchBoolean e, isChurchPair e) of
-  (Just 0, Just False, _) ->
-    ("  (邱奇数 0 / Church 布尔值 False)",
-     "  (Church numeral 0 / Church boolean False)")
-  (Just n, _, _) ->
-    ("  (邱奇数 " ++ show n ++ ")", "  (Church numeral " ++ show n ++ ")")
-  (_, Just True, _) ->
-    ("  (Church 布尔值 True / K 组合子)",
-     "  (Church boolean True / K combinator)")
-  (_, Just False, _) ->
-    ("  (Church 布尔值 False)", "  (Church boolean False)")
-  (_, _, Just (a, b)) ->
-    let sa = shorten 20 (pretty a); sb = shorten 20 (pretty b)
-    in ("  (Church 序对 " ++ sa ++ ", " ++ sb ++ ")",
-        "  (Church pair " ++ sa ++ ", " ++ sb ++ ")")
-  _ -> case combinatorOf e of
-         Just n  -> ("  (" ++ n ++ " 组合子)", "  (" ++ n ++ " combinator)")
-         Nothing -> ("", "")
+    (Just 0, Just False, _) ->
+      ("  (邱奇数 0 / Church 布尔值 False)",
+       "  (Church numeral 0 / Church boolean False)")
+    (Just n, _, _) ->
+      ("  (邱奇数 " ++ show n ++ ")", "  (Church numeral " ++ show n ++ ")")
+    (_, Just True, _) ->
+      ("  (Church 布尔值 True / K 组合子)",
+       "  (Church boolean True / K combinator)")
+    (_, Just False, _) ->
+      ("  (Church 布尔值 False)", "  (Church boolean False)")
+    (_, _, Just (a, b)) ->
+      let sa = shorten 20 (pretty a); sb = shorten 20 (pretty b)
+      in ("  (Church 序对 " ++ sa ++ ", " ++ sb ++ ")",
+          "  (Church pair " ++ sa ++ ", " ++ sb ++ ")")
+    _ -> case combinatorOf e of
+           Just n  -> ("  (" ++ n ++ " 组合子)", "  (" ++ n ++ " combinator)")
+           Nothing -> case isScottNumeral e of
+             -- Scott 0 与 Church False / K 同形，必须放在最后识别
+             -- Scott 0 shares the shape of Church False / K, so check it last.
+             Just n  -> ("  (Scott 数 " ++ show n ++ ")", "  (Scott numeral " ++ show n ++ ")")
+             Nothing -> ("", "")
 
 -- ---------------------------------------------------------------------------
 -- 美观打印 Pretty Printing
@@ -704,9 +937,9 @@ pretty :: Expr -> String
 pretty e = go 0 e ""
   where
     go :: Int -> Expr -> ShowS
-    go _ (Var x)      = showString x
+    go _ (Var x)      = showString (stripLetBinder x)
     go p (Lam x body) = showParen (p > 0)
-      (showString "λ" . showString x . showString " → " . go 0 body)
+      (showString "λ" . showString (stripLetBinder x) . showString " → " . go 0 body)
     go p (App f a)    = showParen (p > 1)
       (go 1 f . showChar ' ' . go 2 a)
 
@@ -731,8 +964,8 @@ exceeds n s = case splitAt (n + 1) s of
 -- 语法树渲染 Render Syntax Tree
 -- ---------------------------------------------------------------------------
 treeLines :: Expr -> [String]
-treeLines (Var x)     = ["• " ++ x]
-treeLines (Lam x b)   = ("λ " ++ x) : fork "└ " "  " (treeLines b)
+treeLines (Var x)     = ["• " ++ stripLetBinder x]
+treeLines (Lam x b)   = ("λ " ++ stripLetBinder x) : fork "└ " "  " (treeLines b)
 treeLines (App f a)   = "App" : fork "├ " "│ " (treeLines f) ++ fork "└ " "  " (treeLines a)
 
 fork :: String -> String -> [String] -> [String]
@@ -745,7 +978,7 @@ deBruijnView e = go [] e ""
   where
     go bound (Var x) = case elemIndex x bound of
       Just i  -> showChar '#' . shows i
-      Nothing -> showString x
+      Nothing -> showString (stripLetBinder x)
     go bound (Lam x b) = showString "λ." . go (x : bound) b
     go bound (App f a) =
       showChar '(' . go bound f . showChar ' ' . go bound a . showChar ')'
@@ -774,11 +1007,13 @@ longestP p = do
   s <- look
   case readP_to_S p s of
     []    -> pfail
-    (r:_) -> do
-      let (_, rest) = r
+    rs    -> do
+      -- readP_to_S 按消耗的字符数递增返回；最后一个才是最长匹配
+      -- readP_to_S returns results in increasing consumption order; last is longest.
+      let (r, rest) = last rs
           n = length s - length rest
       replicateM_ n get
-      return (fst r)
+      return r
 
 -- 真正的贪心 many：每一步只吸收一个最长匹配，不产生任何分支；
 -- ReadP 内建 many 会枚举每个前缀的结果，嵌套起来数目指数增长
@@ -858,9 +1093,42 @@ notKeyword :: String -> ReadP ()
 notKeyword kw = do
   r <- look
   let (pre, post) = splitAt (length kw) r
-      boundary = null post || isSpace (head post)
-              || head post `elem` ("().=,;" :: String)
+      -- 关键字后若紧跟标识符字符则不是关键字（如 then[1] 的 then 是变量）
+      -- A keyword followed by an identifier character is a variable, e.g. then[1].
+      boundary = case post of
+        []    -> True
+        (c:_) -> not (isAlpha c || isDigit c || c `elem` ("_'" :: String)
+                       || c `elem` ("+*-/%^?!<>|&~#$" :: String))
   if pre == kw && boundary then pfail else return ()
+
+-- 关键字后不允许紧跟标识符字符：then[1] / then(x) 合法，thenx 非法
+-- A keyword must not be followed by an identifier char: then[1] ok, thenx not.
+keywordBoundary :: ReadP ()
+keywordBoundary = do
+  rest <- look
+  case rest of
+    (c:_) | isAlpha c || isDigit c || c `elem` ("_'" :: String)
+            || c `elem` ("+*-/%^?!<>|&~#$" :: String) -> pfail
+    _ -> return ()
+
+-- let 绑定脱糖时使用内部前缀标记，让类型推断能区分 let 泛化与普通 β 归约
+-- '@' 不是合法标识符字符，用户无法写出同名变量
+-- let bindings carry an internal prefix after desugaring, so type inference can
+-- tell let-generalization apart from an ordinary β-redex. '@' cannot occur in a
+-- user identifier, so no source name can collide with the marker.
+letBinderPrefix :: String
+letBinderPrefix = "@let:"
+
+letBinder :: String -> String
+letBinder x = letBinderPrefix ++ x
+
+isLetBinder :: String -> Bool
+isLetBinder n = take (length letBinderPrefix) n == letBinderPrefix
+
+stripLetBinder :: String -> String
+stripLetBinder n
+  | take (length letBinderPrefix) n == letBinderPrefix = drop (length letBinderPrefix) n
+  | otherwise = n
 
 -- if c then t else f 脱糖为 IF c t f
 -- if c then t else f desugars to IF c t f.
@@ -871,11 +1139,13 @@ parseIf = do
   c <- parseExpr
   spaces
   _ <- string "then"
-  _ <- munch1 isSpace
+  keywordBoundary
+  spaces
   t <- parseExpr
   spaces
   _ <- string "else"
-  _ <- munch1 isSpace
+  keywordBoundary
+  spaces
   f <- parseExpr
   return (App (App (App (Var "IF") c) t) f)
 
@@ -890,7 +1160,12 @@ parseLet = do
   _ <- string "in"
   _ <- munch1 isSpace
   b <- parseExpr
-  return (foldr (\(x, v) acc -> App (Lam x acc) v) b binds)
+  return (foldr (\(x, v) acc ->
+            let bnd = letBinder x
+                -- 同步重命名体内对该变量的引用，保持绑定名与引用一致
+                -- Rename body references to keep binder and occurrences aligned.
+                acc' = fst (substRename x (Var bnd) (Set.singleton bnd) acc)
+            in App (Lam bnd acc') v) b binds)
   where
     parseBind = do
       x <- ident
@@ -904,13 +1179,16 @@ parseLet = do
 -- A type annotation is syntax-checked and erased; :type expr : T verifies it.
 typeTextP :: ReadP String
 typeTextP = do
-  a <- atom
+  a <- appType
   (do spaces
       void (string "->" <|> string "→")
       spaces
       b <- typeTextP
       return (a ++ " -> " ++ b)) <++ return a
   where
+    -- 类型应用允许空格分隔的构造子，如 List Int / List (List Int)
+    -- Type application allows space-separated constructors, e.g. List Int.
+    appType = unwords <$> greedySome (atom <* spaces)
     atom =
       (do _ <- char '('
           spaces
@@ -1058,12 +1336,49 @@ stripTrailingComment = go []
 trim :: String -> String
 trim = dropWhile isSpace . reverse . dropWhile isSpace . reverse
 
+-- 解析整数并做范围检查：Read Int 对超出范围的literal会静默按补码回绕
+-- Parse an integer with an explicit range; Read Int wraps oversized literals
+-- silently (e.g. :steps 99999999999999999999999 became 200376420520689663).
+readIntIn :: Integer -> Integer -> String -> Maybe Int
+readIntIn lo hi s =
+  case reads s :: [(Integer, String)] of
+    [(n, "")] | n >= lo && n <= hi -> Just (fromInteger n)
+    _ -> Nothing
+
+-- --timeout 秒数还要乘以 1_000_000 转成微秒，上限必须避免这次乘法溢出
+-- --timeout seconds are multiplied by 1_000_000, so cap below Int overflow.
+maxTimeoutSecs :: Integer
+maxTimeoutSecs = fromIntegral (maxBound :: Int) `div` 1000000
+
+maxIntIn :: Integer
+maxIntIn = fromIntegral (maxBound :: Int)
+
 isValidVarName :: String -> Bool
 isValidVarName [] = False
 isValidVarName (c:cs) = isValidFirst c && all isValidRest cs
   where
     isValidFirst ch = isAlpha ch || isOperatorChar ch
     isValidRest  ch = isAlpha ch || isDigit ch || ch `elem` ("_'" :: String) || isOperatorChar ch
+
+-- 带注解的递归定义：rec name : T = expr
+-- Annotated recursion: rec name : T = expr
+parseRecAssignment :: String -> Either ParseError Command
+parseRecAssignment s =
+  let (lhs, rhs0) = break (== '=') s
+      (name0, tyPart) = break (== ':') lhs
+      name = trim name0
+  in if null rhs0
+       then Left (ParseError 1 ("缺少 '='", "Missing '='"))
+       else if null (trim tyPart)
+         then uncurry DefineRec <$> parseAssignment s
+         else case parseTyText (trim (drop 1 tyPart)) of
+           Nothing -> Left (ParseError 1 ("类型标注无效", "Invalid type annotation"))
+           Just ty -> case runParserFull parseExpr (trim (drop 1 rhs0)) of
+             Left e -> Left e
+             Right expr
+               | not (isValidVarName name) ->
+                   Left (ParseError 1 ("名字无效", "Invalid name"))
+               | otherwise -> Right (DefineRecTyped name ty expr)
 
 parseAssignment :: String -> Either ParseError (String, Expr)
 parseAssignment str =
@@ -1088,6 +1403,7 @@ data Command
   = Eval Expr
   | Define String Expr
   | DefineRec String Expr
+  | DefineRecTyped String Ty Expr
   | LoadFile FilePath
   | SaveFile FilePath
   | ShowEnv
@@ -1097,14 +1413,22 @@ data Command
   | SetSteps Int
   | SetEta Bool
   | SetFast Bool
+  | SetEncoding Encoding
   | Trace Expr
+  | MachineCmd Expr
+  | StatsCmd Expr
+  | ParCmd Expr
+  | ShortestCmd Expr Expr
+  | GrowthCmd Expr
   | Ast Expr
   | DbView Expr
   | TypeOf Expr (Maybe String)
+  | FTypeOf String
   | TimeOf Int Expr
   | BenchOf Int Expr
   | EqExpr Expr Expr
   | ConvExpr Expr Expr
+  | ProveCmd Expr Expr
   | Nf Expr
   | Whnf Expr
   | IntOf Expr
@@ -1114,6 +1438,7 @@ data Command
   | RunCmd
   | EndCmd
   | BackCmd
+  | ForwardCmd
   | GotoCmd Int
   | ShowDef String
   | SearchEnv String
@@ -1136,23 +1461,32 @@ knownCommands =
   , (":steps", ("设置归约步数上限（快速模式下为 β 燃料）", "set the reduction step limit (β fuel in fast mode)"))
   , (":eta", ("开启/关闭 η 归约", "turn eta reduction on/off"))
   , (":fast", ("开启/关闭共享快速正规化", "turn shared fast normalization on/off"))
+  , (":encoding", ("切换数值编码 church|scott", "switch numeral encoding church|scott"))
   , (":time", ("测量求值耗时：:time [次数] <表达式>", "measure elapsed time: :time [runs] <expr>"))
   , (":bench", ("重复求值并给出平均/中位/标准差", "repeat an evaluation; report mean/median/stddev"))
   , (":trace", ("显示完整归约轨迹", "show the full reduction trace"))
+  , (":machine", ("用带轨迹的环境抽象机归约", "reduce with the traced environment machine"))
+  , (":stats", ("统计项规模、深度与归约步数", "report term size, depth and reduction counts"))
+  , (":par", ("并行归约：一轮收缩所有 redex", "parallel reduction: contract all redexes per round"))
+  , (":shortest", ("搜索到目标的最短归约路径", "search the shortest reduction to a target"))
+  , (":growth", ("项规模随归约步数的变化曲线", "term size growth across reduction steps"))
   , (":ast", ("显示语法树", "show the syntax tree"))
   , (":db", ("de Bruijn 索引视图", "de Bruijn index view"))
   , (":type", ("推断简单类型", "infer the simple type"))
+  , (":ftype", ("检查 System F 显式多态类型", "check explicit System F polymorphism"))
   , (":eq", ("判断两个表达式是否 α 等价", "test two expressions for alpha-equivalence"))
   , (":conv", ("判断两个表达式是否 β 等价", "test two expressions for beta-convertibility"))
+  , (":prove", ("证明两边 β 可转换并展示归约步骤", "prove beta-convertibility with reduction steps"))
   , (":nf", ("归约到正规形", "reduce to normal form"))
   , (":whnf", ("归约到弱首正规形", "reduce to weak head normal form"))
-  , (":int", ("把邱奇数转成整数", "decode a Church numeral as an integer"))
-  , (":church", ("把 0-9999 转成邱奇数", "encode 0-9999 as a Church numeral"))
+  , (":int", ("把当前编码的数值转成整数", "decode a numeral in the active encoding as an integer"))
+  , (":church", ("把 0-9999 按当前编码转成数值", "encode 0-9999 as a numeral in the active encoding"))
   , (":begin", ("开始交互式归约", "start interactive reduction"))
   , (":step", ("归约一步；:step <n> 选择第 n 个 redex", "reduce one step; :step <n> picks the nth redex"))
   , (":run", ("归约到底", "reduce to the end"))
   , (":end", ("结束交互式归约", "end interactive reduction"))
   , (":back", ("回退一步手动归约", "step back one manual reduction"))
+  , (":forward", ("重做一步手动归约", "redo one manual reduction"))
   , (":goto", ("跳到第 n 步：:goto <n>", "jump to step n: :goto <n>"))
   , (":def", ("显示单个定义：:def <名字>", "show one definition: :def <name>"))
   , (":search", ("在环境中搜索名字：:search <子串>", "search environment names: :search <substring>"))
@@ -1167,10 +1501,9 @@ parseCommand raw
   | null s = Left (ParseError 1 ("空输入", "Empty input"))
   | Just rest <- stripPrefix ":load " s = loadOrSave rest LoadFile
   | Just rest <- stripPrefix ":save " s = loadOrSave rest SaveFile
-  | Just rest <- stripPrefix ":let rec " s = uncurry DefineRec <$> parseAssignment rest
+  | Just rest <- stripPrefix ":let rec " s = parseRecAssignment rest
   | Just rest <- stripPrefix ":let " s = uncurry Define <$> parseAssignment rest
-  | Just rest <- stripPrefix "rec " s, '=' `elem` rest =
-      uncurry DefineRec <$> parseAssignment rest
+  | Just rest <- stripPrefix "rec " s, '=' `elem` rest = parseRecAssignment rest
   | s == ":env" = Right ShowEnv
   | s == ":reset" = Right ResetEnv
   | s `elem` [":help", ":h", ":?"] = Right (Help Nothing)
@@ -1179,17 +1512,18 @@ parseCommand raw
   | s `elem` [":q", ":quit"] = Right Quit
   | s == ":step" = Right (StepCmd Nothing)
   | Just rest <- stripPrefix ":step " s =
-      case reads (trim rest) :: [(Int, String)] of
-        [(n, "")] | n > 0 -> Right (StepCmd (Just n))
-        _ -> Left (ParseError 1
+      case readIntIn 1 maxIntIn (trim rest) of
+        Just n  -> Right (StepCmd (Just n))
+        Nothing -> Left (ParseError 1
                ("用法：:step <redex 序号>", "Usage: :step <redex index>"))
   | s == ":run" = Right RunCmd
   | s == ":end" = Right EndCmd
   | s `elem` [":back", ":undo"] = Right BackCmd
+  | s `elem` [":forward", ":redo"] = Right ForwardCmd
   | Just rest <- stripPrefix ":goto " s =
-      case reads (trim rest) :: [(Int, String)] of
-        [(n, "")] | n >= 0 -> Right (GotoCmd n)
-        _ -> Left (ParseError 1
+      case readIntIn 0 maxIntIn (trim rest) of
+        Just n  -> Right (GotoCmd n)
+        Nothing -> Left (ParseError 1
                ("用法：:goto <步数>", "Usage: :goto <step>"))
   | Just rest <- stripPrefix ":def " s = showDef rest
   | Just rest <- stripPrefix ":search " s = searchNames rest
@@ -1210,6 +1544,11 @@ parseCommand raw
       maybe (Left (ParseError 1
               ("用法：:fast on|off", "Usage: :fast on|off")))
             (Right . SetFast) (parseOnOff rest)
+  | s == ":encoding" = Right (SetEncoding Church)
+  | Just rest <- stripPrefix ":encoding " s =
+      maybe (Left (ParseError 1
+              ("用法：:encoding church|scott", "Usage: :encoding church|scott")))
+            (Right . SetEncoding) (parseEncoding (trim rest))
   | Just rest <- stripPrefix ":lang " s =
       maybe (Left (ParseError 1
               ("未知语言，可用：zh / en / both", "Unknown language; use zh / en / both")))
@@ -1218,15 +1557,23 @@ parseCommand raw
   | Just rest <- stripPrefix ":del " s = deleteDef rest
   | Just rest <- stripPrefix ":strategy " s =
       maybe (Left (ParseError 1
-              ("未知策略，可用：applicative / normal / cbn / cbv"
-              , "Unknown strategy; use applicative / normal / cbn / cbv")))
+              ("未知策略，可用：applicative / normal / cbn / cbv / need / sharing"
+              , "Unknown strategy; use applicative / normal / cbn / cbv / need / sharing")))
             (Right . SetStrategy) (parseStrategy (trim rest))
   | Just rest <- stripPrefix ":steps " s =
-      case reads (trim rest) :: [(Int, String)] of
-        [(n, "")] | n > 0   -> Right (SetSteps n)
-                  | otherwise -> Left (ParseError 1
+      case readIntIn 1 maxIntIn (trim rest) of
+        Just n  -> Right (SetSteps n)
+        Nothing -> case readIntIn (-maxIntIn) maxIntIn (trim rest) of
+          Just _  -> Left (ParseError 1
                       ("步数上限必须是正整数", "The step limit must be a positive integer"))
-        _ -> Left (ParseError 1 ("用法：:steps <正整数>", "Usage: :steps <positive integer>"))
+          Nothing -> Left (ParseError 1
+                      ("用法：:steps <正整数>", "Usage: :steps <positive integer>"))
+  | Just rest <- stripPrefix ":shortest " s = uncurry ShortestCmd <$> parsePairIn ":shortest" rest
+  | Just rest <- stripPrefix ":growth " s = GrowthCmd <$> parseExpr' rest
+  | Just rest <- stripPrefix ":par " s = ParCmd <$> parseExpr' rest
+  | Just rest <- stripPrefix ":stats " s = StatsCmd <$> parseExpr' rest
+  | Just rest <- stripPrefix ":ftype " s = Right (FTypeOf (trim rest))
+  | Just rest <- stripPrefix ":machine " s = MachineCmd <$> parseExpr' rest
   | Just rest <- stripPrefix ":trace " s = Trace <$> parseExpr' rest
   | Just rest <- stripPrefix ":ast " s = Ast <$> parseExpr' rest
   | Just rest <- stripPrefix ":db " s = DbView <$> parseExpr' rest
@@ -1243,6 +1590,7 @@ parseCommand raw
                ("用法：:church <0-9999>", "Usage: :church <0-9999>"))
   | Just rest <- stripPrefix ":eq " s = uncurry EqExpr <$> parsePairIn ":eq" rest
   | Just rest <- stripPrefix ":conv " s = uncurry ConvExpr <$> parsePairIn ":conv" rest
+  | Just rest <- stripPrefix ":prove " s = uncurry ProveCmd <$> parsePairIn ":prove" rest
   | Just rest <- stripPrefix ":begin " s = Begin <$> parseExpr' rest
   | Just _ <- stripPrefix ":" s = Left (ParseError 1
       ( "未知命令 " ++ takeWhile (not . isSpace) s ++ "，输入 :help 查看全部命令"
@@ -1273,11 +1621,17 @@ parseCommand raw
       let txt = trim src
           numTxt = takeWhile (not . isSpace) txt
           rest   = dropWhile (not . isSpace) txt
-      in case reads numTxt :: [(Int, String)] of
-           [(n, "")] | n > 0 && n <= 1000, not (null (trim rest)) ->
+          usage  = ParseError 1
+                     ("用法：:time [1-1000] <表达式>", "Usage: :time [1-1000] <expr>")
+      in case readIntIn (-maxIntIn) maxIntIn numTxt of
+           Just n | n >= 1 && n <= 1000 && not (null (trim rest)) ->
              case runParserFull parseExpr (trim rest) of
                Left e  -> Left e { pePos = pePos e + (length s - length (trim rest)) }
                Right x -> Right (TimeOf n x)
+           -- 数字超出范围时必须报错，不能把整个输入当成表达式悄悄求值
+           -- An out-of-range count must be reported, not silently parsed as
+           -- an expression (e.g. :time 0 PLUS ONE TWO timed a different term).
+           Just _ | not (null (trim rest)) -> Left usage
            _ -> TimeOf 1 <$> parseExpr' src
     parseBench src =
       let txt = trim src
@@ -1285,8 +1639,8 @@ parseCommand raw
           rest   = dropWhile (not . isSpace) txt
           usage  = ParseError 1
                      ("用法：:bench <1-1000> <表达式>", "Usage: :bench <1-1000> <expr>")
-      in case reads numTxt :: [(Int, String)] of
-           [(n, "")] | n > 0 && n <= 1000, not (null (trim rest)) ->
+      in case readIntIn 1 1000 numTxt of
+           Just n | not (null (trim rest)) ->
              case runParserFull parseExpr (trim rest) of
                Left e  -> Left e { pePos = pePos e + (length s - length (trim rest)) }
                Right x -> Right (BenchOf n x)
@@ -1471,13 +1825,16 @@ parseTyText s =
               case n of
                 "Int"  -> return (TCon "Int" [])
                 "Bool" -> return (TCon "Bool" [])
-                "List" -> TCon "List" . (:[]) <$> tyP
+                -- 类型应用只吞掉原子类型，不能吃掉后面的箭头
+                -- Type application consumes an atom, not a following arrow.
+                "List" -> TCon "List" . (:[]) <$> atom
                 _      -> return (TVar n))
 
 data Scheme = Forall [String] Ty
 
 data TISt = TISt { tiSeed :: Int, tiNext :: Int, tiSub :: Map.Map String Ty
-                     , tiSteps :: Int }
+                     , tiSteps :: Int, tiLog :: [(String, Msg, String)]
+                     , tiFocus :: String }
 
 newtype TI a = TI { unTI :: TISt -> Either String (a, TISt) }
 
@@ -1498,6 +1855,15 @@ instance Monad TI where
 
 failTI :: String -> TI a
 failTI e = TI $ \_ -> Left e
+
+-- 记录一步推导，最多保留 200 条，避免大项的 JSON 过大
+-- Log one derivation step, capped at 200 entries to bound JSON size.
+logDeriv :: String -> Msg -> TI ()
+logDeriv kind msg = TI $ \s ->
+  Right ((), s { tiLog = take 200 ((kind, msg, tiFocus s) : tiLog s) })
+
+setFocus :: String -> TI ()
+setFocus f = TI $ \s -> Right ((), s { tiFocus = f })
 
 freshTy :: TI Ty
 freshTy = TI $ \s ->
@@ -1546,6 +1912,8 @@ unify t1 t2 = do
       putState st { tiSteps = tiSteps st + 1 }
       a <- applySub t1
       b <- applySub t2
+      logDeriv "unify" ("统一 " ++ prettyTy a ++ " 与 " ++ prettyTy b,
+                        "unify " ++ prettyTy a ++ " with " ++ prettyTy b)
       case (a, b) of
         (TVar x, _) -> bindVar x b
         (_, TVar y) -> bindVar y a
@@ -1568,7 +1936,10 @@ bindVar x t = do
                if sz > typeSizeLimit
                  then failTI ("类型过大，已停止推断 / the type grew too large to infer ("
                               ++ show typeSizeLimit ++ " nodes)")
-                 else extendSub x t'
+                 else do
+                    logDeriv "bind" ("约束 " ++ x ++ " := " ++ prettyTy t',
+                                     "bind " ++ x ++ " := " ++ prettyTy t')
+                    extendSub x t'
 
 type TypeEnv = Map.Map String Scheme
 
@@ -1577,6 +1948,8 @@ instantiate (Forall vars t) = do
   pairs <- forM vars $ \v -> do
     tv <- freshTy
     return (v, tv)
+  logDeriv "inst" ("实例化 " ++ show (length vars) ++ " 个类型变量",
+                   "instantiate " ++ show (length vars) ++ " type variables")
   return (substTy (Map.fromList pairs) t)
 
 substTy :: Map.Map String Ty -> Ty -> Ty
@@ -1585,20 +1958,28 @@ substTy m (TArr a b) = TArr (substTy m a) (substTy m b)
 substTy m (TCon n as) = TCon n (map (substTy m) as)
 
 infer :: TypeEnv -> Expr -> TI Ty
-infer env (Var x) = case Map.lookup x env of
+infer env e = TI $ \s ->
+  unTI (setFocus (shorten 80 (pretty e)) >> inferInner env e) s
+
+inferInner :: TypeEnv -> Expr -> TI Ty
+inferInner env (Var x) = case Map.lookup x env of
   Just sc -> instantiate sc
   Nothing -> freshTy
-infer env (Lam x body) = do
+inferInner env (Lam x body) = do
   tv <- freshTy
   tb <- infer (Map.insert x (Forall [] tv) env) body
   return (TArr tv tb)
--- `let x = e1 in e2` 脱糖成 (\x.e2) e1；对这个形状做 let 泛化
--- `let x = e1 in e2` desugars to (\x.e2) e1; generalize that shape.
-infer env (App (Lam x body) val) = do
-  tv  <- infer env val
-  sc  <- generalize env tv
-  infer (Map.insert x sc env) body
-infer env (App f a) = do
+-- `let x = e1 in e2` 脱糖成 (\x.e2) e1；只对带内部标记的 let 绑定做泛化
+-- 普通 β-redex 不能泛化实参，否则 (\f. f f) (\x.x) 会被错误地判为可类型化
+-- `let x = e1 in e2` desugars to (\x.e2) e1; only the marked let binder is
+-- generalized. An ordinary β-redex must not generalize its argument, or
+-- (\f. f f) (\x.x) would be wrongly accepted as typable.
+inferInner env (App (Lam x body) val)
+  | isLetBinder x = do
+      tv  <- infer env val
+      sc  <- generalize env tv
+      infer (Map.insert x sc env) body
+inferInner env (App f a) = do
   tf <- infer env f
   ta <- infer env a
   tv <- freshTy
@@ -1617,12 +1998,15 @@ generalize env t = do
   let envFree = Set.unions
         [ freeTyVars ty `Set.difference` Set.fromList vs
         | (vs, ty) <- envTypes ]
-  return (Forall (Set.toList (freeTyVars t' `Set.difference` envFree)) t')
+  let qs = Set.toList (freeTyVars t' `Set.difference` envFree)
+  logDeriv "gen" ("泛化得到 " ++ prettyTy (normalizeNames t'),
+                  "generalize to " ++ prettyTy (normalizeNames t'))
+  return (Forall qs t')
 
-runTI :: TI a -> Int -> Either String a
-runTI m seed = case unTI m (TISt seed 0 Map.empty 0) of
-  Left e       -> Left e
-  Right (a, _) -> Right a
+runTILogged :: TI a -> Int -> Either String (a, [(String, Msg, String)])
+runTILogged m seed = case unTI m (TISt seed 0 Map.empty 0 [] "") of
+  Left e        -> Left e
+  Right (a, st) -> Right (a, reverse (tiLog st))
 
 -- 类型推断的步数上限：嵌套 let 的类型会指数增长，没有上限就会把解释器拖垮
 -- Step budget for type inference: nested lets grow the types exponentially,
@@ -1641,8 +2025,8 @@ tySizeT (TVar _)    = 1
 tySizeT (TArr a b)  = 1 + tySizeT a + tySizeT b
 tySizeT (TCon _ as) = 1 + sum (map tySizeT as)
 
-inferScheme :: TypeEnv -> Expr -> Either String Scheme
-inferScheme tenv e = runTI go (Map.size tenv + 1)
+inferSchemeLogged :: TypeEnv -> Expr -> Either String (Scheme, [(String, Msg, String)])
+inferSchemeLogged tenv e = runTILogged go (Map.size tenv + 1)
   where
     -- 自由变量必须是单态的：同一名字的每次出现共享一个类型变量，
     -- 否则 'x x' 会被错误地类型化
@@ -1656,6 +2040,179 @@ inferScheme tenv e = runTI go (Map.size tenv + 1)
       | otherwise        = do
           tv <- freshTy
           return (Map.insert v (Forall [] tv) env)
+
+inferScheme :: TypeEnv -> Expr -> Either String Scheme
+inferScheme tenv e = fst <$> inferSchemeLogged tenv e
+
+-- ---------------------------------------------------------------------------
+-- System F 显式多态 / explicit System F polymorphism
+-- ---------------------------------------------------------------------------
+data FExpr = FEVar String | FExprLam String FExpr | FEAnnLam String Ty FExpr
+           | FEApp FExpr FExpr | FETyLam String FExpr | FETyApp FExpr Ty
+
+data FTy = FForall String FTy | FArr FTy FTy | FVarT String | FTyCon Ty
+
+showFExpr :: FExpr -> String
+showFExpr (FEVar x) = x
+showFExpr (FExprLam x b) = "\\" ++ x ++ ". " ++ showFExpr b
+showFExpr (FEAnnLam x t b) = "\\" ++ x ++ " : " ++ prettyTy t ++ ". " ++ showFExpr b
+showFExpr (FEApp f a) = "(" ++ showFExpr f ++ " " ++ showFExpr a ++ ")"
+showFExpr (FETyLam a b) = "Λ" ++ a ++ ". " ++ showFExpr b
+showFExpr (FETyApp f t) = "(" ++ showFExpr f ++ ") [" ++ prettyTy t ++ "]"
+
+prettyFTy :: FTy -> String
+prettyFTy (FForall a t) = "∀" ++ a ++ ". " ++ prettyFTy t
+prettyFTy (FArr a b) = parenFTy a ++ " → " ++ prettyFTy b
+  where parenFTy x@(FVarT _) = prettyFTy x
+        -- FTyCon 里可能包着箭头类型，作为函数定义域时必须加括号
+        -- An FTyCon may wrap an arrow type; parenthesize it in the domain.
+        parenFTy x@(FTyCon (TArr _ _)) = "(" ++ prettyFTy x ++ ")"
+        parenFTy x@(FTyCon _) = prettyFTy x
+        parenFTy x = "(" ++ prettyFTy x ++ ")"
+prettyFTy (FVarT a) = a
+prettyFTy (FTyCon t) = prettyTy t
+
+ftypeAlpha :: FTy -> FTy -> Bool
+ftypeAlpha (FForall a x) (FForall b y) = ftypeAlpha (substFTy b (TVar a) y) x
+ftypeAlpha (FArr a b) (FArr c d) = ftypeAlpha a c && ftypeAlpha b d
+ftypeAlpha (FVarT a) (FVarT b) = a == b
+ftypeAlpha (FTyCon a) (FTyCon b) = normalizeNames a == normalizeNames b
+ftypeAlpha _ _ = False
+
+substFTy :: String -> Ty -> FTy -> FTy
+substFTy a r (FVarT b) | a == b = FTyCon r
+substFTy a r (FForall b t) | a /= b = FForall b (substFTy a r t)
+substFTy a r (FArr x y) = FArr (substFTy a r x) (substFTy a r y)
+substFTy a r (FTyCon t) = FTyCon (substTy (Map.singleton a r) t)
+substFTy _ _ t = t
+
+eraseF :: FExpr -> Expr
+eraseF (FEVar x) = Var x
+eraseF (FExprLam x b) = Lam x (eraseF b)
+eraseF (FEAnnLam x _ b) = Lam x (eraseF b)
+eraseF (FEApp f a) = App (eraseF f) (eraseF a)
+eraseF (FETyLam _ b) = eraseF b
+eraseF (FETyApp f _) = eraseF f
+
+tyFromScheme :: Scheme -> FTy
+tyFromScheme (Forall vs t) = foldr FForall (FTyCon t) vs
+
+-- 在类型环境中查名字：先查显式绑定，再查解释器预定义方案
+-- Look up a name: explicit bindings first, then interpreter schemes.
+inferF :: TypeEnv -> [(String, FTy)] -> FExpr -> Either String FTy
+inferF tenv ctx (FEVar x)
+  | Just t <- lookup x ctx = Right t
+  | Just sc <- Map.lookup x tenv = Right (tyFromScheme sc)
+  | otherwise = Left ("未绑定的名字 / unbound name: " ++ x)
+inferF tenv ctx (FExprLam x b) = do
+  let a = freshFTyName ctx
+  tb <- inferF tenv ((x, FVarT a) : ctx) b
+  return (FArr (FVarT a) tb)
+inferF tenv ctx (FEAnnLam x t b) = do
+  tb <- inferF tenv ((x, FTyCon t) : ctx) b
+  return (FArr (FTyCon t) tb)
+inferF tenv ctx (FEApp f a) = do
+  tf <- inferF tenv ctx f
+  ta <- inferF tenv ctx a
+  -- 带标注的 λ 把类型存成 FTyCon (TArr …)，应用时需还原为箭头
+  -- An annotated λ stores its type as FTyCon (TArr …); recover the arrow on application.
+  let fnTy = case tf of
+        FTyCon (TArr p r) -> FArr (FTyCon p) (FTyCon r)
+        other             -> other
+  case fnTy of
+    FArr p r | ftypeAlpha p ta -> Right r
+             | otherwise -> Left ("参数类型不匹配 / argument type mismatch: "
+                                  ++ prettyFTy p ++ " vs " ++ prettyFTy ta)
+    _ -> Left ("不是函数类型 / not a function type: " ++ prettyFTy tf)
+inferF tenv ctx (FETyLam a b) = FForall a <$> inferF tenv (ctx) b
+inferF tenv ctx (FETyApp f t) = do
+  tf <- inferF tenv ctx f
+  case tf of
+    FForall a body -> Right (substFTy a t body)
+    _ -> Left ("不是多态类型 / not a polymorphic type: " ++ prettyFTy tf)
+
+freshFTyName :: [(String, FTy)] -> String
+freshFTyName ctx = "_a" ++ show (length (filter (isTyVar . snd) ctx))
+  where isTyVar (FVarT _) = True
+        isTyVar _ = False
+
+tyParser :: ReadP Ty
+tyParser = do
+  a <- atom
+  (do spaces
+      void (string "->" <|> string "→")
+      spaces
+      b <- tyParser
+      return (TArr a b)) <++ return a
+  where
+    atom =
+      (do _ <- char '('
+          spaces
+          t <- tyParser
+          spaces
+          _ <- char ')'
+          return t)
+      <++ (do n <- munch1 (\c -> isAlpha c || isDigit c || c `elem` ("_'" :: String))
+              spaces
+              case n of
+                "Int"  -> return (TCon "Int" [])
+                "Bool" -> return (TCon "Bool" [])
+                -- 同上：List Int -> Bool 应解析为 (List Int) -> Bool
+                -- Same as above: List Int -> Bool means (List Int) -> Bool.
+                "List" -> TCon "List" . (:[]) <$> atom
+                _      -> return (TVar n))
+
+parseFTerm :: String -> Either ParseError FExpr
+parseFTerm s = case [e | (e, rest) <- readP_to_S (fterm <* spaces) s, null rest] of
+  (e:_) -> Right e
+  []    -> Left (ParseError 1 ("无法解析 System F 项", "Cannot parse the System F term"))
+  where
+    binder = munch1 (\x -> isAlpha x || isDigit x || x `elem` ("_'" :: String))
+    separator = void (char '.') <|> void (string "→")
+    parseBody = do
+      spaces
+      ann <- (do void (char ':')
+                 spaces
+                 t <- tyParser
+                 return (Just t)) <++ return Nothing
+      spaces
+      separator
+      spaces
+      body <- fterm
+      return (ann, body)
+    fterm = do
+      c <- look
+      if "Λ" `isPrefixOf` c || "\\/" `isPrefixOf` c
+        then do void (string "Λ" <++ string "\\/")
+                spaces
+                v <- binder
+                do p <- parseBody
+                   return (FETyLam v (snd p))
+        else if "\\" `isPrefixOf` c || "λ" `isPrefixOf` c
+          then do void (char '\\') <|> void (char 'λ')
+                  spaces
+                  v <- binder
+                  do p <- parseBody
+                     return (maybe (FExprLam v (snd p)) (\t -> FEAnnLam v t (snd p)) (fst p))
+          else fapp
+    fapp = do
+      h <- fatom
+      rest <- greedyMany
+        (do spaces
+            (do void (char '[')
+                spaces
+                t <- tyParser
+                spaces
+                void (char ']')
+                return (Left t))
+              <++ (do e <- fatom
+                      return (Right e)))
+      return (foldl' (\f r -> either (FETyApp f) (FEApp f) r) h rest)
+    fatom =
+      (do void (char '('); spaces; e <- fterm; spaces; void (char ')'); return e)
+      <++ (do v <- munch1 (\x -> isAlpha x || isDigit x || x `elem` ("_+*-/%^?!<>|&~#'\\λ" :: String))
+              spaces
+              return (FEVar v))
 
 -- 类型推断的代价随项的大小急剧上升，超过节点上限就跳过，避免大项拖垮解释器
 -- Type inference gets expensive quickly as a term grows, so skip it above the
@@ -1842,6 +2399,8 @@ data ReplState = ReplState
   , rsTrail   :: [Expr]          -- 手动归约历史，最新在前 / newest first
   , rsLastFile :: Maybe FilePath -- 上次 :load 的文件 / last loaded file
   , rsMaxTerm :: Maybe Int       -- 表达式节点上限 / optional AST node cap
+  , rsRedo    :: [Expr]          -- 被 :back 撤销的重做栈（最新在前）/ redo stack (newest first)
+  , rsEncoding :: Encoding       -- 数值编码 / numeral encoding
   }
 
 -- ---------------------------------------------------------------------------
@@ -1934,18 +2493,22 @@ traceFields total steps
       , "traceTruncated" .= JBool (total > length shown || any snd rendered) ]
   where
     shown = take traceLimit steps
-    rendered = map one shown
-    one s =
-      let before = pretty (tsBefore s)
-          after  = pretty (tsAfter s)
-          long   = exceeds 300 before || exceeds 300 after
-      in ( JObj
-             [ "n"      .= JNum (tsIndex s)
-             , "rule"   .= JStr (tsRule s)
-             , "note"   .= JStr (tsNote s)
-             , "before" .= JStr (shorten 300 before)
-             , "after"  .= JStr (shorten 300 after) ]
-         , long )
+    rendered = map traceStepJson shown
+
+-- 单个轨迹步骤的 JSON；证明视图也复用同一形状
+-- JSON for one trace step; the proof view reuses the same shape.
+traceStepJson :: TraceStep -> (J, Bool)
+traceStepJson s =
+  let before = pretty (tsBefore s)
+      after  = pretty (tsAfter s)
+      long   = exceeds 300 before || exceeds 300 after
+  in ( JObj
+         [ "n"      .= JNum (tsIndex s)
+         , "rule"   .= JStr (tsRule s)
+         , "note"   .= JStr (tsNote s)
+         , "before" .= JStr (shorten 300 before)
+         , "after"  .= JStr (shorten 300 after) ]
+     , long )
 
 -- 树形视图的缩进随深度线性增长，大项会变成几十 MB，只在尺寸允许时输出
 -- Tree indentation grows with depth, so huge terms would explode; bound it.
@@ -1967,9 +2530,9 @@ treeFieldSized n e
 -- 结构化语法树，供 Web 端折叠显示
 -- Structured AST for the collapsible web tree.
 astJson :: Expr -> J
-astJson (Var x) = JObj ["k" .= JStr "var", "label" .= JStr x]
+astJson (Var x) = JObj ["k" .= JStr "var", "label" .= JStr (stripLetBinder x)]
 astJson (Lam x b) = JObj
-  [ "k" .= JStr "lam", "label" .= JStr x
+  [ "k" .= JStr "lam", "label" .= JStr (stripLetBinder x)
   , "c" .= JArr [astJson b] ]
 astJson (App f a) = JObj
   [ "k" .= JStr "app", "label" .= JStr "App"
@@ -1984,6 +2547,19 @@ exprSize :: Expr -> Int
 exprSize (Var _)   = 1
 exprSize (Lam _ b) = 1 + exprSize b
 exprSize (App f a) = 1 + exprSize f + exprSize a
+
+-- 最大深度，与节点数不同 / maximum depth, distinct from node count
+exprDepth :: Expr -> Int
+exprDepth (Var _)   = 1
+exprDepth (Lam _ b) = 1 + exprDepth b
+exprDepth (App f a) = 1 + max (exprDepth f) (exprDepth a)
+
+-- 子表达式按从大到小列出，用于定位类型错误
+-- Subterms, largest first, used to locate a type error.
+subExprs :: Expr -> [Expr]
+subExprs e@(App f a) = e : subExprs f ++ subExprs a
+subExprs e@(Lam _ b) = e : subExprs b
+subExprs e = [e]
 
 -- 结构化 AST 只对较小的项输出，避免深层 Church 数把 JSON 撑大
 -- Emit the structured AST only for small terms; deep Church numerals would bloat JSON.
@@ -2095,6 +2671,7 @@ data LoadOutcome = LoadOutcome
   , loLang     :: Maybe Lang
   , loFast     :: Maybe Bool
   , loEta      :: Maybe Bool
+  , loEncoding :: Maybe Encoding
   , loEcho     :: [String]
   }
 
@@ -2147,7 +2724,7 @@ loadDefinitionsFromFile maxTerm env0 tenv0 path = do
     Left err -> return (Left err)
     Right content -> do
       let start = LoadOutcome env0 tenv0 [] [] Nothing Nothing Nothing Nothing
-                                Nothing []
+                                Nothing Nothing []
       return (Right (foldl' processLine start (logicalLines content)))
   where
     sizeError e = case maxTerm of
@@ -2167,9 +2744,12 @@ loadDefinitionsFromFile maxTerm env0 tenv0 path = do
                    Just msg -> failLine acc n line msg "term_too_large"
                    Nothing ->
                      let env'  = Map.insert var expr' (loEnv acc)
-                         tenv' = case inferTypeMaybe (loTypeEnv acc) expr of
-                           Just sc -> Map.insert var sc (loTypeEnv acc)
-                           Nothing -> Map.delete var (loTypeEnv acc)
+                         tenv'
+                           | not (null (untypedNames (loEnv acc) (loTypeEnv acc) expr)) =
+                               Map.delete var (loTypeEnv acc)
+                           | otherwise = case inferTypeMaybe (loTypeEnv acc) expr of
+                               Just sc -> Map.insert var sc (loTypeEnv acc)
+                               Nothing -> Map.delete var (loTypeEnv acc)
                      in acc { loEnv = env', loTypeEnv = tenv'
                             , loOk = (var, expr') : loOk acc }
         Right (DefineRec var expr) ->
@@ -2187,6 +2767,31 @@ loadDefinitionsFromFile maxTerm env0 tenv0 path = do
                          tenv' = Map.delete var (loTypeEnv acc)
                      in acc { loEnv = env', loTypeEnv = tenv'
                             , loOk = (var, expr') : loOk acc }
+        Right (DefineRecTyped name ann expr) ->
+          case sizeError expr of
+            Just msg -> failLine acc n line msg "term_too_large"
+            Nothing ->
+              let body = expandTop (Map.delete name (loEnv acc)) expr
+                  selfEnv = Map.insert name (Forall [] ann) (loTypeEnv acc)
+                  expr' = App zComb (Lam name body)
+                  -- 与 REPL 的 DefineRecTyped 使用同一实例化判定，避免
+                  -- 交互式通过的定义在 .lam 加载时失败
+                  -- Use the same instantiation check as the REPL's
+                  -- DefineRecTyped, so an interactive definition also loads.
+                  matches sc = case sc of
+                    Forall _ t -> annotationInstantiable t ann
+              in case inferScheme selfEnv body of
+                   Left err -> failLine acc n line
+                     ("类型标注检查失败: " ++ scrubTyNames err,
+                      "Type annotation check failed: " ++ scrubTyNames err)
+                     "type_error"
+                   Right sc | not (matches sc) ->
+                     failLine acc n line
+                       ("递归定义类型不匹配", "Recursive definition type mismatch")
+                       "type_error"
+                   Right _ -> acc { loEnv = Map.insert name expr' (loEnv acc)
+                                  , loTypeEnv = Map.insert name (Forall [] ann) (loTypeEnv acc)
+                                  , loOk = (name, expr') : loOk acc }
         Right (DeleteDef name) -> acc
           { loEnv = Map.delete name (loEnv acc)
           , loTypeEnv = Map.delete name (loTypeEnv acc)
@@ -2198,6 +2803,7 @@ loadDefinitionsFromFile maxTerm env0 tenv0 path = do
         Right (SetLang l)     -> acc { loLang = Just l }
         Right (SetFast b)     -> acc { loFast = Just b }
         Right (SetEta b)      -> acc { loEta = Just b }
+        Right (SetEncoding e) -> acc { loEncoding = Just e }
         Right c | isQueryCommand c -> acc { loEcho = loEcho acc ++ [line] }
         Right _ -> failLine acc n line
           ("定义文件不支持该命令", "Command not supported in a definition file")
@@ -2210,13 +2816,20 @@ loadDefinitionsFromFile maxTerm env0 tenv0 path = do
 isQueryCommand :: Command -> Bool
 isQueryCommand c = case c of
   Trace _      -> True
+  MachineCmd _ -> True
+  StatsCmd _   -> True
+  ParCmd _     -> True
+  ShortestCmd _ _ -> True
+  GrowthCmd _  -> True
   Ast _        -> True
   DbView _     -> True
   TypeOf _ _   -> True
+  FTypeOf _    -> True
   TimeOf _ _   -> True
   BenchOf _ _  -> True
   EqExpr _ _   -> True
   ConvExpr _ _ -> True
+  ProveCmd _ _ -> True
   Nf _         -> True
   Whnf _       -> True
   IntOf _      -> True
@@ -2240,10 +2853,12 @@ applyLoadOutcome st out = st
   , rsLang     = fromMaybe (rsLang st) (loLang out)
   , rsFast     = fromMaybe (rsFast st) (loFast out)
   , rsEta      = fromMaybe (rsEta st) (loEta out)
+  , rsEncoding = fromMaybe (rsEncoding st) (loEncoding out)
   -- 文件加载会改变环境，旧的手动归约轨迹不应继续沿用
   -- A load changes the environment, so stale manual reduction state must go.
   , rsCurrent  = Nothing
   , rsTrail    = []
+  , rsRedo     = []
   }
 
 -- 可被解析器重新读取的源语法（与 pretty 的 → 不同）
@@ -2252,9 +2867,14 @@ sourceExpr :: Expr -> String
 sourceExpr e = go 0 e ""
   where
     go :: Int -> Expr -> ShowS
-    go _ (Var x)      = showString x
+    go _ (Var x)      = showString (stripLetBinder x)
     go p (Lam x b)    = showParen (p > 0)
-      (showChar '\\' . showString x . showChar '.' . go 0 b)
+      (showChar '\\' . showString (stripLetBinder x) . showChar '.' . go 0 b)
+    -- 还原成 let 语法，重新加载后仍能做 let 泛化，而不是退化成普通 β-redex
+    -- Emit let syntax so reloading still performs let-generalization.
+    go p (App (Lam x b) v) | isLetBinder x = showParen (p > 0)
+      (showString "let " . showString (stripLetBinder x) . showString " = "
+       . go 2 v . showString " in " . go 0 b)
     go p (App f a)    = showParen (p > 1)
       (go 1 f . showChar ' ' . go 2 a)
 
@@ -2295,6 +2915,14 @@ prettyDef name e = case e of
 
 -- 求值结果统一输出，供 :eval / :nf / :whnf / :run 复用
 -- Shared output for evaluation results.
+-- 已定义但无简单类型的名字（Y、rec 定义）不能被当成自由变量推断出类型
+-- Defined names with no simple type (Y, rec definitions) must not be inferred
+-- as free variables by the simple type checker.
+untypedNames :: Map.Map String Expr -> Map.Map String Scheme -> Expr -> [String]
+untypedNames env tenv e =
+  [ n | n <- Set.toList (freeVars e)
+      , Map.member n env, Map.notMember n tenv ]
+
 emitEvalResult :: ReplState -> EvalResult -> Maybe Expr -> IO ()
 emitEvalResult st res mExpr = do
   let final   = erFinal res
@@ -2306,9 +2934,10 @@ emitEvalResult st res mExpr = do
       textZh  = termTxt ++ stepZh ++ fst hintMsg
       textEn  = termTxt ++ stepEn ++ snd hintMsg
       mtyMsg  = case mExpr of
-        Just expr -> case inferTypeMaybe (rsTypeEnv st) expr of
-          Just sc -> prettySchemeMsg sc
-          Nothing -> ("", "")
+        Just expr | not (null (untypedNames (rsEnv st) (rsTypeEnv st) expr)) -> ("", "")
+                  | otherwise -> case inferTypeMaybe (rsTypeEnv st) expr of
+                      Just sc -> prettySchemeMsg sc
+                      Nothing -> ("", "")
         Nothing   -> ("", "")
       trail   = erSteps res
       size    = exprSize final
@@ -2367,9 +2996,10 @@ emitFastResult st final mExpr = do
       hintMsg = valueHintMsg final
       size    = exprSize final
       mtyMsg  = case mExpr of
-        Just expr -> case inferTypeMaybe (rsTypeEnv st) expr of
-          Just sc -> prettySchemeMsg sc
-          Nothing -> ("", "")
+        Just expr | not (null (untypedNames (rsEnv st) (rsTypeEnv st) expr)) -> ("", "")
+                  | otherwise -> case inferTypeMaybe (rsTypeEnv st) expr of
+                      Just sc -> prettySchemeMsg sc
+                      Nothing -> ("", "")
         Nothing   -> ("", "")
       fields  = [ "term"     .= JStr termTxt
                 , "fast"     .= JBool True
@@ -2461,13 +3091,29 @@ fmtMs d = showFFloat (Just 3) d ""
 isPreludeDef :: String -> Expr -> Bool
 isPreludeDef n e = Map.lookup n initEnv == Just e
 
--- 标注是否为推断类型的合法实例：类型变量可实例化，具体类型（TCon）视为常量
--- Whether the annotation is a legal instance: type vars instantiate, TCons stay fixed.
+-- 标注是否为推断类型的合法实例：只有推断类型的变量可以被实例化，
+-- 标注中的变量（a、b…）视为刚性常量。原来的 unify 两边变量都可绑定，
+-- 于是 t0 → t0 会被错误地判定为 a → b 的实例.
+-- Whether the annotation is a legal instance: only the inferred type's variables
+-- may be instantiated; variables in the annotation are rigid. The old approach
+-- unified both sides, so t0 → t0 was wrongly reported as an instance of a → b.
 annotationInstantiable :: Ty -> Ty -> Bool
 annotationInstantiable raw ann =
-  case runTI (unify raw ann) 0 of
-    Right () -> True
-    Left _   -> False
+  case match Map.empty raw ann of
+    Just _  -> True
+    Nothing -> False
+  where
+    match :: Map.Map String Ty -> Ty -> Ty -> Maybe (Map.Map String Ty)
+    match sub (TVar v) t =
+      case Map.lookup v sub of
+        Nothing -> Just (Map.insert v t sub)
+        Just t' -> if t' == t then Just sub else Nothing
+    match sub (TArr a b) (TArr c d) =
+      foldM (\s (x, y) -> match s x y) sub [(a, c), (b, d)]
+    match sub (TCon n xs) (TCon m ys)
+      | n == m && length xs == length ys =
+          foldM (\s (x, y) -> match s x y) sub (zip xs ys)
+    match _ _ _ = Nothing
 
 typeOfExpr :: ReplState -> Expr -> Maybe String -> IO (Maybe ReplState)
 typeOfExpr st expr mAnn
@@ -2479,14 +3125,19 @@ typeOfExpr st expr mAnn
         [ "code" .= JStr "term_too_large", "limit" .= JNum astBudget ]
       return (Just st)
   | otherwise = do
-  case inferScheme (rsTypeEnv st) expr of
+  case inferSchemeLogged (rsTypeEnv st) expr of
     Left err0 -> do
       let err = scrubTyNames err0
+          failing = case [x | x <- subExprs expr, Left _ <- [inferScheme (rsTypeEnv st) x]] of
+                      (x:_) -> Just (shorten 80 (pretty x))
+                      []    -> Nothing
       emitL st "fail" ("无法类型化：" ++ err) ("Cannot type: " ++ err)
-        [ "code" .= JStr "type_error" ]
+        ([ "code" .= JStr "type_error" ]
+         ++ [ "failing" .= JStr x | Just x <- [failing] ])
       return (Just st)
-    Right sc@(Forall _ rawTy) -> do
+    Right (sc@(Forall _ rawTy), deriv) -> do
       let ty = prettySchemeMsg sc
+          (propFormula, propMsg) = propositionMsg sc
           ann = mAnn >>= parseTyText
           matches = fmap (\t -> normalizeNames t == normalizeNames rawTy) ann
           instantiable = fmap (annotationInstantiable rawTy) ann
@@ -2516,7 +3167,17 @@ typeOfExpr st expr mAnn
           fields = [ "type"   .= JStr (renderMsg (rsLang st) ty)
                    , "typeZh" .= JStr (fst ty)
                    , "typeEn" .= JStr (snd ty)
-                   , "freeVars" .= JArr (map JStr (Set.toList (freeVars expr))) ]
+                   , "proposition" .= JStr (renderMsg (rsLang st) propMsg)
+                   , "propositionZh" .= JStr (fst propMsg)
+                   , "propositionEn" .= JStr (snd propMsg)
+                   , "propositionFormula" .= JStr propFormula
+                   , "freeVars" .= JArr (map JStr (Set.toList (freeVars expr)))
+                   , "derivation" .= JArr
+                       [ JObj [ "kind" .= JStr k
+                              , "text" .= JStr (renderMsg (rsLang st) msg)
+                              , "textZh" .= JStr (fst msg)
+                              , "textEn" .= JStr (snd msg), "focus" .= JStr focus ]
+                       | (k, msg, focus) <- deriv ] ]
                    ++ [ "annotation" .= JStr a | Just a <- [mAnn] ]
                    ++ [ "matches" .= JBool b | Just b <- [matches] ]
                    ++ [ "instantiable" .= JBool b | Just b <- [instantiable] ]
@@ -2525,7 +3186,9 @@ typeOfExpr st expr mAnn
                       | Just _ <- [ann] ]
       if rsJson st
         then emitL st "type" (fst ty ++ noteZh) (snd ty ++ noteEn) fields
-        else putStrLn (renderMsg (rsLang st) (tyZh ++ noteZh, tyEn ++ noteEn))
+        else do
+          putStrLn (renderMsg (rsLang st) (tyZh ++ noteZh, tyEn ++ noteEn))
+          putStrLn (renderMsg (rsLang st) propMsg)
       return (Just st)
 
 runCommand :: ReplState -> Command -> IO (Maybe ReplState)
@@ -2583,6 +3246,14 @@ runCommand st (BenchOf n expr) = do
     , "elapsedMaxMs" .= JDec (maximum samples) ]
   return (Just st)
 runCommand st (Eval expr)
+  | rsStrategy st == Need = do
+      let e' = expandTop (rsEnv st) expr
+          (final, n, steps, adminHit) = machineEval (rsLimit st) e'
+          -- machineEval 的轨迹已是正序，不能再反转
+          -- machineEval already returns the trace in chronological order.
+          res = EvalResult final steps n adminHit False 0 0
+      emitEvalResult st res (Just expr)
+      return (Just st)
   | fastActive st = do
       runFastEval st (expandTop (rsEnv st) expr) (Just expr)
       return (Just st)
@@ -2594,9 +3265,12 @@ runCommand st (Eval expr)
 runCommand st (Define var expr) = do
   let expr' = expandTop (rsEnv st) expr
       env'  = Map.insert var expr' (rsEnv st)
-      (tenv', mtyMsg) = case inferTypeMaybe (rsTypeEnv st) expr of
-        Just sc -> (Map.insert var sc (rsTypeEnv st), Just (prettySchemeMsg sc))
-        Nothing -> (Map.delete var (rsTypeEnv st), Nothing)
+      (tenv', mtyMsg)
+        | not (null (untypedNames (rsEnv st) (rsTypeEnv st) expr)) =
+            (Map.delete var (rsTypeEnv st), Nothing)
+        | otherwise = case inferTypeMaybe (rsTypeEnv st) expr of
+            Just sc -> (Map.insert var sc (rsTypeEnv st), Just (prettySchemeMsg sc))
+            Nothing -> (Map.delete var (rsTypeEnv st), Nothing)
       fields = [ "name"  .= JStr var
                , "value" .= JStr (pretty expr') ]
                ++ [ "type" .= JStr (renderMsg (rsLang st) ty) | Just ty <- [mtyMsg] ]
@@ -2620,6 +3294,38 @@ runCommand st (DefineRec var expr) = do
     , "value" .= JStr (pretty expr')
     , "rec"   .= JBool True ]
   return (Just st { rsEnv = env', rsTypeEnv = tenv' })
+runCommand st (DefineRecTyped name ann expr) = do
+  let body = expandTop (Map.delete name (rsEnv st)) expr
+      selfEnv = Map.insert name (Forall [] ann) (rsTypeEnv st)
+      checked = inferScheme selfEnv body
+      matches sc = case sc of
+        Forall _ t -> annotationInstantiable t ann
+  case checked of
+    Left err -> do
+      emitL st "fail"
+        ("递归定义类型检查失败：" ++ scrubTyNames err)
+        ("Recursive definition type check failed: " ++ scrubTyNames err)
+        [ "code" .= JStr "type_error" ]
+      return (Just st)
+    Right sc | not (matches sc) -> do
+      emitL st "fail"
+        ("递归定义类型不匹配：期望 " ++ prettyTy (normalizeNames ann)
+          ++ "，实际 " ++ prettyTy (normalizeNames (case sc of Forall _ t -> t)))
+        ("Recursive definition type mismatch: expected "
+          ++ prettyTy (normalizeNames ann) ++ ", got "
+          ++ prettyTy (normalizeNames (case sc of Forall _ t -> t)))
+        [ "code" .= JStr "type_error" ]
+      return (Just st)
+    Right _ -> do
+      let expr' = App zComb (Lam name body)
+          env'  = Map.insert name expr' (rsEnv st)
+          tenv' = Map.insert name (Forall [] ann) (rsTypeEnv st)
+      emitL st "define"
+        ("已定义递归 " ++ name ++ " : " ++ prettyTy (normalizeNames ann))
+        ("defined recursive " ++ name ++ " : " ++ prettyTy (normalizeNames ann))
+        [ "name" .= JStr name, "value" .= JStr (pretty expr')
+        , "rec" .= JBool True, "type" .= JStr (prettyTy (normalizeNames ann)) ]
+      return (Just st { rsEnv = env', rsTypeEnv = tenv' })
 runCommand st (LoadFile path) = do
   res <- loadDefinitionsFromFile (rsMaxTerm st) (rsEnv st) (rsTypeEnv st) path
   case res of
@@ -2664,6 +3370,10 @@ runCommand st (LoadFile path) = do
         (if on then "η 归约：开启" else "η 归约：关闭")
         (if on then "Eta reduction: on" else "Eta reduction: off")
         [ "eta" .= JBool on ]
+      forM_ (loEncoding out) $ \enc -> emitL st' "info"
+        (if enc == Church then "数值编码：邱奇" else "数值编码：Scott")
+        (if enc == Church then "Numeral encoding: Church" else "Numeral encoding: Scott")
+        [ "encoding" .= JStr (encodingId enc) ]
       stAfter <- replayEcho st' (loEcho out)
       return (Just stAfter { rsLastFile = Just path })
 runCommand st (SaveFile path) = do
@@ -2708,7 +3418,7 @@ runCommand st (DeleteDef name)
 runCommand st ResetEnv = do
   emitL st "info" "环境已重置为预定义状态。" "Environment reset to the prelude." []
   return $ Just st { rsEnv = initEnv, rsTypeEnv = initTypeEnv
-                   , rsCurrent = Nothing, rsTrail = [] }
+                   , rsCurrent = Nothing, rsTrail = [], rsRedo = [] }
 runCommand st (SetStrategy s) = do
   emitL st "info"
     ("求值策略：" ++ strategyLabel s ++ "（" ++ strategyId s ++ "）")
@@ -2735,6 +3445,166 @@ runCommand st (SetFast on) = do
        else "Fast mode: off (step-by-step reduction)")
     [ "fast" .= JBool on ]
   return $ Just st { rsFast = on }
+runCommand st (SetEncoding enc) = do
+  emitL st "info"
+    (if enc == Church
+       then "数值编码：邱奇编码（影响 :church/:int；数字字面量始终为邱奇编码）"
+       else "数值编码：Scott 编码（影响 :church/:int；数字字面量始终为邱奇编码，可用 lib/scott.lam）")
+    (if enc == Church
+       then "Numeral encoding: Church (affects :church/:int; literals are always Church)"
+       else "Numeral encoding: Scott (affects :church/:int; literals are always Church; see lib/scott.lam)")
+    [ "encoding" .= JStr (encodingId enc) ]
+  return $ Just st { rsEncoding = enc }
+runCommand st (ShortestCmd a b) = do
+  let ea = expandTop (rsEnv st) a
+      eb = expandTop (rsEnv st) b
+      target = erFinal (evalWith (rsEta st) False (rsLimit st) Normal eb)
+      (found, visited, hit) = shortestPath (rsEta st) (rsLimit st) ea target
+      steps = fromMaybe [] found
+      base = [ "found" .= JBool (isJust found)
+             , "steps" .= JNum (length steps)
+             , "visited" .= JNum visited
+             , "limitHit" .= JBool hit
+             , "target" .= JStr (pretty target) ]
+      fields = base ++ traceFields (length steps) steps
+  emitL st "shortest"
+    (case found of
+       Just ss -> "最短归约 " ++ show (length ss) ++ " 步（搜索 " ++ show visited ++ " 个配置）"
+       Nothing -> "未找到更短路径（搜索 " ++ show visited ++ " 个配置）")
+    (case found of
+       Just ss -> "shortest reduction: " ++ show (length ss) ++ " steps ("
+                  ++ show visited ++ " configurations visited)"
+       Nothing -> "no shorter path found (" ++ show visited ++ " configurations visited)")
+    fields
+  return (Just st)
+runCommand st (GrowthCmd expr) = do
+  let e' = expandTop (rsEnv st) expr
+      series strat =
+        let res = evalTraceWith (rsEta st) (rsLimit st) strat e'
+            pts = [ JObj [ "n" .= JNum (tsIndex s)
+                         , "before" .= JNum (exprSize (tsBefore s))
+                         , "after" .= JNum (exprSize (tsAfter s))
+                         , "rule" .= JStr (tsRule s) ]
+                  | s <- erSteps res ]
+        in (pts, erCount res, erLimitHit res)
+      (app, appN, appHit) = series Applicative
+      (nrm, nrmN, nrmHit) = series Normal
+      peak xs = case [v | JObj fs <- xs, Just (JNum v) <- [lookup "after" fs]] of
+                  [] -> 0
+                  vs -> maximum vs
+  emitL st "growth"
+    ("规模曲线：应用序 " ++ show appN ++ " 步 / 峰值 " ++ show (peak app)
+      ++ " 节点，正规序 " ++ show nrmN ++ " 步 / 峰值 " ++ show (peak nrm))
+    ("Growth: applicative " ++ show appN ++ " steps / peak " ++ show (peak app)
+      ++ " nodes, normal " ++ show nrmN ++ " steps / peak " ++ show (peak nrm))
+    [ "applicative" .= JArr app, "normal" .= JArr nrm
+    , "applicativeSteps" .= JNum appN, "normalSteps" .= JNum nrmN
+    , "applicativePeak" .= JNum (peak app), "normalPeak" .= JNum (peak nrm)
+    , "limitHit" .= JBool (appHit || nrmHit) ]
+  return (Just st)
+runCommand st (ParCmd expr) = do
+  let e0 = expandTop (rsEnv st) expr
+      loop n e acc cnt
+        | n >= rsLimit st = (e, reverse acc, cnt, True)
+        | otherwise =
+            let (e', k) = parallelStep (rsEta st) e
+            in if k == 0
+                 then (e, reverse acc, cnt, False)
+                 else loop (n + 1) e'
+                        (TraceStep n e e' "β∥"
+                          ("并行一轮，收缩 " ++ show k ++ " 个 redex"
+                           ++ " / parallel round, " ++ show k ++ " redexes") : acc)
+                        (cnt + k)
+      (fin, steps, total, hit) = loop 1 e0 [] 0
+      hint = valueHintMsg fin
+      fields = [ "term" .= JStr (pretty fin)
+               , "steps" .= JNum (length steps)
+               , "reductions" .= JNum total
+               , "limitHit" .= JBool hit
+               , "parallel" .= JBool True
+               , "hint" .= JStr (renderMsg (rsLang st) hint)
+               , "hintZh" .= JStr (fst hint)
+               , "hintEn" .= JStr (snd hint) ]
+               ++ traceFields (length steps) steps
+  emitL st "result"
+    ("⇒ " ++ pretty fin ++ "  (" ++ show (length steps) ++ " 轮并行，" ++ show total ++ " 次收缩)")
+    ("⇒ " ++ pretty fin ++ "  (" ++ show (length steps) ++ " parallel rounds, "
+      ++ show total ++ " contractions)")
+    fields
+  return (Just st)
+runCommand st (FTypeOf src) = do
+  case parseFTerm src of
+    Left pe -> emitL st "error"
+      ("System F 语法错误：" ++ fst (peMsg pe))
+      ("System F syntax error: " ++ snd (peMsg pe))
+      [ "code" .= JStr "parse_error", "pos" .= JNum (pePos pe) ]
+    Right term -> case inferF (rsTypeEnv st) [] term of
+      Left err -> emitL st "fail" ("System F 类型错误：" ++ err)
+                                   ("System F type error: " ++ err)
+                        [ "code" .= JStr "type_error" ]
+      Right ty -> do
+        let txt = prettyFTy ty
+            prop = map (\c -> if c == '→' then '⇒' else c) txt
+            erased = pretty (eraseF term)
+        emitL st "ftype"
+          ("System F 类型：" ++ txt) ("System F type: " ++ txt)
+          [ "type" .= JStr txt
+          , "proposition" .= JStr prop
+          , "erased" .= JStr erased
+          , "term" .= JStr erased
+          , "fTerm" .= JStr (showFExpr term) ]
+  return (Just st)
+runCommand st (StatsCmd expr) = do
+  let e'    = expandTop (rsEnv st) expr
+      res   = evalTraceWith (rsEta st) (rsLimit st) (rsStrategy st) e'
+      -- 用不受 500 步轨迹上限影响的完整计数
+      -- Use the full counters, which are not limited by the 500-step trace cap.
+      betas = erBetaCount res
+      etas  = erEtaCount res
+      nf    = not (erLimitHit res) && null (redexInfos (rsEta st) (erFinal res))
+      fields = [ "kindStats" .= JBool True
+               , "size" .= JNum (exprSize e')
+               , "depth" .= JNum (exprDepth e')
+               , "redexes" .= JNum (redexCount (rsEta st) e')
+               , "freeVars" .= JArr (map JStr (Set.toList (freeVars e')))
+               , "steps" .= JNum (erCount res)
+               , "beta" .= JNum betas
+               , "eta" .= JNum etas
+               , "normalForm" .= JBool nf
+               , "limitHit" .= JBool (erLimitHit res) ]
+  emitL st "result"
+    ("统计：" ++ show (exprSize e') ++ " 节点，深度 " ++ show (exprDepth e')
+      ++ "，" ++ show (erCount res) ++ " 步（β " ++ show betas ++ "，η " ++ show etas ++ "）")
+    ("Stats: " ++ show (exprSize e') ++ " nodes, depth " ++ show (exprDepth e')
+      ++ ", " ++ show (erCount res) ++ " steps (β " ++ show betas ++ ", η " ++ show etas ++ ")")
+    fields
+  return (Just st)
+runCommand st (MachineCmd expr) = do
+  let e'    = expandTop (rsEnv st) expr
+      (final, steps, mtrace, adminHit) = machineEval (rsLimit st) e'
+      -- machineEval 的标志已综合步数上限与管理预算，不要再单独比较步数
+      -- machineEval already accounts for both the step limit and admin budget.
+      hit   = adminHit
+      hint  = valueHintMsg final
+      fields = [ "term" .= JStr (pretty final)
+               , "steps" .= JNum steps
+               , "machine" .= JBool True
+               , "limitHit" .= JBool hit
+               , "strategy" .= JStr "machine"
+               , "hint" .= JStr (renderMsg (rsLang st) hint)
+               , "hintZh" .= JStr (fst hint)
+               , "hintEn" .= JStr (snd hint) ]
+               ++ traceFields steps mtrace
+  if hit
+    then emitL st "warn"
+      ("⇒ " ++ pretty final ++ "  (归约未完成，达到步数或内部上限)")
+      ("⇒ " ++ pretty final ++ "  (incomplete reduction, step or internal limit reached)")
+      (fields ++ ["code" .= JStr "step_limit"])
+    else emitL st "result"
+      ("⇒ " ++ pretty final ++ "  (" ++ show steps ++ " 步，抽象机)")
+      ("⇒ " ++ pretty final ++ "  (" ++ show steps ++ " steps, abstract machine)")
+      fields
+  return (Just st)
 runCommand st (Trace expr) = do
   let e'  = expandTop (rsEnv st) expr
       res = evalTraceWith (rsEta st) (rsLimit st) (rsStrategy st) e'
@@ -2840,6 +3710,45 @@ runCommand st (ConvExpr a b)
           ok = not hit && alphaEq (erFinal ra) (erFinal rb)
       emitConv st hit ok (pretty (erFinal ra)) (pretty (erFinal rb))
       return (Just st)
+runCommand st (ProveCmd a b) = do
+  let a' = expandTop (rsEnv st) a
+      b' = expandTop (rsEnv st) b
+      -- 证明始终走步进引擎（快速模式没有轨迹），用 normal order 与 :conv 一致
+      -- A proof always uses the step engine (fast mode has no trace); normal
+      -- order matches :conv.
+      ra = evalTraceWith (rsEta st) (rsLimit st) Normal a'
+      rb = evalTraceWith (rsEta st) (rsLimit st) Normal b'
+      hit = erLimitHit ra || erLimitHit rb
+      ok = not hit && alphaEq (erFinal ra) (erFinal rb)
+      nf = if ok then pretty (erFinal ra) else ""
+      la = pretty a'
+      lb = pretty b'
+      lr = map traceStepJson (take traceLimit (erSteps ra))
+      rr = map traceStepJson (take traceLimit (erSteps rb))
+      clipped = erCount ra > length lr || erCount rb > length rr
+                || any snd lr || any snd rr
+      zh | hit = "无法判定（达到步数上限）：" ++ la ++ "  ,  " ++ lb
+         | ok = "β 可转换：" ++ la ++ "  ,  " ++ lb
+                ++ "（左 " ++ show (erCount ra) ++ " 步 / 右 " ++ show (erCount rb)
+                ++ " 步，共同正规式 " ++ nf ++ "）"
+         | otherwise = "不可 β 转换：" ++ la ++ "  ,  " ++ lb
+      en | hit = "inconclusive (step limit): " ++ la ++ "  ,  " ++ lb
+         | ok = "beta-convertible: " ++ la ++ "  ,  " ++ lb
+                ++ " (left " ++ show (erCount ra) ++ " steps / right "
+                ++ show (erCount rb) ++ " steps, common normal form " ++ nf ++ ")"
+         | otherwise = "not beta-convertible: " ++ la ++ "  ,  " ++ lb
+  emitL st "proof" zh en
+    [ "convertible"    .= JBool ok
+    , "limitHit"       .= JBool hit
+    , "left"           .= JStr la
+    , "right"          .= JStr lb
+    , "normalForm"     .= JStr nf
+    , "leftSteps"      .= JNum (erCount ra)
+    , "rightSteps"     .= JNum (erCount rb)
+    , "leftTrace"      .= JArr (map fst lr)
+    , "rightTrace"     .= JArr (map fst rr)
+    , "traceTruncated" .= JBool clipped ]
+  return (Just st)
 runCommand st (Nf expr)
   | fastActive st = do
       runFastEval st (expandTop (rsEnv st) expr) (Just expr)
@@ -2858,34 +3767,36 @@ runCommand st (IntOf expr)
   | fastActive st = do
       case fastNormalForm (rsLimit st) (expandTop (rsEnv st) expr) of
         Nothing -> emitFastBudget st
-        Just final -> case isChurchNumeral final of
+        Just final -> case numeralValue final of
           Just n -> emit st "int" (show n)
             [ "value" .= JNum (fromIntegral n)
             , "term"  .= JStr (pretty final)
-            , "fast"  .= JBool True ]
+            , "fast"  .= JBool True
+            , "encoding" .= JStr (encodingId (rsEncoding st)) ]
           Nothing -> emitL st "fail"
-            ("不是邱奇数：" ++ pretty final)
-            ("Not a Church numeral: " ++ pretty final) []
+            ("不是邱奇数或 Scott 数：" ++ pretty final)
+            ("Not a Church or Scott numeral: " ++ pretty final) []
       return (Just st)
   | otherwise = do
       let e'  = expandTop (rsEnv st) expr
           res = evalWith (rsEta st) False (rsLimit st) Normal e'
           final = erFinal res
-      case isChurchNumeral final of
+      case numeralValue final of
         Just n | not (erLimitHit res) ->
           emit st "int" (show n)
             ([ "value" .= JNum (fromIntegral n)
-             , "term"  .= JStr (pretty final) ]
+             , "term"  .= JStr (pretty final)
+             , "encoding" .= JStr (encodingId (rsEncoding st)) ]
              ++ [ "fastFallback" .= JBool True | rsFast st && not (fastActive st) ])
         Just _ -> emitL st "fail"
           "归约达到步数上限，无法确认邱奇数"
           "Step limit reached; cannot confirm a Church numeral" []
         Nothing -> emitL st "fail"
-          ("不是邱奇数：" ++ pretty final)
-          ("Not a Church numeral: " ++ pretty final) []
+          ("不是邱奇数或 Scott 数：" ++ pretty final)
+          ("Not a Church or Scott numeral: " ++ pretty final) []
       return (Just st)
 runCommand st (ChurchOf n) = do
-  let e' = churchNumeral n
+  let e' = numeralTerm (rsEncoding st) n
       ty = case inferTypeMaybe (rsTypeEnv st) e' of
          Just sc -> prettySchemeMsg sc
          Nothing -> ("", "")
@@ -2914,7 +3825,7 @@ runCommand st (Begin expr) = do
       ("开始手动归约：" ++ pretty e' ++ "\n  用 :step 归约一步，:run 归约到底，:end 结束。")
       ("Manual reduction started: " ++ pretty e' ++ "\n  Use :step to reduce one step, :run to finish, :end to stop.")
       ++ "\n  " ++ hintTxt)
-  return $ Just st { rsCurrent = Just e', rsTrail = [e'] }
+  return $ Just st { rsCurrent = Just e', rsTrail = [e'], rsRedo = [] }
 runCommand st (StepCmd mi) = case rsCurrent st of
   Nothing -> do
     emitL st "fail"
@@ -2957,16 +3868,21 @@ runCommand st (StepCmd mi) = case rsCurrent st of
            , "canStepBack" .= JBool True
            , "eta"      .= JBool (rsEta st) ]
            ++ redexFields (rsEta st) whole)
-        return $ Just st { rsCurrent = Just whole, rsTrail = trail' }
+        return $ Just st { rsCurrent = Just whole, rsTrail = trail', rsRedo = [] }
 runCommand st BackCmd = case rsTrail st of
-  (_:prev:_) -> do
+  (cur:prev:_) -> do
     let n = length (rsTrail st) - 1
     emit st "step" (pretty prev)
-      [ "term" .= JStr (pretty prev)
-      , "step" .= JNum (n - 1)
-      , "canStepBack" .= JBool (n - 1 > 0)
-      , "back" .= JBool True ]
-    return $ Just st { rsCurrent = Just prev, rsTrail = prev : drop 2 (rsTrail st) }
+      ([ "term" .= JStr (pretty prev)
+       , "step" .= JNum (n - 1)
+       , "canStepBack" .= JBool (n - 1 > 0)
+       , "canStepForward" .= JBool True
+       , "back" .= JBool True ]
+       ++ redexFields (rsEta st) prev)
+    -- 被撤销的当前项进入重做栈；连续 :back 会逐层压栈
+    -- The undone term enters the redo stack so repeated :back can be redone.
+    return $ Just st { rsCurrent = Just prev, rsTrail = prev : drop 2 (rsTrail st)
+                     , rsRedo = cur : rsRedo st }
   [_] -> do
     emitL st "info" "已经回到起点。" "Already at the start." []
     return (Just st)
@@ -2974,6 +3890,22 @@ runCommand st BackCmd = case rsTrail st of
     emitL st "fail"
       "当前没有进行中的归约，先用 :begin <表达式> 开始。"
       "No reduction in progress; start one with :begin <expr>." []
+    return (Just st)
+runCommand st ForwardCmd = case rsRedo st of
+  (nxt:rest) -> do
+    let trail' = nxt : rsTrail st
+        n = length trail' - 1
+    emit st "step" (pretty nxt)
+      ([ "term" .= JStr (pretty nxt)
+       , "step" .= JNum n
+       , "canStepBack" .= JBool True
+       , "canStepForward" .= JBool (not (null rest))
+       , "forward" .= JBool True ]
+       ++ redexFields (rsEta st) nxt)
+    return $ Just st { rsCurrent = Just nxt, rsTrail = trail', rsRedo = rest }
+  [] -> do
+    emitL st "info" "没有可重做的步骤。"
+      "There is nothing to redo." []
     return (Just st)
 runCommand st (GotoCmd n) =
   let trail = rsTrail st
@@ -2995,11 +3927,12 @@ runCommand st (GotoCmd n) =
          else do
            let e = trail !! pos
            emit st "step" (pretty e)
-             [ "term" .= JStr (pretty e)
-             , "step" .= JNum n
-             , "canStepBack" .= JBool (n > 0)
-             , "goto" .= JBool True ]
-           return $ Just st { rsCurrent = Just e, rsTrail = drop pos trail }
+             ([ "term" .= JStr (pretty e)
+              , "step" .= JNum n
+              , "canStepBack" .= JBool (n > 0)
+              , "goto" .= JBool True ]
+              ++ redexFields (rsEta st) e)
+           return $ Just st { rsCurrent = Just e, rsTrail = drop pos trail, rsRedo = [] }
 runCommand st (ShowDef name) =
   case Map.lookup name (rsEnv st) of
     Nothing -> do
@@ -3085,10 +4018,10 @@ runCommand st RunCmd = case rsCurrent st of
   Just e -> do
     let res = evalTraceWith (rsEta st) (rsLimit st) (rsStrategy st) e
     emitEvalResult st res Nothing
-    return $ Just st { rsCurrent = Nothing, rsTrail = [] }
+    return $ Just st { rsCurrent = Nothing, rsTrail = [], rsRedo = [] }
 runCommand st EndCmd = do
   emitL st "info" "已结束手动归约。" "Manual reduction ended." []
-  return $ Just st { rsCurrent = Nothing, rsTrail = [] }
+  return $ Just st { rsCurrent = Nothing, rsTrail = [], rsRedo = [] }
 runCommand st (SetLang l) = do
   emitL st "info" "语言已切换。" "Language switched."
     [ "lang" .= JStr (langId l) ]
@@ -3131,8 +4064,8 @@ commandUsage =
   , (":env",   (":env", ":env"))
   , (":del",   (":del <名字>", ":del <name>"))
   , (":reset", (":reset", ":reset"))
-  , (":strategy", (":strategy applicative|normal|cbn|cbv",
-                   ":strategy applicative|normal|cbn|cbv"))
+  , (":strategy", (":strategy applicative|normal|cbn|cbv|need|sharing",
+                   ":strategy applicative|normal|cbn|cbv|need|sharing"))
   , (":steps", (":steps <正整数>", ":steps <positive integer>"))
   , (":eta",   (":eta on|off", ":eta on|off"))
   , (":fast",  (":fast on|off", ":fast on|off"))
@@ -3144,6 +4077,7 @@ commandUsage =
   , (":bench", (":bench <1-1000> <表达式>", ":bench <1-1000> <expr>"))
   , (":eq",    (":eq <表达式> , <表达式>", ":eq <expr> , <expr>"))
   , (":conv",  (":conv <表达式> , <表达式>", ":conv <expr> , <expr>"))
+  , (":prove", (":prove <表达式> , <表达式>", ":prove <expr> , <expr>"))
   , (":nf",    (":nf <表达式>", ":nf <expr>"))
   , (":whnf",  (":whnf <表达式>", ":whnf <expr>"))
   , (":int",   (":int <表达式>", ":int <expr>"))
@@ -3153,12 +4087,20 @@ commandUsage =
   , (":run",   (":run", ":run"))
   , (":end",   (":end", ":end"))
   , (":back",  (":back", ":back"))
+  , (":forward", (":forward", ":forward"))
   , (":goto",  (":goto <0-已走步数>", ":goto <0-currentStep>"))
   , (":def",   (":def <名字>", ":def <name>"))
   , (":search", (":search <子串>", ":search <substring>"))
   , (":reload", (":reload", ":reload"))
   , (":edit",  (":edit [文件]", ":edit [file]"))
   , (":lang",  (":lang zh|en|both", ":lang zh|en|both"))
+  , (":encoding", (":encoding church|scott", ":encoding church|scott"))
+  , (":machine", (":machine <表达式>", ":machine <expr>"))
+  , (":stats", (":stats <表达式>", ":stats <expr>"))
+  , (":par",   (":par <表达式>", ":par <expr>"))
+  , (":ftype", (":ftype <System F 项>", ":ftype <System F term>"))
+  , (":shortest", (":shortest <表达式> , <表达式>", ":shortest <expr> , <expr>"))
+  , (":growth", (":growth <表达式>", ":growth <expr>"))
   , (":q",     (":q", ":q"))
   ]
 
@@ -3167,6 +4109,7 @@ strategyLabelEn Applicative = "applicative order (leftmost-innermost)"
 strategyLabelEn Normal      = "normal order (leftmost-outermost)"
 strategyLabelEn CallByName  = "call-by-name (weak)"
 strategyLabelEn CallByValue = "call-by-value (weak)"
+strategyLabelEn Need        = "call-by-need (shared thunks via the abstract machine)"
 
 say :: ReplState -> String -> String -> String
 say st zh en = renderMsg (rsLang st) (zh, en)
@@ -3176,6 +4119,31 @@ prettySchemeMsg (Forall vars t0) =
   let base = prettyTy (normalizeNames t0)
       poly = if null vars then ("", "") else ("（多态）", " (polymorphic)")
   in (base ++ fst poly, base ++ snd poly)
+
+-- 把类型读作命题：箭头是蕴涵，∀ 是对任意类型
+-- Read a type as a proposition: arrows are implications and ∀ quantifies types.
+-- 三元组分别是公式、中文说明与英文说明 / formula, Chinese note and English note.
+propositionMsg :: Scheme -> (String, Msg)
+propositionMsg (Forall _ t0) =
+  let nt = normalizeNames t0
+      qs = Set.toAscList (freeTyVars nt)
+      prefix = if null qs then "" else "∀" ++ unwords qs ++ ". "
+      formula = prefix ++ propTy 1 nt
+      zh = "命题读法：" ++ formula ++ "（箭头即蕴涵，∀ 即“对任意类型”）"
+      en = "As a proposition: " ++ formula
+           ++ " (arrow means implication; ∀ means for all types)"
+  in (formula, (zh, en))
+  where
+    propTy :: Int -> Ty -> String
+    propTy _ (TVar v) = v
+    propTy _ (TCon n []) = n
+    propTy p (TCon n args) = n ++ " " ++ unwords (map (propTy 2) args)
+                             `parensIf` (p > 1)
+    propTy p (TArr a b) =
+      (propTy 2 a ++ " ⇒ " ++ propTy 1 b) `parensIf` (p > 1)
+    parensIf :: String -> Bool -> String
+    parensIf s True = "(" ++ s ++ ")"
+    parensIf s False = s
 
 -- ---------------------------------------------------------------------------
 -- 帮助信息 Help Message
@@ -3205,8 +4173,8 @@ helpMessage lang = unlines $ map (renderMsg lang) helpLines
         , "  -e, --eval <expr> run one command and exit; may be repeated")
       , ("     --check       只加载并校验 .lam 文件，成功退出码 0，失败 1"
         , "     --check       load and validate .lam files; exit 0 on success, 1 on failure")
-      , ("     --strategy <名称> 初始策略：applicative / normal / cbn / cbv"
-        , "     --strategy <name> initial strategy: applicative / normal / cbn / cbv")
+      , ("     --strategy <名称> 初始策略：applicative / normal / cbn / cbv / need / sharing"
+        , "     --strategy <name> initial strategy: applicative / normal / cbn / cbv / need / sharing")
       , ("     --steps <n>   初始归约步数上限（快速模式下为 β 燃料）"
         , "     --steps <n>   initial step limit (β fuel in fast mode)")
       , ("     --eta[=on|off]  初始 η 归约开关", "     --eta[=on|off]  initial eta reduction switch")
@@ -3282,7 +4250,13 @@ commandExprs c = case c of
   Eval e        -> [e]
   Define _ e    -> [e]
   DefineRec _ e -> [e]
+  DefineRecTyped _ _ e -> [e]
   Trace e       -> [e]
+  MachineCmd e  -> [e]
+  StatsCmd e    -> [e]
+  ParCmd e      -> [e]
+  ShortestCmd a b -> [a, b]
+  GrowthCmd e   -> [e]
   Ast e         -> [e]
   DbView e      -> [e]
   TypeOf e _    -> [e]
@@ -3290,14 +4264,22 @@ commandExprs c = case c of
   BenchOf _ e   -> [e]
   EqExpr a b    -> [a, b]
   ConvExpr a b  -> [a, b]
+  ProveCmd a b  -> [a, b]
   Nf e          -> [e]
   Whnf e        -> [e]
   IntOf e       -> [e]
-  -- :church 直接构造大项，也要纳入 --max-term-size 检查
-  -- :church builds a large term directly, so it must respect --max-term-size too
-  ChurchOf n    -> [churchNumeral n]
+  -- :church 的项依赖当前编码（Church/Scott 大小不同），见 commandExtraExprs
+  -- The :church term depends on the active encoding (Church vs Scott differ),
+  -- so it is checked separately in commandExtraExprs with access to the state.
+  ChurchOf _    -> []
   Begin e       -> [e]
   _             -> []
+
+-- 需要解释器状态才能构造的命令项；目前只有 :church 依赖当前编码
+-- Command terms that need interpreter state; only :church depends on the encoding.
+commandExtraExprs :: ReplState -> Command -> [Expr]
+commandExtraExprs st (ChurchOf n) = [numeralTerm (rsEncoding st) n]
+commandExtraExprs _ _             = []
 
 handleLine :: ReplState -> String -> IO (Maybe ReplState)
 handleLine st line =
@@ -3310,14 +4292,14 @@ handleLine st line =
       return (Just st)
     Right cmd
       | Just cap <- rsMaxTerm st
-      , any (\e -> exprSize e > cap) (commandExprs cmd) -> do
+      , any (\e -> exprSize e > cap) (commandExprs cmd ++ commandExtraExprs st cmd) -> do
           emitL st "fail"
             ("表达式过大（节点上限 " ++ show cap ++ "）")
             ("Expression too large (node limit " ++ show cap ++ ")")
             [ "code" .= JStr "term_too_large", "limit" .= JNum cap ]
           return (Just st)
       | otherwise -> runWithTimeout st $ do
-          when (any (snd . expandChecked (rsEnv st)) (commandExprs cmd)) $
+          when (any (snd . expandChecked (rsEnv st)) (commandExprs cmd ++ commandExtraExprs st cmd)) $
             emitL st "warn"
               "宏展开燃料耗尽，结果可能包含未展开的定义（例如自引用定义）"
               "Macro expansion fuel exhausted; the result may contain unexpanded definitions"
@@ -3417,7 +4399,22 @@ batchLoop st = do
     then return ()
     else do
       line <- getLine
-      mst <- handleLine st line
+      -- 批处理会话长期存活，绝不能因单条命令抛出异常而退出
+      -- A batch session is long-lived; one failing command must not kill it.
+      let runLine = handleLine st line `catch` \(e :: AsyncException) ->
+            case e of
+              UserInterrupt -> do
+                emitL st "warn" "已中断当前计算。" "Interrupted."
+                  [ "code" .= JStr "interrupted" ]
+                return (Just st)
+              _ -> throwIO e
+      mst <- runLine `catch` \(e :: SomeException) ->
+        case (fromException e :: Maybe AsyncException) of
+          Just _  -> throwIO e
+          Nothing -> do
+            emitL st "error" ("内部错误：" ++ show e) ("Internal error: " ++ show e)
+              [ "code" .= JStr "internal_error" ]
+            return (Just st)
       hFlush stdout
       putStrLn rsSentinel
       hFlush stdout
@@ -3473,14 +4470,14 @@ parseArgs = go defaultOptions
         Nothing -> Left ("未知语言 / unknown language: " ++ v)
       [] -> Left "缺少 --lang 的值 / missing value for --lang"
     go o ("--timeout":xs) = case xs of
-      (v:rest) -> case reads v :: [(Int, String)] of
-        [(n, "")] | n >= 0 -> go o { optTimeout = n } rest
-        _ -> Left ("无效的 --timeout 秒数 / invalid --timeout: " ++ v)
+      (v:rest) -> case readIntIn 0 maxTimeoutSecs v of
+        Just n  -> go o { optTimeout = n } rest
+        Nothing -> Left ("无效的 --timeout 秒数 / invalid --timeout: " ++ v)
       [] -> Left "缺少 --timeout 的值 / missing value for --timeout"
     go o ("--max-term-size":xs) = case xs of
-      (v:rest) -> case reads v :: [(Int, String)] of
-        [(n, "")] | n > 0 -> go o { optMaxTerm = Just n } rest
-        _ -> Left ("无效的 --max-term-size / invalid --max-term-size: " ++ v)
+      (v:rest) -> case readIntIn 1 maxIntIn v of
+        Just n  -> go o { optMaxTerm = Just n } rest
+        Nothing -> Left ("无效的 --max-term-size / invalid --max-term-size: " ++ v)
       [] -> Left "缺少 --max-term-size 的值 / missing value for --max-term-size"
     go o ("--strategy":xs) = case xs of
       (v:rest) -> case parseStrategy v of
@@ -3488,9 +4485,9 @@ parseArgs = go defaultOptions
         Nothing -> Left ("未知策略 / unknown strategy: " ++ v)
       [] -> Left "缺少 --strategy 的值 / missing value for --strategy"
     go o ("--steps":xs) = case xs of
-      (v:rest) -> case reads v :: [(Int, String)] of
-        [(n, "")] | n > 0 -> go o { optSteps = Just n } rest
-        _ -> Left ("无效的 --steps 值 / invalid --steps: " ++ v)
+      (v:rest) -> case readIntIn 1 maxIntIn v of
+        Just n  -> go o { optSteps = Just n } rest
+        Nothing -> Left ("无效的 --steps 值 / invalid --steps: " ++ v)
       [] -> Left "缺少 --steps 的值 / missing value for --steps"
     go o ("--eta":xs) = case xs of
       []       -> go o { optEta = Just True } []
@@ -3508,9 +4505,9 @@ parseArgs = go defaultOptions
             Just l  -> go o { optLang = l } xs
             Nothing -> Left ("未知语言 / unknown language: " ++ v)
       | Just v <- stripPrefix "--timeout=" x =
-          case reads v :: [(Int, String)] of
-            [(n, "")] | n >= 0 -> go o { optTimeout = n } xs
-            _ -> Left ("无效的 --timeout 秒数 / invalid --timeout: " ++ v)
+          case readIntIn 0 maxTimeoutSecs v of
+            Just n  -> go o { optTimeout = n } xs
+            Nothing -> Left ("无效的 --timeout 秒数 / invalid --timeout: " ++ v)
       | Just v <- stripPrefix "--eval=" x =
           go o { optEval = optEval o ++ [v] } xs
       | Just v <- stripPrefix "--strategy=" x =
@@ -3518,13 +4515,13 @@ parseArgs = go defaultOptions
             Just s  -> go o { optStrategy = Just s } xs
             Nothing -> Left ("未知策略 / unknown strategy: " ++ v)
       | Just v <- stripPrefix "--max-term-size=" x =
-          case reads v :: [(Int, String)] of
-            [(n, "")] | n > 0 -> go o { optMaxTerm = Just n } xs
-            _ -> Left ("无效的 --max-term-size / invalid --max-term-size: " ++ v)
+          case readIntIn 1 maxIntIn v of
+            Just n  -> go o { optMaxTerm = Just n } xs
+            Nothing -> Left ("无效的 --max-term-size / invalid --max-term-size: " ++ v)
       | Just v <- stripPrefix "--steps=" x =
-          case reads v :: [(Int, String)] of
-            [(n, "")] | n > 0 -> go o { optSteps = Just n } xs
-            _ -> Left ("无效的 --steps 值 / invalid --steps: " ++ v)
+          case readIntIn 1 maxIntIn v of
+            Just n  -> go o { optSteps = Just n } xs
+            Nothing -> Left ("无效的 --steps 值 / invalid --steps: " ++ v)
       | Just v <- stripPrefix "--eta=" x =
           case parseOnOff v of
             Just b  -> go o { optEta = Just b } xs
@@ -3596,6 +4593,10 @@ loadStartupFile st path = do
         (if on then "η 归约：开启" else "η 归约：关闭")
         (if on then "Eta reduction: on" else "Eta reduction: off")
         [ "eta" .= JBool on ]
+      forM_ (loEncoding out) $ \enc -> emitL st' "info"
+        (if enc == Church then "数值编码：邱奇" else "数值编码：Scott")
+        (if enc == Church then "Numeral encoding: Church" else "Numeral encoding: Scott")
+        [ "encoding" .= JStr (encodingId enc) ]
       stAfter <- replayEcho st' (loEcho out)
       return stAfter { rsLastFile = Just path }
 
@@ -3633,7 +4634,8 @@ main = do
             when batch $ hSetBuffering stdout LineBuffering
             let st0 = applyCliOptions opts $
                         ReplState initEnv initTypeEnv Applicative defaultLimit
-                          (optTimeout opts) False False json lang Nothing [] Nothing Nothing
+                          (optTimeout opts) False False json lang Nothing [] Nothing Nothing []
+                          Church
             if optCheck opts
               then do
                 ok <- runCheck st0 (optFiles opts)

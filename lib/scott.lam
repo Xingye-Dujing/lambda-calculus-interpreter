@@ -1,0 +1,52 @@
+-- ===========================================================================
+-- Scott 编码教材库 / Scott encoding library
+--
+-- 用法 / Usage:
+--   :encoding scott
+--   :load lib/scott.lam
+--
+-- 与邱奇编码不同，Scott 数的消除子只取用其中一支，列表的尾是惰性 thunk
+-- Unlike Church encoding, Scott eliminators select one branch and list tails
+-- are lazy thunks, so recursion stays lazy under applicative order
+-- ===========================================================================
+
+-- 布尔 / booleans
+STRUE = \t. \f. t
+SFALSE = \t. \f. f
+SIF = \b. \t. \f. b t f
+SNOT = \b. b SFALSE STRUE
+SAND = \a. \b. a b SFALSE
+SOR = \a. \b. a STRUE b
+
+-- 数 / numerals: λz.λs.sⁿ z, where s receives the predecessor
+SZERO = \z. \s. z
+SSUCC = \n. \z. \s. s n
+SPRED = \n. n SZERO (\p. p)
+SISZERO = \n. n STRUE (\p. SFALSE)
+
+-- 两种编码互转 / conversions between the two encodings
+SFROMCHURCH = \n. n (\p. \z. \s. s p) (\z. \s. z)
+rec STOCHURCH = \n. n (\f. \x. x) (\p. \f. \x. f (STOCHURCH p f x))
+
+-- 序对 / pairs
+SPAIR = \a. \b. \f. f a b
+SFST = \p. p (\a. \b. a)
+SSND = \p. p (\a. \b. b)
+
+-- 列表 / lists: tail is a thunk forced by (\u. u)
+SNIL = \n. \c. n
+SCONS = \h. \t. \n. \c. c h (\u. t)
+SCONS2 = \h. \tk. \n. \c. c h tk
+SISNIL = \l. l STRUE (\h. \t. SFALSE)
+SHEAD = \l. l (\x. x) (\h. \t. h)
+STAIL = \l. l (\x. x) (\h. \t. t (\u. u))
+
+-- 递归函数 / recursive functions
+rec SMAP = \f. \l. l SNIL (\h. \t. SCONS2 (f h) (\u. SMAP f (t (\u. u))))
+rec SFOLD = \f. \z. \l. l z (\h. \t. f h (SFOLD f z (t (\u. u))))
+rec SFILTER = \p. \l. l SNIL (\h. \t. SIF (p h)
+  (SCONS2 h (\u. SFILTER p (t (\u. u))))
+  (SFILTER p (t (\u. u))))
+SLENGTH = \l. SFOLD (\h. \n. SSUCC n) SZERO l
+rec SAPPEND = \a. \b. a b (\h. \t. SCONS2 h (\u. SAPPEND (t (\u. u)) b))
+rec SREVERSE = \l. SFOLD (\h. \acc. SAPPEND acc (SCONS h SNIL)) SNIL l

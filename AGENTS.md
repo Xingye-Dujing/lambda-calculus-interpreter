@@ -17,13 +17,13 @@ Chinese/English**.
   `System.Process` is used only by `:edit`.
 - The scripts are split by platform: `build.sh` keeps the GNU ld link flags
   (`-split-sections -optl-Wl,--gc-sections -optl-s`) on Linux only (via
-  `uname -s`), treats `-optlc-march=native` as opt-in under `LAMBDA_NATIVE=1`,
+  `uname -s`), treats `-optc-march=native` as opt-in under `LAMBDA_NATIVE=1`,
   and stays portable on macOS; `build.bat` uses no GNU ld flags and no
   `-march=native`. Both pass the same four `-package` flags; keep them in sync
   when adding build steps on either platform.
 - **Tests:** `.\test.bat` / `./test.sh`, or
   `python tests/run_tests.py [--bin path]`. The suite drives the compiled
-  `extension --batch --json` binary end-to-end (48 groups), including a
+  `extension --batch --json` binary end-to-end (69 groups), including a
   `main`/`extension` differential test, the web API (when Flask is installed),
   SSE streaming, share persistence, rate limiting, and the Node UI smoke test.
   Run it after any core change; it is the regression net for `main.hs` and
@@ -41,8 +41,8 @@ Chinese/English**.
   with definitions. `-e` may repeat, `--check` exits 0/1. REPL commands:
   `:help`, `:load`, `:save`, `:let`, `:env`, `:del`, `:reset`, `:strategy`,
   `:steps`, `:eta`, `:fast`, `:trace`, `:ast`, `:db`, `:type`, `:eq`, `:conv`,
-  `:nf`, `:whnf`, `:int`, `:church`, `:begin`, `:step [n]`, `:run`, `:end`,
-  `:back`, `:goto <n>`, `:def`, `:search`, `:reload`, `:edit`, `:time [n]`,
+  `:prove`, `:nf`, `:whnf`, `:int`, `:church`, `:begin`, `:step [n]`, `:run`, `:end`,
+  `:back`, `:forward`, `:goto <n>`, `:def`, `:search`, `:reload`, `:edit`, `:time [n]`,
   `:bench`, `:lang`, `:q`. `:help <cmd>` shows per-command help.
 - `VERSION` is the single source of truth for the version (cabal, both
   binaries and the test suite must match it). All `error`/`fail`/`warn` JSON
@@ -92,21 +92,51 @@ Chinese/English**.
   `POST /api/share` stores a state payload and `GET /api/share/<id>` returns it
   for the short `#s=<id>` links. Shares persist to `web/shares.json`
   (`LAMBDA_SHARE_DB` overrides, `off` = memory only).
+  `POST /api/race` runs one expression under all four strategies in one session
+  via `:trace` and restores the original strategy afterwards.
+  `POST /api/session/<sid>/restore` rebuilds a dead session from a persisted
+  replay snapshot; snapshots live in `web/sessions.json`
+  (`LAMBDA_SNAPSHOT_DB`, `off` = memory only; `LAMBDA_SNAPSHOT_TTL` and
+  `LAMBDA_MAX_SNAPSHOTS` bound it). On 408/410 the frontend tries this restore
+  before falling back to replaying `codeLines` locally. `LAMBDA_SNAPSHOT_DB`
+  ending in `.sqlite` / `.db` switches to a SQLite backend so multiple workers
+  can share sessions. `GET /api/snapshots`, `POST /api/snapshot/<sid>/name` and
+  `DELETE /api/snapshot/<sid>` back the Sessions tab. `POST /api/share/page`
+  stores a self-contained transcript HTML served by `GET /api/share/page/<id>`
+  (`LAMBDA_PAGE_DB`, `off` = memory only).
 - `POST /api/eval/stream` returns SSE frames (`start`, output objects,
   `heartbeat`, `done`); the frontend uses it when `ReadableStream` exists and
   falls back to `/api/eval`. The interpreter reader thread feeds a per-line
   queue while streaming, so a long reduction is not killed by the normal
   request timeout. `LAMBDA_RATE_LIMIT=<n>` adds a per-IP token bucket
-  (default off); the Docker image serves the app with `waitress` and a
-  `HEALTHCHECK`, and remains single-process because sessions live in memory.
+  (default off). With a loopback reverse proxy (Caddy `handle_path`), all
+  browsers share `127.0.0.1`; `LAMBDA_TRUST_XFF=1` opts in to trusting the first
+  `X-Forwarded-For` value from loopback peers so each browser gets its own bucket.
+  Off by default, so `X-Forwarded-For` is ignored and `REMOTE_ADDR` is used,
+  preventing peers from spoofing the header. The Docker image serves the app
+  with `waitress` and a `HEALTHCHECK`, and remains single-process because
+  sessions live in memory.
 - `index.html` uses `<base href="./">` so it works at `/` and behind the
   production `/lambda/` prefix (Caddy `handle_path` strips it). Fonts are served
   by Flask at `/fonts/<file>`; the favicon is `web/icon.svg`.
 - Every `Command` has a UI entry: manual reduction controls (`:begin`/
-  `:back`/`:goto 0`/`:step`/`:run`/`:end`), the step-limit input (`:steps`), Env
+  `:back`/`:forward`/`:goto 0`/`:step`/`:run`/`:end`), the step-limit input (`:steps`), Env
   **load** (`:load`) and **reset** (`:reset`), the **Tools** tab (`:eq`/`:conv`/
   `:nf`/`:whnf`/`:int`/`:church`/`:eta`/recursive `rec`/`:save`), and the redex
-  buttons (`:step <n>`). Keep it that way when adding commands.
+  buttons (`:step <n>`). `tests/run_tests.py::test_command_ui_coverage` compares
+  `knownCommands` in `extension.hs` with the `CMDS` catalogue in `index.html`;
+  keep both in sync when adding commands. The Race tab and the Tools tab's
+  strategy-race button are not REPL commands. The Type panel shows the
+  Curry–Howard proposition fields and the `derivation` log from `:type`, and the
+  proof view exports Markdown / JSON / LaTeX and a confluence SVG. The Tools tab
+  also exposes `:machine` and `:stats`; the encoding selector sends `:encoding`;
+  the Practice and Sessions tabs verify answers with `:conv` and manage
+  snapshots. New commands (`:machine`, `:stats`, `:encoding`, `:par`, `:ftype`,
+  `:shortest`, `:growth`) are in `CMDS`, the `knownCommands` list and `I18N.cmdDesc` — keep all three in
+  sync. Notebook, Compare, Practice and Sessions are inspector tabs; the AST SVG
+  marks redexes with `data-redex-node`. `tools/lsp.py` is a stdio JSON-RPC server
+  for `.lam` files and `tools/benchmark.py` records `:bench` results into
+  `web/benchmarks.json`; both are invoked from tests or manually.
 - Do not use native `select`, `prompt`, `confirm` or `alert`: use the custom
   `.sel` menus and the `dialog()` helper so popups match the wireframe theme.
 - The desktop layout is a fixed `100vh` flex column: terminal and inspector share

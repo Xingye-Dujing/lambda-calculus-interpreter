@@ -1,0 +1,32 @@
+-- ===========================================================================
+-- 元循环求值器 / Meta-circular evaluator
+--
+-- 用法 / Usage:
+--   :load lib/meta.lam
+--   :strategy normal
+--   :int ((EVAL RED_EX) (CONS THREE NIL))
+--
+-- 项用邱奇编码的代数数据类型表示：VAR / LAM / APP 各是一个三路消去子
+-- Terms are Church-encoded algebraic data: VAR / LAM / APP are 3-way eliminators
+-- 求值结果是一个“环境 → 值”的函数，LAM 产生闭包，APP 组合两个求值结果
+-- Evaluation returns an environment-to-value function; LAM builds a closure
+-- ===========================================================================
+
+-- 语法构造器 / syntax constructors
+VAR = \n. \v. \l. \a. v n
+LAM = \t. \v. \l. \a. l t
+APP = \f. \x. \v. \l. \a. a f x
+
+-- 环境取第 n 项 / nth element of an environment list
+rec NTH = \n. \xs. if ISZERO n then HEAD xs else NTH (PRED n) (TAIL xs)
+
+-- 元循环求值器 / meta-circular evaluator
+rec EVAL = \t. t
+  (\n. \env. NTH n env)
+  (\body. \env. \arg. EVAL body (CONS arg env))
+  (\f. \x. \env. (EVAL f env) (EVAL x env))
+
+-- 两个示例项 / two example terms
+ID_TERM = LAM (VAR ZERO)
+-- 环境里的 THREE 是通过 VAR ZERO 取值的 / THREE is read from the environment
+RED_EX = APP ID_TERM (VAR ZERO)

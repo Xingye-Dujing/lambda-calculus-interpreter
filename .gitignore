@@ -78,9 +78,17 @@ desktop.ini
 # 本地 agent 笔记 / Local agent notes
 .workbuddy/
 
-# 分享短链持久化 / persisted share links
+# 分享短链与会话快照持久化 / persisted share links and session snapshots
 /web/shares.json
 /web/shares.json.tmp
+/web/sessions.json
+/web/sessions.json.tmp
+/web/sessions.sqlite
+/web/sharepages.json
+/web/sharepages.json.tmp
+/web/tokens.json
+/web/tokens.json.tmp
+/web/benchmarks.json
 
 # PyInstaller 构建产物 / PyInstaller build output
 /build/

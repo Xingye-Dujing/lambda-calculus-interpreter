@@ -45,12 +45,15 @@ Interpreter lookup order (overridable by environment variables):
 from __future__ import annotations
 
 import atexit
+import html
 import json
+from contextlib import contextmanager
 import logging
 import os
 import queue
 import re
 import signal
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -79,12 +82,43 @@ MAX_SHARE_BYTES = 64 * 1024
 # 分享短链的持久化文件；设为 off 可恢复纯内存模式
 # Persistence file for short share links; set to off for memory-only mode.
 SHARE_DB = os.environ.get("LAMBDA_SHARE_DB", str(APP_DIR / "shares.json"))
+# 会话快照：把回放历史落到磁盘，过期或进程重启后可恢复
+# Session snapshots: persist replay history so a session survives expiry/restarts.
+SNAPSHOT_TTL = max(0.0, float(os.environ.get("LAMBDA_SNAPSHOT_TTL", str(SESSION_IDLE))))
+MAX_SNAPSHOTS = max(0, int(os.environ.get("LAMBDA_MAX_SNAPSHOTS", str(MAX_SESSIONS))))
+MAX_SNAPSHOT_LINES = 200
+SNAPSHOT_DB = os.environ.get("LAMBDA_SNAPSHOT_DB", str(APP_DIR / "sessions.json"))
+# 静态分享页：把一段对话渲染成自包含 HTML
+# Static share pages: render a transcript as a self-contained HTML document.
+PAGE_DB = os.environ.get("LAMBDA_PAGE_DB", str(APP_DIR / "sharepages.json"))
+MAX_PAGES = max(0, int(os.environ.get("LAMBDA_MAX_PAGES", "100")))
+MAX_PAGE_LINES = 300
+# 策展示例与轻量 token / curated gallery and lightweight tokens
+TOKEN_DB = os.environ.get("LAMBDA_TOKEN_DB", str(APP_DIR / "tokens.json"))
+GALLERY = [
+    {"id": "church", "zh": "邱奇算术", "en": "Church arithmetic",
+     "code": "PLUS TWO THREE"},
+    {"id": "fixed", "zh": "不动点与递归", "en": "Fixpoint and recursion",
+     "code": "Y (\\f.\\n. ISZERO n THEN ONE ELSE MULT n (f (PRED n)))"},
+    {"id": "alpha", "zh": "α 等价", "en": "Alpha equivalence",
+     "code": ":eq \\a.a , \\b.b"},
+    {"id": "convert", "zh": "β 可转换性证明", "en": "Beta-convertibility proof",
+     "code": ":prove PLUS ONE TWO , THREE"},
+    {"id": "scott", "zh": "Scott 惰性列表", "en": "Scott lazy lists",
+     "code": ":encoding scott"},
+]
+# 策略竞速使用的四种策略，顺序与前端展示一致
+# The four strategies used by the race endpoint, in display order.
+STRATEGIES = ("applicative", "normal", "cbn", "cbv")
 # 限制请求体大小，避免公开部署时一个巨大请求耗尽内存
 # Cap the request body so a huge request cannot exhaust memory in production.
 MAX_BODY = max(1024, int(os.environ.get("LAMBDA_MAX_BODY", str(1024 * 1024))))
 # 可选的每 IP 每分钟请求上限；0 表示关闭（默认关闭，避免影响本地与测试）
 # Optional per-IP requests/minute cap; 0 disables it (default, so local/tests are unaffected).
 RATE_LIMIT = max(0, int(os.environ.get("LAMBDA_RATE_LIMIT", "0")))
+# 是否信任来自回环代理的 X-Forwarded-For；默认关闭，需显式 opt-in
+# Whether to trust X-Forwarded-For from a loopback proxy; off by default, opt in explicitly.
+TRUST_XFF = os.environ.get("LAMBDA_TRUST_XFF", "").strip().lower() in ("1", "true", "yes", "on")
 # 可选的表达式节点上限，传给解释器的 --max-term-size
 # Optional AST node cap forwarded to the interpreter as --max-term-size.
 MAX_TERM_SIZE = os.environ.get("LAMBDA_MAX_TERM_SIZE", "").strip()
@@ -106,11 +140,33 @@ _rate_lock = threading.Lock()
 _rate_buckets: dict[str, tuple[float, float]] = {}
 
 
+def _client_ip() -> str:
+    """Best-effort real client IP, optionally trusting a loopback reverse proxy.
+
+    生产部署经 Caddy(handle_path) 转发时 remote_addr 是 127.0.0.1，所有浏览器
+    会共用一个限流桶。只有显式设置 LAMBDA_TRUST_XFF=1 时，才信任来自回环地址的
+    X-Forwarded-For 第一段；默认忽略该头，使用 remote_addr，避免任意客户端伪造
+    该头绕过限流。
+    Behind a loopback reverse proxy remote_addr is the proxy and every browser
+    would share one bucket. Only when LAMBDA_TRUST_XFF=1 is set do we trust the
+    first X-Forwarded-For value from a loopback peer; by default the header is
+    ignored and remote_addr is used, so clients cannot spoof it to bypass the limit.
+    """
+    remote = request.remote_addr or "unknown"
+    if TRUST_XFF and remote in ("127.0.0.1", "::1"):
+        forwarded = request.headers.get("X-Forwarded-For", "")
+        if forwarded:
+            first = forwarded.split(",", 1)[0].strip()
+            if first:
+                return first
+    return remote
+
+
 def _rate_ok() -> bool:
     """Token bucket per client IP; disabled when RATE_LIMIT <= 0."""
     if RATE_LIMIT <= 0:
         return True
-    ip = request.remote_addr or "unknown"
+    ip = _client_ip()
     now = time.monotonic()
     rate = RATE_LIMIT / 60.0
     with _rate_lock:
@@ -199,10 +255,19 @@ def _check_path(line: str) -> str | None:
                 # The interpreter runs with cwd=INTERP_CWD, so resolve relative paths
                 # against that (not root) before checking confinement.
                 target = INTERP_CWD / target
-            target.resolve().relative_to(root)
+            resolved = target.resolve()
+            # 用相对 root 的路径再校验隐藏段与后缀：符号链接可以指向 root 内的
+            # 隐藏文件（如 .git/config），仅检查原始路径会漏掉这种情况.
+            # Re-check on the resolved path relative to root: a symlink could
+            # point at a hidden file inside root while the raw path looks clean.
+            rel = resolved.relative_to(root)
         except (ValueError, OSError):
             return (f":{verb} 仅允许解释器目录内的路径 / :{verb} is restricted to {root} "
                     "(set LAMBDA_LOAD_ROOT=* to allow any path)")
+        if (any(p.startswith(".") for p in rel.parts)
+                or resolved.suffix.lower() != ".lam"):
+            return (f":{verb} 仅允许非隐藏 .lam 路径 / :{verb} is restricted "
+                    "to non-hidden .lam paths")
         return None
     return None
 
@@ -214,7 +279,11 @@ def validate_line(line: str) -> tuple[str, str] | None:
     """Validate one web command; returns an error code and message."""
     # Web 会话必须保持存活，且不能让 API 直接拉起服务器上的编辑器
     # A web session must stay alive, and the API must not launch a server editor.
-    text = line.strip()
+    # 解释器会先剥掉行尾注释再解析命令；这里也必须这么做，否则
+    # ":quit -- bye" 会绕过检查并让持久化解释器进程退出.
+    # The interpreter strips trailing comments before dispatch; do the same here,
+    # otherwise ":quit -- bye" bypasses the check and kills the shared process.
+    text = _strip_trailing_comment(line.strip()).strip()
     if text in (":q", ":quit") or EDIT_RE.match(text):
         return ("cli_only", _CLI_ONLY_TEXT)
     problem = _check_path(line)
@@ -374,6 +443,16 @@ def api_error(message, status, code, **extra):
     return resp
 
 
+class BadJSONBody(Exception):
+    """The request body is valid JSON but not an object."""
+
+
+@app.errorhandler(BadJSONBody)
+def _err_bad_json(exc):
+    return api_error("请求体必须是 JSON 对象 / JSON body must be an object",
+                     400, "bad_request")
+
+
 def _json_body():
     # 大小守卫复用 MAX_CONTENT_LENGTH（回退到 MAX_BODY），并保留 force/silent 的宽容解析
     # Reuse MAX_CONTENT_LENGTH (falling back to MAX_BODY) as the size guard while
@@ -381,7 +460,16 @@ def _json_body():
     limit = app.config.get("MAX_CONTENT_LENGTH") or MAX_BODY
     if request.content_length is not None and request.content_length > limit:
         raise RequestEntityTooLarge()
-    return request.get_json(force=True, silent=True)
+    body = request.get_json(force=True, silent=True)
+    # 畸形/空 JSON 仍按空对象宽容处理；但列表/数字等合法非对象会让 .get 抛
+    # AttributeError 变成 500，这里统一改为 400 bad_request.
+    # Malformed/empty JSON stays lenient; a valid non-object would otherwise
+    # raise AttributeError and surface as a 500.
+    if body is None:
+        return {}
+    if not isinstance(body, dict):
+        raise BadJSONBody()
+    return body
 
 
 @app.errorhandler(413)
@@ -492,25 +580,44 @@ class Interpreter:
                 self._stream_q.put(None)
             self._q.put(None)
 
+    def _send_unlocked(self, line: str, timeout: float = EVAL_TIMEOUT) -> list[dict]:
+        """Write one command and collect its reply; the caller holds self._lock."""
+        try:
+            self.proc.stdin.write((line + "\n").encode("utf-8"))
+            self.proc.stdin.flush()
+        except (BrokenPipeError, OSError) as exc:
+            self.kill()
+            raise RuntimeError(f"interpreter pipe closed: {exc}") from exc
+        try:
+            outputs = self._q.get(timeout=timeout)
+        except queue.Empty:
+            self.kill()
+            raise TimeoutError("evaluation timeout") from None
+        if outputs is None:
+            self.kill()
+            raise RuntimeError("interpreter exited")
+        return outputs
+
     def send(self, line: str, timeout: float = EVAL_TIMEOUT) -> list[dict]:
         if not self.alive:
-            raise TimeoutError("session is dead")
+            # 已死亡会话不是超时，而是需要重建；用 RuntimeError 映射到 410+restart
+            # A dead session is not a timeout but a rebuild signal (410 + restart).
+            raise RuntimeError("session is dead")
         with self._lock:
-            try:
-                self.proc.stdin.write((line + "\n").encode("utf-8"))
-                self.proc.stdin.flush()
-            except (BrokenPipeError, OSError) as exc:
-                self.kill()
-                raise RuntimeError(f"interpreter pipe closed: {exc}") from exc
-            try:
-                outputs = self._q.get(timeout=timeout)
-            except queue.Empty:
-                self.kill()
-                raise TimeoutError("evaluation timeout") from None
-            if outputs is None:
-                self.kill()
-                raise RuntimeError("interpreter exited")
-            return outputs
+            return self._send_unlocked(line, timeout)
+
+    def send_many(self, lines: list[str], timeout: float = EVAL_TIMEOUT) -> list[list[dict]]:
+        """Send several commands atomically under a single lock acquisition.
+
+        多命令序列（如策略竞速）必须一次持锁发完，避免与同会话的其它请求交错.
+        A multi-command sequence (e.g. the strategy race) must hold the lock for
+        the whole batch so a concurrent request on the same session cannot splice
+        commands in between and desynchronise the replies.
+        """
+        if not self.alive:
+            raise RuntimeError("session is dead")
+        with self._lock:
+            return [self._send_unlocked(ln, timeout) for ln in lines]
 
     def send_stream(self, line: str, timeout: float = EVAL_TIMEOUT):
         """Yield each output object as it arrives, with heartbeats.
@@ -520,7 +627,7 @@ class Interpreter:
         even when the reducer emits nothing until it finishes.
         """
         if not self.alive:
-            raise TimeoutError("session is dead")
+            raise RuntimeError("session is dead")
         with self._lock:
             # 丢弃上一次流式请求可能残留的对象 / drain stale stream objects
             while True:
@@ -540,8 +647,17 @@ class Interpreter:
                 raise RuntimeError(f"interpreter pipe closed: {exc}") from exc
             try:
                 while True:
+                    # 即使输出持续不断也要检查总超时，不能只在 queue.Empty 分支检查
+                    # Enforce the wall-clock deadline on every iteration, not only
+                    # when no output arrives; a chatty command must not run forever.
+                    if time.monotonic() - started > timeout:
+                        self.kill()
+                        raise TimeoutError("evaluation timeout")
                     try:
-                        item = self._stream_q.get(timeout=5.0)
+                        # 心跳间隔不超过剩余超时，避免长命令超过 EVAL_TIMEOUT 才被中止
+                        # Never wait past the deadline; a heartbeat must not overshoot.
+                        remaining = timeout - (time.monotonic() - started)
+                        item = self._stream_q.get(timeout=max(0.05, min(5.0, remaining)))
                     except queue.Empty:
                         elapsed = time.monotonic() - started
                         if elapsed > timeout:
@@ -700,6 +816,451 @@ def _prune_shares() -> None:
             _save_shares_locked()
 
 
+# 会话快照与分享短链使用同样的原子落盘方式，但存的是命令回放历史
+# Session snapshots use the same atomic write as shares, but store replay history.
+_snapshots: dict[str, dict] = {}
+_snapshots_lock = threading.Lock()
+# 串行化快照的读-改-写序列，避免并发 eval 互相覆盖历史
+# Serialize snapshot read-modify-write sequences so concurrent evals cannot overwrite each other.
+_snapshot_rmw_lock = threading.RLock()
+
+
+def _snapshot_db_path() -> Path | None:
+    raw = (SNAPSHOT_DB or "").strip()
+    if not raw or raw.lower() in ("off", "0", "none", "memory"):
+        return None
+    return Path(raw).expanduser()
+
+
+def _use_sqlite() -> bool:
+    raw = (SNAPSHOT_DB or "").strip().lower()
+    return raw.endswith((".sqlite", ".sqlite3", ".db"))
+
+
+@contextmanager
+def _sql_conn():
+    # 每次调用都提交并关闭连接，避免长驻服务累积文件描述符
+    # Commit and close on every use so a long-running server cannot leak handles.
+    path = _snapshot_db_path()
+    assert path is not None
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(path), timeout=10)
+    try:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS snapshots ("
+            "id TEXT PRIMARY KEY, code TEXT NOT NULL, lang TEXT NOT NULL, "
+            "created REAL NOT NULL, used REAL NOT NULL, name TEXT NOT NULL DEFAULT '')"
+        )
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def _sql_get(sid: str) -> dict | None:
+    try:
+        with _sql_conn() as conn:
+            row = conn.execute(
+                "SELECT code, lang, created, used, name FROM snapshots WHERE id=?",
+                (sid,),
+            ).fetchone()
+    except sqlite3.Error as exc:
+        log.warning("snapshot sqlite read failed / SQLite 快照读取失败: %s", exc)
+        return None
+    if not row:
+        return None
+    try:
+        code = json.loads(row[0])
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(code, list) or not all(isinstance(x, str) for x in code):
+        return None
+    return {"code": code[-MAX_SNAPSHOT_LINES:], "lang": row[1],
+            "created": float(row[2]), "used": float(row[3]), "name": row[4] or ""}
+
+
+def _sql_put(sid: str, entry: dict) -> None:
+    try:
+        with _sql_conn() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO snapshots (id, code, lang, created, used, name) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (sid, json.dumps(entry["code"], ensure_ascii=False), entry["lang"],
+                 entry["created"], entry["used"], entry.get("name", "")),
+            )
+    except sqlite3.Error as exc:
+        log.warning("snapshot sqlite write failed / SQLite 快照写入失败: %s", exc)
+
+
+def _sql_all() -> dict[str, dict]:
+    try:
+        with _sql_conn() as conn:
+            rows = conn.execute(
+                "SELECT id, code, lang, created, used, name FROM snapshots"
+            ).fetchall()
+    except sqlite3.Error as exc:
+        log.warning("snapshot sqlite scan failed / SQLite 快照扫描失败: %s", exc)
+        return {}
+    out: dict[str, dict] = {}
+    for sid, raw, lang, created, used, name in rows:
+        try:
+            code = json.loads(raw)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(code, list) and all(isinstance(x, str) for x in code):
+            out[sid] = {"code": code[-MAX_SNAPSHOT_LINES:], "lang": lang,
+                        "created": float(created), "used": float(used), "name": name or ""}
+    return out
+
+
+def _sql_delete(sid: str) -> None:
+    try:
+        with _sql_conn() as conn:
+            conn.execute("DELETE FROM snapshots WHERE id=?", (sid,))
+    except sqlite3.Error as exc:
+        log.warning("snapshot sqlite delete failed / SQLite 快照删除失败: %s", exc)
+
+
+def _load_snapshots() -> None:
+    if _use_sqlite():
+        with _sql_conn():
+            pass
+        return
+    path = _snapshot_db_path()
+    if path is None or not path.is_file():
+        return
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        log.warning("snapshot store unreadable / 快照存储无法读取: %s", exc)
+        return
+    if not isinstance(data, dict):
+        return
+    now = time.time()
+    candidates: list[tuple[float, str, dict]] = []
+    for sid, entry in data.items():
+        if not isinstance(sid, str) or not isinstance(entry, dict):
+            continue
+        code = entry.get("code")
+        used = entry.get("used")
+        created = entry.get("created")
+        lang = entry.get("lang")
+        if (not isinstance(code, list) or not all(isinstance(x, str) for x in code)
+                or not isinstance(used, (int, float)) or not isinstance(created, (int, float))
+                or lang not in ALLOWED_LANGS or now - used > SNAPSHOT_TTL):
+            continue
+        name = entry.get("name", "")
+        if not isinstance(name, str):
+            name = ""
+        candidates.append((float(used), sid,
+                           {"code": code[-MAX_SNAPSHOT_LINES:], "lang": lang,
+                            "created": float(created), "used": float(used), "name": name}))
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    with _snapshots_lock:
+        for _, sid, entry in candidates[:MAX_SNAPSHOTS]:
+            _snapshots[sid] = entry
+
+
+def _save_snapshots_locked() -> None:
+    path = _snapshot_db_path()
+    if path is None:
+        return
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps(_snapshots, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError as exc:
+        log.warning("snapshot store write failed / 快照存储写入失败: %s", exc)
+
+
+_load_snapshots()
+
+
+def _snapshot_all() -> dict[str, dict]:
+    if _use_sqlite():
+        return _sql_all()
+    with _snapshots_lock:
+        return {k: dict(v) for k, v in _snapshots.items()}
+
+
+def _snapshot_get(sid: str) -> dict | None:
+    if _use_sqlite():
+        return _sql_get(sid)
+    with _snapshots_lock:
+        entry = _snapshots.get(sid)
+        return dict(entry) if entry else None
+
+
+def _snapshot_put(sid: str, entry: dict) -> None:
+    if _use_sqlite():
+        _sql_put(sid, entry)
+        return
+    with _snapshots_lock:
+        _snapshots[sid] = entry
+        _save_snapshots_locked()
+
+
+def _snapshot_remove(sid: str) -> None:
+    if _use_sqlite():
+        _sql_delete(sid)
+        return
+    with _snapshots_lock:
+        if _snapshots.pop(sid, None) is not None:
+            _save_snapshots_locked()
+
+
+def _prune_snapshots() -> None:
+    now = time.time()
+    entries = _snapshot_all()
+    stale = [k for k, v in entries.items() if now - v["used"] > SNAPSHOT_TTL]
+    while len(entries) - len(stale) > MAX_SNAPSHOTS:
+        candidates = [k for k in entries if k not in stale]
+        if not candidates:
+            break
+        stale.append(min(candidates, key=lambda k: entries[k]["used"]))
+    for sid in stale:
+        _snapshot_remove(sid)
+
+
+def _snapshot_record(sid: str, lines, lang: str) -> None:
+    """Append successfully evaluated lines to a persistent replay snapshot.
+
+    把成功执行的行追加到可持久化的回放快照中。
+    """
+    if _snapshot_db_path() is None or not isinstance(sid, str):
+        return
+    # 整个读-改-写必须持锁，否则两个并发 eval 会基于同一旧快照各自追加，
+    # 后写者覆盖先写者
+    # RLock 不与 _snapshots_lock 形成环：get/put 各自获取后即释放
+    # Hold the whole read-modify-write so two concurrent evals cannot both read the
+    # same old snapshot and let the later write clobber the earlier one. RLock does
+    # not cycle with _snapshots_lock: get/put each acquire and release it separately.
+    with _snapshot_rmw_lock:
+        now = time.time()
+        entry = _snapshot_get(sid) or {
+            "code": [], "lang": lang if lang in ALLOWED_LANGS else "both",
+            "created": now, "used": now, "name": ""}
+        code = list(entry.get("code", []))
+        for ln in lines:
+            text = str(ln).strip()
+            if text:
+                code.append(text)
+        # 语言切换要写回已有快照，否则恢复时会沿用旧语言
+        # Persist a language switch onto an existing snapshot, or restore uses the
+        # stale language. Invalid values leave the stored language untouched.
+        if lang in ALLOWED_LANGS:
+            entry["lang"] = lang
+        entry.update({"code": code[-MAX_SNAPSHOT_LINES:], "used": now,
+                      "name": entry.get("name", "")})
+        _snapshot_put(sid, entry)
+
+
+# 静态分享页存储 / static share-page storage
+_pages: dict[str, dict] = {}
+_pages_lock = threading.Lock()
+
+
+def _page_db_path() -> Path | None:
+    raw = (PAGE_DB or "").strip()
+    if not raw or raw.lower() in ("off", "0", "none", "memory"):
+        return None
+    return Path(raw).expanduser()
+
+
+def _load_pages() -> None:
+    path = _page_db_path()
+    if path is None or not path.is_file():
+        return
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        log.warning("page store unreadable / 页面存储无法读取: %s", exc)
+        return
+    if not isinstance(data, dict):
+        return
+    with _pages_lock:
+        for pid, entry in data.items():
+            if (isinstance(pid, str) and isinstance(entry, dict)
+                    and isinstance(entry.get("html"), str)
+                    and isinstance(entry.get("created"), (int, float))):
+                _pages[pid] = {"html": entry["html"], "created": float(entry["created"])}
+
+
+def _save_pages_locked() -> None:
+    path = _page_db_path()
+    if path is None:
+        return
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps(_pages, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError as exc:
+        log.warning("page store write failed / 页面存储写入失败: %s", exc)
+
+
+_load_pages()
+
+
+def _prune_pages() -> None:
+    now = time.time()
+    changed = False
+    with _pages_lock:
+        stale = [k for k, v in _pages.items() if now - v["created"] > SHARE_TTL]
+        for k in stale:
+            _pages.pop(k, None)
+            changed = True
+        while len(_pages) > MAX_PAGES:
+            oldest = min(_pages, key=lambda k: _pages[k]["created"])
+            _pages.pop(oldest, None)
+            changed = True
+        if changed:
+            _save_pages_locked()
+
+
+def _render_page(title: str, lines: list[dict], trace: list[dict] | None = None) -> str:
+    """Render a bilingual transcript as a self-contained HTML page.
+    把双语对话渲染成不依赖外部资源的 HTML 页面。
+    """
+    esc = html.escape
+    rows = []
+    for item in lines:
+        zh = esc(str(item.get("zh", "")))
+        en = esc(str(item.get("en", "")))
+        term = item.get("term")
+        extra = ("<pre>" + esc(str(term)) + "</pre>") if term else ""
+        rows.append(
+            '<div class="row"><div class="mark">λ&gt;</div>'
+            '<div class="body"><div class="zh">' + zh + '</div>'
+            '<div class="en">' + en + '</div>' + extra + '</div></div>'
+        )
+    body = "\n".join(rows)
+    player = ""
+    player_script = ""
+    if isinstance(trace, list) and trace:
+        frames = []
+        for s in trace[:500]:
+            if not isinstance(s, dict):
+                continue
+            frames.append(
+                '<section class="frame"><h2>' + esc(str(s.get("n", ""))) + ' · ' +
+                esc(str(s.get("rule", "β"))) + '</h2><pre>' +
+                esc(str(s.get("before", ""))) + '</pre><pre class="after">' +
+                esc(str(s.get("after", ""))) + '</pre></section>'
+            )
+        if frames:
+            player = (
+                '<section class="trace-player"><h2>Reduction trace / 归约轨迹</h2>'
+                '<div class="controls"><button type="button" id="tp-prev">←</button>'
+                '<button type="button" id="tp-play">play</button>'
+                '<button type="button" id="tp-next">→</button>'
+                '<span id="tp-count"></span></div>' +
+                '<div id="tp-frames">' + "".join(frames) + '</div></section>'
+            )
+            player_script = (
+                "var f=[].slice.call(document.querySelectorAll('#tp-frames .frame')),i=0,t=null;"
+                "function show(){f.forEach(function(x,j){x.classList.toggle('on',j===i)});"
+                "document.getElementById('tp-count').textContent=(i+1)+' / '+f.length}show();"
+                "document.getElementById('tp-next').onclick=function(){i=(i+1)%f.length;show()};"
+                "document.getElementById('tp-prev').onclick=function(){i=(i-1+f.length)%f.length;show()};"
+                "document.getElementById('tp-play').onclick=function(){"
+                "if(t){clearInterval(t);t=null;this.textContent='play'}else{"
+                "var self=this;t=setInterval(function(){i=(i+1)%f.length;show()},1200);"
+                "self.textContent='pause'}};"
+            )
+    return (
+        "<!doctype html><html lang=\"zh\"><head><meta charset=\"utf-8\">"
+        "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+        "<title>" + esc(title) + "</title><style>"
+        ":root{--bg:#fbfaf7;--fg:#1d1d1b;--dim:#666;--bd:#ddd;--ac:#2f6f4f}"
+        "*{box-sizing:border-box}body{margin:0;padding:28px 18px;background:var(--bg);"
+        "color:var(--fg);font-family:ui-monospace,Consolas,monospace;line-height:1.65}"
+        "main{max-width:860px;margin:auto}h1{font-weight:400;font-size:20px;margin:0 0 6px}"
+        ".sub{color:var(--dim);font-size:12px;margin-bottom:20px}"
+        ".row{border-bottom:1px dashed var(--bd);padding:10px 0;display:flex;gap:10px}"
+        ".mark{color:var(--ac)}.body{white-space:pre-wrap;word-break:break-word;min-width:0}"
+        ".en{color:var(--dim);margin-top:4px}.zh+.en{margin-top:4px}"
+        "pre{white-space:pre-wrap;word-break:break-word;color:var(--ac);font-size:12px}"
+        "body[data-lang=zh] .en,body[data-lang=en] .zh{display:none}"
+        "button{background:transparent;border:1px solid var(--bd);border-radius:5px;"
+        "color:var(--fg);padding:4px 10px;cursor:pointer;font:inherit}"
+        ".trace-player{margin-top:28px;border-top:1px solid var(--bd);padding-top:14px}"
+        ".trace-player h2{font-size:14px;font-weight:400}"
+        ".trace-player .controls{display:flex;gap:6px;align-items:center;margin-bottom:10px}"
+        ".trace-player .frame{display:none}"
+        ".trace-player .frame.on{display:block}"
+        ".trace-player .frame h2{font-size:12px;color:var(--ac)}"
+        ".trace-player .after{border-color:var(--ac)}"
+        "#tp-count{color:var(--dim);font-size:12px}"
+        "</style></head><body data-lang=\"both\"><main>"
+        "<h1>" + esc(title) + "</h1>"
+        "<div class=\"sub\">Lambda calculus · <button id=\"lg\" type=\"button\">中 / EN / 双语</button></div>"
+        + body + player +
+        "</main><script>(function(){var b=document.body,btn=document.getElementById('lg'),"
+        "ls=['both','zh','en'],i=0;btn.addEventListener('click',function(){i=(i+1)%3;"
+        "b.dataset.lang=ls[i];});" + player_script +
+        "})();</script></body></html>"
+    )
+
+
+# 轻量 token 归属与用量 / lightweight token ownership and usage
+_tokens: dict[str, dict] = {}
+_tokens_lock = threading.Lock()
+
+
+def _token_db_path() -> Path | None:
+    raw = (TOKEN_DB or "").strip()
+    if not raw or raw.lower() in ("off", "0", "none", "memory"):
+        return None
+    return Path(raw).expanduser()
+
+
+def _load_tokens() -> None:
+    path = _token_db_path()
+    if path is None or not path.is_file():
+        return
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        log.warning("token store unreadable / token 存储无法读取: %s", exc)
+        return
+    if isinstance(data, dict):
+        with _tokens_lock:
+            for k, v in data.items():
+                if isinstance(k, str) and isinstance(v, dict) and isinstance(v.get("used"), int):
+                    _tokens[k] = v
+
+
+def _save_tokens_locked() -> None:
+    path = _token_db_path()
+    if path is None:
+        return
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps(_tokens, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError as exc:
+        log.warning("token store write failed / token 存储写入失败: %s", exc)
+
+
+_load_tokens()
+
+
+def _token_used(token) -> None:
+    if not isinstance(token, str) or _token_db_path() is None:
+        return
+    with _tokens_lock:
+        entry = _tokens.get(token)
+        if entry:
+            entry["used"] += 1
+            _save_tokens_locked()
+
+
 # code 会被前端逐条 exec，只放行无害内容：表达式、定义、注释与少量设置命令
 # The client exec's code line by line, so allow only harmless content:
 # expressions, definitions, comments and a few setting commands.
@@ -708,14 +1269,15 @@ def _prune_shares() -> None:
 # change the environment or drive the session may not.
 _SAFE_SHARE_SETTINGS = frozenset({
     # 设置 / settings
-    ":lang", ":strategy", ":steps", ":eta", ":fast",
+    ":lang", ":strategy", ":steps", ":eta", ":fast", ":encoding",
     # 只读查询 / read-only queries
     ":type", ":trace", ":ast", ":db", ":eq", ":conv", ":nf", ":whnf",
-    ":int", ":church", ":env", ":help", ":def", ":search",
+    ":int", ":church", ":env", ":help", ":def", ":search", ":prove",
     # 定义 / definitions
     ":let",
     # 手动归约（只影响回放者自己的会话）/ manual reduction (session-local only)
-    ":begin", ":step", ":back", ":goto", ":run", ":end",
+    # :undo/:redo are the interpreter's aliases for :back/:forward.
+    ":begin", ":step", ":back", ":undo", ":forward", ":redo", ":goto", ":run", ":end",
 })
 
 # 控制/格式/代理/私有/行段分隔符字符可能让 splitlines 拆行或绕过冒号检查
@@ -777,14 +1339,26 @@ def _prune_sessions() -> None:
     now = time.time()
     doomed: list[tuple[str, dict, str]] = []
     with _sessions_lock:
+        # 正在执行命令的会话持有 interp._lock（send / send_stream 全程持锁），
+        # 不能因为“空闲超时”而回收它，否则 health 检查或新请求会中断长计算.
+        # A session with a command in flight holds interp._lock; never reap it
+        # as idle, or a health check / new request would abort a long eval.
         stale = [sid for sid, s in _sessions.items()
-                 if now - s["used"] > SESSION_IDLE or not s["interp"].alive]
+                 if (not s["interp"]._lock.locked()
+                     and (now - s["used"] > SESSION_IDLE or not s["interp"].alive))]
         for sid in stale:
             doomed.append((sid, _sessions.pop(sid), "idle/dead"))
-        # 超出上限时丢弃最久未使用的会话
-        # Evict the least recently used session when over the limit.
+        # 超出上限时只淘汰未执行命令的会话，正在执行命令的会话持有 interp._lock，
+        # 淘汰它会中断长计算；若全部持锁则暂时超限，留待下次清理.
+        # Evict only unlocked sessions when over the limit: a session with a command
+        # in flight holds interp._lock and must not be killed; if all are locked,
+        # tolerate a temporary over-limit until the next sweep.
         while len(_sessions) > MAX_SESSIONS:
-            oldest = min(_sessions, key=lambda k: _sessions[k]["used"])
+            candidates = [sid for sid in _sessions
+                          if not _sessions[sid]["interp"]._lock.locked()]
+            if not candidates:
+                break
+            oldest = min(candidates, key=lambda k: _sessions[k]["used"])
             doomed.append((oldest, _sessions.pop(oldest), "limit"))
     # kill 会等待子进程退出，放在锁外，避免阻塞其它会话
     # kill waits for the child process, so run it outside the lock.
@@ -805,17 +1379,21 @@ def get_session(sid: str | None, lang: str = "both",
     """
     _prune_sessions()
     with _sessions_lock:
-        if sid and sid in _sessions:
+        if sid and isinstance(sid, str) and sid in _sessions:
             entry = _sessions[sid]
             entry["used"] = time.time()
             return sid, entry["interp"]
         if not create:
             return None, None
         new_sid = uuid.uuid4().hex
-        interp = Interpreter(lang)
+    # 启动子进程（Popen + 读线程）放在全局锁外，避免阻塞其他会话与 health 检查
+    # Start the child process outside the global lock so other sessions and the
+    # health endpoint are not blocked by a slow Popen.
+    interp = Interpreter(lang)
+    with _sessions_lock:
         _sessions[new_sid] = {"interp": interp, "used": time.time()}
-        log.info("session created sid=%s lang=%s / 会话已创建", new_sid, lang)
-        return new_sid, interp
+    log.info("session created sid=%s lang=%s / 会话已创建", new_sid, lang)
+    return new_sid, interp
 
 
 # ---------------------------------------------------------------------------
@@ -831,6 +1409,8 @@ def _reaper_loop() -> None:
         try:
             _prune_sessions()
             _prune_shares()
+            _prune_snapshots()
+            _prune_pages()
         except Exception:  # noqa: BLE001
             log.exception("background reaper failed / 后台回收线程异常")
 
@@ -927,10 +1507,17 @@ def _read_version() -> str:
 def health():
     _prune_sessions()
     _prune_shares()
+    _prune_snapshots()
+    _prune_pages()
     with _sessions_lock:
         count = len(_sessions)
     with _shares_lock:
         share_count = len(_shares)
+    with _pages_lock:
+        page_count = len(_pages)
+    with _tokens_lock:
+        token_count = len(_tokens)
+    snapshot_count = len(_snapshot_all())
     # 原有键全部保留；interpreter 现为可执行文件名，完整路径另给 interpreterPath
     # Keep every original key; interpreter is now the executable name and the
     # full path is additionally exposed as interpreterPath.
@@ -942,6 +1529,9 @@ def health():
         "version": _read_version(),
         "uptime": max(0.0, time.monotonic() - _PROCESS_START),
         "shares": share_count,
+        "snapshots": snapshot_count,
+        "pages": page_count,
+        "tokens": token_count,
         "sessionsMax": MAX_SESSIONS,
         "interpreterPath": str(INTERP_BIN),
     })
@@ -967,12 +1557,75 @@ def api_share():
 
 @app.route("/api/share/<sid>", methods=["GET"])
 def api_share_get(sid):
+    if not _rate_ok():
+        return api_error("请求过于频繁 / rate limit exceeded", 429, "rate_limited")
     _prune_shares()
     with _shares_lock:
         entry = _shares.get(sid)
     if not entry:
         return api_error("分享不存在或已过期 / share not found", 404, "not_found")
     return jsonify({"ok": True, "state": entry["payload"]})
+
+
+@app.route("/api/share/page", methods=["POST"])
+def api_share_page():
+    if not _rate_ok():
+        return api_error("请求过于频繁 / rate limit exceeded", 429, "rate_limited")
+    data = _json_body()
+    if not isinstance(data, dict):
+        return api_error("bad request", 400, "bad_request")
+    lines = data.get("lines")
+    title = data.get("title", "Lambda calculus")
+    if (not isinstance(lines, list) or not isinstance(title, str)
+            or len(lines) > MAX_PAGE_LINES):
+        return api_error("页面载荷无效 / invalid page payload", 400, "bad_request")
+    for item in lines:
+        if not isinstance(item, dict) or not isinstance(item.get("zh"), str) \
+                or not isinstance(item.get("en"), str):
+            return api_error("页面载荷无效 / invalid page payload", 400, "bad_request")
+    trace = data.get("trace") or []
+    if (not isinstance(trace, list) or len(trace) > 500
+            or any(not isinstance(s, dict) for s in trace)):
+        return api_error("轨迹载荷无效 / invalid trace payload", 400, "bad_request")
+    page = _render_page(title[:120], lines, trace)
+    if len(page.encode("utf-8")) > 512 * 1024:
+        return api_error("页面过大 / page too large", 413, "payload_too_large")
+    _prune_pages()
+    pid = uuid.uuid4().hex[:10]
+    with _pages_lock:
+        _pages[pid] = {"html": page, "created": time.time()}
+        _save_pages_locked()
+    return jsonify({"ok": True, "id": pid})
+
+
+@app.route("/api/share/page/<pid>", methods=["GET"])
+def api_share_page_get(pid):
+    if not _rate_ok():
+        return api_error("请求过于频繁 / rate limit exceeded", 429, "rate_limited")
+    _prune_pages()
+    with _pages_lock:
+        entry = _pages.get(pid)
+    if entry is None:
+        return api_error("页面不存在 / page not found", 404, "not_found")
+    return Response(entry["html"], mimetype="text/html; charset=utf-8")
+
+
+@app.route("/api/gallery", methods=["GET"])
+def api_gallery():
+    if not _rate_ok():
+        return api_error("请求过于频繁 / rate limit exceeded", 429, "rate_limited")
+    return jsonify({"ok": True, "examples": GALLERY})
+
+
+@app.route("/api/token", methods=["POST"])
+def api_token():
+    if not _rate_ok():
+        return api_error("请求过于频繁 / rate limit exceeded", 429, "rate_limited")
+    token = uuid.uuid4().hex[:16]
+    with _tokens_lock:
+        _tokens[token] = {"used": 0, "created": time.time()}
+        _save_tokens_locked()
+    return jsonify({"ok": True, "token": token})
 
 
 @app.route("/api/session", methods=["POST"])
@@ -988,10 +1641,105 @@ def api_session():
     return jsonify({"ok": True, "session": sid})
 
 
+@app.route("/api/session/<sid>/restore", methods=["POST"])
+def api_session_restore(sid):
+    """Rebuild a dead session from its persisted replay snapshot.
+
+    从持久化的回放快照重建已失效的会话，避免重复执行客户端历史。
+    """
+    if not _rate_ok():
+        return api_error("请求过于频繁 / rate limit exceeded", 429, "rate_limited")
+    data = _json_body() or {}
+    lang = data.get("lang") if data.get("lang") in ALLOWED_LANGS else "both"
+    _prune_snapshots()
+    with _snapshot_rmw_lock:
+        entry = _snapshot_get(sid)
+        code = list(entry["code"]) if entry else None
+        saved_lang = entry["lang"] if entry else lang
+        saved_name = entry.get("name", "") if entry else ""
+        if code is None:
+            return api_error("快照不存在或已过期 / snapshot not found", 404, "not_found")
+        for ln in code:
+            problem = validate_line(ln)
+            if problem:
+                return api_error(problem[1], 400, problem[0])
+        if not INTERP_BIN.is_file():
+            return api_error(_missing_bin_msg(), 500, "internal")
+        new_sid, interp = get_session(None, saved_lang)
+        try:
+            interp.send(":lang " + saved_lang)
+            for ln in code:
+                interp.send(ln)
+        except TimeoutError:
+            log.warning("snapshot restore timeout sid=%s / 快照恢复超时", sid)
+            return api_error(_timeout_msg(lang), 408, "timeout", timeout=True)
+        except RuntimeError as exc:
+            log.warning("snapshot restore failed sid=%s: %s / 快照恢复失败", sid, exc)
+            return api_error(str(exc), 410, "session_expired", restart=True)
+        new_entry = {"code": code, "lang": saved_lang, "name": saved_name,
+                     "created": time.time(), "used": time.time()}
+        # 先写新快照再删旧快照：SQLite 写入失败会被吞掉，若先删就再也找不回原快照
+        # Write the new snapshot first, then remove the old one: SQLite _sql_put
+        # swallows write errors, so removing first would lose the only copy.
+        _snapshot_put(new_sid, new_entry)
+        _snapshot_remove(sid)
+    log.info("session restored from snapshot %s -> %s / 会话已从快照恢复", sid, new_sid)
+    return jsonify({"ok": True, "session": new_sid, "code": code, "lang": saved_lang})
+
+
+@app.route("/api/snapshots", methods=["GET"])
+def api_snapshots():
+    """List persisted sessions for the session manager.
+
+    为会话管理器列出持久化的会话。
+    """
+    if not _rate_ok():
+        return api_error("请求过于频繁 / rate limit exceeded", 429, "rate_limited")
+    _prune_snapshots()
+    items = []
+    for sid, entry in _snapshot_all().items():
+        items.append({"id": sid, "lines": len(entry["code"]), "lang": entry["lang"],
+                      "created": entry["created"], "used": entry["used"],
+                      "name": entry.get("name", "")})
+    items.sort(key=lambda x: x["used"], reverse=True)
+    return jsonify({"ok": True, "snapshots": items, "storage":
+                    "sqlite" if _use_sqlite() else ("off" if _snapshot_db_path() is None else "file")})
+
+
+@app.route("/api/snapshot/<sid>/name", methods=["POST"])
+def api_snapshot_name(sid):
+    if not _rate_ok():
+        return api_error("请求过于频繁 / rate limit exceeded", 429, "rate_limited")
+    data = _json_body() or {}
+    name = data.get("name")
+    if not isinstance(name, str) or len(name) > 80:
+        return api_error("名称无效 / invalid name", 400, "bad_request")
+    entry = _snapshot_get(sid)
+    if entry is None:
+        return api_error("快照不存在 / snapshot not found", 404, "not_found")
+    entry["name"] = name.strip()
+    entry["used"] = time.time()
+    _snapshot_put(sid, entry)
+    return jsonify({"ok": True, "id": sid, "name": entry["name"]})
+
+
+@app.route("/api/snapshot/<sid>", methods=["DELETE"])
+def api_snapshot_delete(sid):
+    if not _rate_ok():
+        return api_error("请求过于频繁 / rate limit exceeded", 429, "rate_limited")
+    entry = _snapshot_get(sid)
+    if entry is None:
+        return api_error("快照不存在 / snapshot not found", 404, "not_found")
+    _snapshot_remove(sid)
+    return jsonify({"ok": True, "id": sid})
+
+
 @app.route("/api/session/<sid>/lang", methods=["POST"])
 def api_session_lang(sid):
     """在同一个解释器进程内切换语言，避免重建会话
     Switch language inside the same interpreter process (no session rebuild)."""
+    if not _rate_ok():
+        return api_error("请求过于频繁 / rate limit exceeded", 429, "rate_limited")
     data = _json_body() or {}
     lang = data.get("lang") if data.get("lang") in ALLOWED_LANGS else "both"
     _prune_sessions()
@@ -1003,6 +1751,7 @@ def api_session_lang(sid):
         return api_error("session not found", 410, "session_expired", restart=True)
     try:
         outputs = entry["interp"].send(f":lang {lang}")
+        _snapshot_record(sid, [f":lang {lang}"], lang)
         return jsonify({"ok": True, "session": sid, "lang": lang, "outputs": outputs})
     except TimeoutError:
         log.warning("lang timeout sid=%s / 切换语言超时", sid)
@@ -1014,6 +1763,8 @@ def api_session_lang(sid):
 
 @app.route("/api/session/<sid>", methods=["DELETE"])
 def api_session_delete(sid):
+    if not _rate_ok():
+        return api_error("请求过于频繁 / rate limit exceeded", 429, "rate_limited")
     with _sessions_lock:
         entry = _sessions.pop(sid, None)
     if entry:
@@ -1027,6 +1778,8 @@ def api_session_cancel(sid):
     # 取消会话：立即终止解释器并移除，供前端中止长时间求值
     # Cancel a session: stop its interpreter and drop it so the client can abort
     # a long-running evaluation.
+    if not _rate_ok():
+        return api_error("请求过于频繁 / rate limit exceeded", 429, "rate_limited")
     with _sessions_lock:
         entry = _sessions.pop(sid, None)
     if not entry:
@@ -1097,6 +1850,8 @@ def api_eval():
         outputs: list[dict] = []
         for ln in lines:
             outputs.extend(interp.send(ln))
+        _snapshot_record(sid, lines, lang)
+        _token_used(data.get("token"))
         with _sessions_lock:
             if sid in _sessions:
                 _sessions[sid]["used"] = time.time()
@@ -1112,6 +1867,78 @@ def api_eval():
     except Exception as exc:  # noqa: BLE001
         log.exception("eval failed / 求值发生异常: %s", exc)
         return api_error(str(exc), 400, "bad_request")
+
+
+def _pick_race_result(outputs: list[dict]) -> dict:
+    """Pick the meaningful JSON object from one strategy's output.
+    从某个策略的输出里挑出有实际意义的结果对象。
+    """
+    wanted = {"result", "warn", "error", "fail", "type", "proof", "trace"}
+    for obj in reversed(outputs):
+        if isinstance(obj, dict) and obj.get("kind") in wanted:
+            return obj
+    return outputs[-1] if outputs else {}
+
+
+@app.route("/api/race", methods=["POST"])
+def api_race():
+    """Run one expression under all four strategies in the same session.
+
+    在同一个会话里用四种策略归约同一个表达式，供前端并排展示。
+    The original strategy is restored at the end.
+    """
+    if not _rate_ok():
+        return api_error("请求过于频繁 / rate limit exceeded", 429, "rate_limited")
+    data = _json_body() or {}
+    lang = data.get("lang") if data.get("lang") in ALLOWED_LANGS else "both"
+    line = data.get("line")
+    if not isinstance(line, str) or not line.strip():
+        return api_error("表达式为空 / empty expression", 400, "bad_request")
+    expr = line.strip()
+    # 竞速只接受表达式，不接受命令：每条策略都要用 :trace 收集步骤
+    # The race accepts expressions only; each strategy is measured with :trace.
+    if expr.startswith(":"):
+        return api_error("请输入表达式而不是命令 / enter an expression, not a command",
+                         400, "bad_request")
+    problem = validate_line(expr)
+    if problem:
+        return api_error(problem[1], 400, problem[0])
+    if not INTERP_BIN.is_file():
+        return api_error(_missing_bin_msg(), 500, "internal")
+    sid_in = data.get("session")
+    strategy = data.get("strategy") if data.get("strategy") in STRATEGIES else "applicative"
+    sid, interp = get_session(sid_in, lang, create=sid_in is None)
+    if sid is None or interp is None:
+        return api_error(
+            "会话已过期，正在重建 / session expired; rebuilding",
+            410, "session_expired", restart=True)
+    results: dict[str, dict] = {}
+    try:
+        # 整段“设策略 -> :trace -> 恢复策略”必须在同一把锁内发完，否则并发的
+        # /api/eval 会插进中间，让竞速结果属于错误的策略或读串输出.
+        # The whole set-strategy / :trace / restore batch must go out under one
+        # lock; otherwise a concurrent /api/eval can interleave and misalign the
+        # strategy or the replies.
+        batch: list[str] = []
+        for name in STRATEGIES:
+            batch.append(":strategy " + name)
+            batch.append(":trace " + expr)
+        batch.append(":strategy " + strategy)
+        outputs = interp.send_many(batch)
+        for i, name in enumerate(STRATEGIES):
+            results[name] = _pick_race_result(outputs[2 * i + 1])
+    except TimeoutError:
+        log.warning("race timeout sid=%s / 策略竞速超时", sid_in)
+        return api_error(_timeout_msg(lang), 408, "timeout", timeout=True)
+    except RuntimeError as exc:
+        log.warning("race session dead sid=%s: %s / 策略竞速会话已退出", sid_in, exc)
+        return api_error(str(exc), 410, "session_expired", restart=True)
+    _snapshot_record(sid, [expr], lang)
+    with _sessions_lock:
+        if sid in _sessions:
+            _sessions[sid]["used"] = time.time()
+    return jsonify({"ok": True, "session": sid, "line": expr,
+                    "strategy": strategy, "results": results})
 
 
 @app.route("/api/eval/stream", methods=["POST"])
@@ -1142,6 +1969,12 @@ def api_eval_stream():
         return api_error(_missing_bin_msg(), 500, "internal")
 
     sid_in = data.get("session")
+    # 非字符串会话 id 会在 _sessions 字典查找时抛 TypeError（500）；
+    # 在这里就拒绝，和 /api/eval 的错误格式保持一致.
+    # A non-string session id would raise TypeError on the dict lookup (500);
+    # reject it here with the same 400 shape as /api/eval.
+    if sid_in is not None and not isinstance(sid_in, str):
+        return api_error("invalid session id", 400, "bad_request")
     sid, interp = get_session(sid_in, lang, create=sid_in is None)
     if sid is None or interp is None:
         return api_error(
@@ -1158,6 +1991,7 @@ def api_eval_stream():
             for ln in lines:
                 for obj in interp.send_stream(ln):
                     yield sse(obj)
+            _snapshot_record(sid, lines, lang)
             with _sessions_lock:
                 if sid in _sessions:
                     _sessions[sid]["used"] = time.time()
@@ -1175,7 +2009,7 @@ def api_eval_stream():
         except Exception as exc:  # noqa: BLE001
             log.exception("stream eval failed / 流式求值异常: %s", exc)
             yield sse({"kind": "error", "ok": False, "error": str(exc),
-                       "code": "internal_error"})
+                       "code": "internal"})
 
     return Response(gen(), mimetype="text/event-stream",
                     headers={"Cache-Control": "no-cache",

@@ -207,6 +207,47 @@
   .steps-list .st{font-family:var(--mono);font-size:11.5px;color:var(--dim);padding:4px 8px;border:0;border-left:1px solid transparent;background:transparent;text-align:left;width:100%;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
   .steps-list .st:hover{color:var(--text);border-left-color:var(--border-strong);}
   .steps-list .st.active{color:var(--text);border-left-color:var(--accent);}
+  .proof-summary{display:flex;flex-wrap:wrap;gap:6px 16px;font-family:var(--mono);font-size:11.5px;color:var(--dim);margin-bottom:12px;}
+  .proof-summary .lab{color:var(--fg);opacity:.7;}
+  .proof-list{list-style:none;margin:4px 0 14px;padding:0;display:flex;flex-direction:column;gap:2px;}
+  .proof-list li{display:flex;align-items:baseline;gap:8px;font-family:var(--mono);font-size:11.5px;color:var(--dim);padding:3px 0;border-bottom:1px dashed var(--border);}
+  .proof-list .pf-n{min-width:2.5em;text-align:right;color:var(--fg);opacity:.6;}
+  .proof-list .pf-rule{min-width:2em;color:var(--accent);}
+  .proof-list code{color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .proof-acts{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 12px;}
+  .proof-acts .mini{font-family:var(--mono);font-size:11px;background:transparent;border:1px solid var(--border);border-radius:var(--radius);color:var(--dim);padding:3px 8px;cursor:pointer;}
+  .proof-acts .mini:hover{color:var(--text);border-color:var(--border-strong);}
+  .prop-box{border:1px solid var(--border);border-radius:var(--radius);padding:8px 10px;color:var(--dim);font-size:12px;}
+  .deriv-list{margin:6px 0 0;padding-left:22px;font-family:var(--mono);font-size:11.5px;color:var(--dim);}
+  .deriv-list li{padding:2px 0;border-bottom:1px dashed var(--border);}
+  .type-err{text-decoration:underline wavy var(--err);text-underline-offset:3px;}
+  .deriv-list button{background:transparent;border:0;color:var(--accent);font:inherit;cursor:pointer;padding:0 4px;}
+  .diamond{width:100%;max-width:440px;height:auto;margin:4px 0 14px;}
+  .diamond-edge{stroke:var(--border-strong);stroke-width:1.2;fill:none;}
+  .diamond-node{fill:var(--fg);}
+  .diamond-node.common{fill:var(--accent);}
+  .diamond-text{font-family:var(--mono);font-size:10px;fill:var(--dim);}
+  .diamond-step{font-family:var(--mono);font-size:11px;fill:var(--accent);}
+  .ex-card,.sess-card{border:1px solid var(--border);border-radius:var(--radius);padding:9px 11px;margin-bottom:8px;}
+  .ex-title{color:var(--fg);font-size:12px;}
+  .ex-ask{color:var(--dim);font-size:11.5px;margin:6px 0;}
+  .ex-card input,.sess-card input,.ex-card textarea{font-family:var(--mono);font-size:12px;width:100%;background:transparent;border:1px solid var(--border);border-radius:var(--radius);color:var(--text);padding:6px 8px;}
+  .ex-card textarea{resize:vertical;min-height:44px;}
+  :root[data-contrast=on]{--dim:var(--fg);--faint:var(--fg);--border:var(--fg);--border-strong:var(--fg);}
+  .ex-result{font-size:11.5px;margin-top:6px;}
+  .ex-result.ok{color:var(--ins);}.ex-result.no{color:var(--del);}
+  .sess-head{display:flex;justify-content:space-between;gap:8px;align-items:center;}
+  .sess-meta{font-size:11px;color:var(--faint);margin:4px 0 8px;}
+  .sess-acts{display:flex;gap:6px;flex-wrap:wrap;}
+  .sess-acts button,.ex-card button{font-family:var(--mono);font-size:11px;background:transparent;border:1px solid var(--border);border-radius:var(--radius);color:var(--dim);padding:4px 8px;cursor:pointer;}
+  .sess-acts button:hover,.ex-card button:hover{color:var(--text);border-color:var(--border-strong);}
+  .race-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;}
+  .race-card{border:1px solid var(--border);border-radius:var(--radius);padding:8px 10px;display:flex;flex-direction:column;gap:6px;min-width:0;}
+  .race-head{font-size:12px;color:var(--fg);border-bottom:1px dashed var(--border);padding-bottom:5px;}
+  .race-meta{font-size:11px;color:var(--dim);}
+  .race-card code{font-family:var(--mono);font-size:11.5px;color:var(--text);white-space:pre-wrap;word-break:break-word;max-height:6.5em;overflow:auto;}
+  .race-card .mini{align-self:flex-start;font-family:var(--mono);font-size:11px;background:transparent;border:1px solid var(--border);border-radius:var(--radius);color:var(--dim);padding:3px 8px;cursor:pointer;}
+  .race-card .mini:hover{color:var(--text);border-color:var(--border-strong);}
   .env-row{display:flex;flex-direction:column;gap:1px;padding:5px 0;border-bottom:1px dashed var(--border);}
   .env-row:last-child{border-bottom:0;}
   .env-head{display:flex;align-items:center;gap:8px;}
@@ -258,6 +299,8 @@
   .ast-svg svg{display:block;max-width:100%;height:auto;}
   .ast-svg .ast-edge{stroke:var(--border-strong);stroke-width:1;}
   .ast-svg .ast-node-rect{fill:var(--card);stroke:var(--border);}
+  .ast-svg .ast-redex{fill:rgba(192,57,43,.12);stroke:var(--del);cursor:pointer;}
+  .ast-svg .ast-redex:hover{fill:rgba(192,57,43,.24);}
   .ast-svg .ast-node-text{fill:var(--text);font-family:var(--mono);font-size:11px;}
   .player .play{width:30px;}
   .tools{display:flex;flex-wrap:wrap;gap:7px;}
@@ -395,6 +438,17 @@
           <option value="normal">正规序 / normal</option>
           <option value="cbn">按名 / call-by-name</option>
           <option value="cbv">按值 / call-by-value</option>
+           <option value="need">按需 / call-by-need</option>
+        </select>
+        <button class="sel-btn" type="button" aria-haspopup="listbox" aria-expanded="false">
+          <span class="sel-label"></span><span class="chev">▾</span>
+        </button>
+        <div class="sel-menu" role="listbox"></div>
+      </div>
+      <div class="sel" id="sel-encoding">
+        <select id="encoding" aria-label="numeral encoding" tabindex="-1" aria-hidden="true">
+          <option value="church">邱奇 / Church</option>
+          <option value="scott">Scott</option>
         </select>
         <button class="sel-btn" type="button" aria-haspopup="listbox" aria-expanded="false">
           <span class="sel-label"></span><span class="chev">▾</span>
@@ -404,6 +458,7 @@
       <button class="ctl" id="fast-toggle" type="button" aria-pressed="false">快速 / Fast</button>
       <button class="ctl" id="share" type="button">分享 / Share</button>
       <button class="ctl" id="export" type="button">导出 / Export</button>
+      <button class="ctl" id="static-page" type="button">静态页 / Static page</button>
       <button class="ctl" id="import" type="button">导入 / Import</button>
       <button class="ctl" id="theme-toggle" type="button">深色 / Dark</button>
       <input type="file" id="file" accept=".lam,.txt" hidden>
@@ -446,6 +501,7 @@
           <span id="m-label">手动 / Manual</span>
           <button class="mini" id="m-begin" type="button">开始 / begin</button>
           <button class="mini" id="m-back" type="button" disabled>上一步 / back</button>
+          <button class="mini" id="m-forward" type="button" disabled>前进 / forward</button>
           <button class="mini" id="m-start" type="button" disabled>回到起点 / start</button>
           <button class="mini" id="m-step" type="button" disabled>单步 / step</button>
           <button class="mini" id="m-run" type="button" disabled>到底 / run</button>
@@ -459,9 +515,15 @@
     <aside class="side" aria-label="inspector">
       <div class="tabs" role="tablist">
         <button class="tab" role="tab" id="tab-trace" data-tab="trace" aria-controls="panel" aria-selected="true" tabindex="0"><span class="zh">轨迹</span><span class="en">Trace</span></button>
+        <button class="tab" role="tab" id="tab-race" data-tab="race" aria-controls="panel" aria-selected="false" tabindex="-1"><span class="zh">竞速</span><span class="en">Race</span></button>
         <button class="tab" role="tab" id="tab-ast" data-tab="ast" aria-controls="panel" aria-selected="false" tabindex="-1"><span class="zh">结构</span><span class="en">AST</span></button>
         <button class="tab" role="tab" id="tab-type" data-tab="type" aria-controls="panel" aria-selected="false" tabindex="-1"><span class="zh">类型</span><span class="en">Type</span></button>
         <button class="tab" role="tab" id="tab-env" data-tab="env" aria-controls="panel" aria-selected="false" tabindex="-1"><span class="zh">环境</span><span class="en">Env</span></button>
+        <button class="tab" role="tab" id="tab-growth" data-tab="growth" aria-controls="panel" aria-selected="false" tabindex="-1"><span class="zh">曲线</span><span class="en">Growth</span></button>
+        <button class="tab" role="tab" id="tab-notebook" data-tab="notebook" aria-controls="panel" aria-selected="false" tabindex="-1"><span class="zh">笔记</span><span class="en">Notebook</span></button>
+        <button class="tab" role="tab" id="tab-compare" data-tab="compare" aria-controls="panel" aria-selected="false" tabindex="-1"><span class="zh">对比</span><span class="en">Compare</span></button>
+        <button class="tab" role="tab" id="tab-exercises" data-tab="exercises" aria-controls="panel" aria-selected="false" tabindex="-1"><span class="zh">练习</span><span class="en">Practice</span></button>
+        <button class="tab" role="tab" id="tab-sessions" data-tab="sessions" aria-controls="panel" aria-selected="false" tabindex="-1"><span class="zh">会话</span><span class="en">Sessions</span></button>
         <button class="tab" role="tab" id="tab-tools" data-tab="tools" aria-controls="panel" aria-selected="false" tabindex="-1"><span class="zh">工具</span><span class="en">Tools</span></button>
         <button class="tab" role="tab" id="tab-help" data-tab="help" aria-controls="panel" aria-selected="false" tabindex="-1"><span class="zh">帮助</span><span class="en">Help</span></button>
         <button class="tab" role="tab" id="tab-guide" data-tab="guide" aria-controls="panel" aria-selected="false" tabindex="-1"><span class="zh">指引</span><span class="en">Guide</span></button>
@@ -513,10 +575,11 @@
     manual:  {zh:"手动归约", en:"Manual"},
     begin:   {zh:"开始", en:"begin"},
     backB:   {zh:"上一步", en:"back"},
+    forwardB:{zh:"前进", en:"forward"},
     startB:  {zh:"回到起点", en:"start"},
     running: {zh:"运行中", en:"running"},
     stepB:   {zh:"单步", en:"step"},
-    runB:    {zh:"到底", en:"run"},
+    runEndB: {zh:"到底", en:"run"},
     endB:    {zh:"结束", en:"end"},
     reset:   {zh:"重置", en:"reset"},
     resetAsk:{zh:"确定要清空所有自定义定义吗？", en:"Reset all user definitions?"},
@@ -553,6 +616,27 @@
     guideTitle:{zh:"使用指引", en:"Quick guide"},
     helpBody:{zh:"表达式语法：λx.body 或 \\\\x.body；应用 f a 左结合；括号 (expr)；数字自动转 Church 编码。", en:"Syntax: λx.body or \\\\x.body; application f a is left-assoc; grouping (expr); numbers become Church numerals."},
     typeHint:{zh:"简单类型（Hindley–Milner），自由变量用 t0, t1… 表示。", en:"Simple types (Hindley–Milner); free type variables appear as t0, t1…"},
+    propTitle:{zh:"命题读法（Curry–Howard）", en:"As a proposition (Curry–Howard)"},
+    derivation:{zh:"推导步骤", en:"Derivation steps"},
+    encoding:{zh:"数值编码", en:"Numeral encoding"},
+    stats:{zh:"统计", en:"Stats"}, machine:{zh:"抽象机", en:"Machine"},
+    exercises:{zh:"练习", en:"Exercises"}, sessions:{zh:"会话", en:"Sessions"},
+    staticPage:{zh:"静态页", en:"Static page"},
+    checkB:{zh:"检查答案", en:"Check answer"}, correct:{zh:"正确，继续下一题", en:"Correct, next exercise"},
+    wrong:{zh:"还不等价，再试一次", en:"Not equivalent yet, try again"},
+    restoreB:{zh:"恢复", en:"Restore"}, renameB:{zh:"重命名", en:"Rename"},
+    deleteB:{zh:"删除", en:"Delete"}, refreshB:{zh:"刷新", en:"Refresh"},
+    noExercises:{zh:"完成全部练习后这里会显示进度", en:"Your progress appears here after the exercises"},
+    noSessions:{zh:"暂无已保存的会话", en:"No saved sessions yet"},
+    fuzzyTip:{zh:"你是不是想输入", en:"Did you mean"},
+    notebook:{zh:"笔记", en:"Notebook"}, compare:{zh:"对比", en:"Compare"},
+    gallery:{zh:"示例画廊", en:"Gallery"}, growth:{zh:"曲线", en:"Growth"},
+    runB:{zh:"运行", en:"Run"}, addCell:{zh:"新增单元", en:"Add cell"},
+    leftB:{zh:"放入左", en:"Put left"}, rightB:{zh:"放入右", en:"Put right"},
+    compareB:{zh:"比较 β 等价", en:"Compare beta-equivalence"},
+    animation:{zh:"动画", en:"Animation"}, proofTitle:{zh:"证明", en:"Prove"},
+    contrast:{zh:"高对比", en:"Contrast"},
+    fontB:{zh:"字号", en:"Font size"}, a11y:{zh:"可读性", en:"Readability"},
     envHint:{zh:"点击变量名插入到输入框；悬停可删除。", en:"Click a name to insert it; hover to delete."},
     copy:    {zh:"复制", en:"copy"},
     insertB: {zh:"插入", en:"insert"},
@@ -566,6 +650,13 @@
     redexHint:{zh:"可归约位置：点击任一项直接归约", en:"Redexes: click one to contract it"},
     redexNone:{zh:"已没有可归约位置。", en:"No redexes left."},
     traceCut:{zh:"轨迹较长，只显示前 500 步（长项已截断）。", en:"Long trace: only the first 500 steps are shown (long terms clipped)."},
+    proof:{zh:"证明", en:"Proof"},
+    proofLeft:{zh:"左边归约", en:"left reduction"},
+    proofRight:{zh:"右边归约", en:"right reduction"},
+    proofCommon:{zh:"共同正规式", en:"common normal form"},
+    proofSteps:{zh:"步", en:"steps"},
+    proofNoSel:{zh:"先运行 :prove 查看可转换性证明", en:"Run :prove to see a convertibility proof"},
+    proofCut:{zh:"证明轨迹较长，只显示前 500 步", en:"Long proof: only the first 500 steps are shown"},
     play:{zh:"播放", en:"play"}, pause:{zh:"暂停", en:"pause"},
     shareState:{zh:"分享链接（含代码、策略、步数与主题）", en:"Share link includes code, strategy, limit and theme"},
     narrowHint:{zh:"提示：手机屏幕上“轨迹 / 结构 / 类型”面板在终端下方，向下滚动即可看到。",
@@ -610,6 +701,30 @@
     practice4Q: {zh:"输入一个长计算后点“取消”中断，再用 :trace 看逐步归约。",
                  en:"Start a long computation, press Cancel to interrupt it, then use :trace for steps."},
     practice4A: {zh:"会话重建后可继续输入。", en:"The session is rebuilt and ready for more input."},
+    guide1H: {zh:"1 · 输入与执行", en:"1 · Type and run"},
+    guide1B: {zh:"输入表达式后按 Enter。Tab 补全、↑↓ 历史、Ctrl+K 命令面板、Ctrl+Enter 只运行当前命令、Ctrl+L 清空。",
+              en:"Press Enter to run. Tab completes, ↑↓ history, Ctrl+K palette, Ctrl+Enter runs the current command, Ctrl+L clears."},
+    guide2H: {zh:"2 · 看懂结果", en:"2 · Read the result"},
+    guide2B: {zh:"⇒ 是结果；“轨迹”看每一步前后差异，“结构”看语法树，“类型”看推断。",
+              en:"⇒ marks a result. Trace shows each step, AST the tree, Type the inference."},
+    guide3H: {zh:"3 · 手动归约", en:"3 · Step through"},
+    guide3B: {zh:"写好表达式后点“开始”，下方会列出全部可归约位置：点任意一项按该 redex 归约，或用“单步”按策略走。",
+              en:"Press Start; every redex is listed. Click one to contract it, or use Step to follow the strategy."},
+    guide4H: {zh:"4 · 结果与面板", en:"4 · Results and the panel"},
+    guide4B: {zh:"结果行可以复制、插入或定义为新名字；“轨迹/结构/类型”只在终端下方出现，手机上向下滚动即可看到。",
+              en:"Result rows can be copied, inserted or saved as a definition. Trace/AST/Type sit below the terminal: scroll down on a phone."},
+    guide5H: {zh:"5 · 定义与环境", en:"5 · Definitions"},
+    guide5B: {zh:"用 id = \\x.x 定义；“环境”可插入、删除、加载 .lam、重置。",
+              en:"Define with id = \\x.x; Env inserts, deletes, loads .lam and resets."},
+    guide6H: {zh:"6 · 检查与导出", en:"6 · Check and export"},
+    guide6B: {zh:"用 :eq / :conv 判断等价，:prove 展示两边归约到共同正规式的证明，:int 解码邱奇数；结果行可复制、插入或定义为新名字。",
+              en:"Use :eq / :conv for equivalence, :prove to show both reductions to a common normal form, and :int to decode; output rows can be copied, inserted or saved as a definition."},
+    guide7H: {zh:"7 · 小贴士", en:"7 · Tips"},
+    guide7B: {zh:"数字自动转 Church 编码；预定义含 PRED/SUB/PAIR/列表/Y；分享链接会带上策略、步数、快速模式与主题。",
+              en:"Numbers become Church numerals; the prelude includes PRED/SUB/PAIR/lists/Y; share links keep strategy, limit, fast mode and theme."},
+    guide8H: {zh:"8 · 快速模式", en:"8 · Fast mode"},
+    guide8B: {zh:"顶部“快速”开关使用共享正规化，适合 Church 算术；它不记录步数与轨迹，需要逐步归约时请关掉。",
+              en:"The Fast toggle uses shared normalization, ideal for Church arithmetic; it records no steps or trace, so turn it off to step through."},
     guide9H: {zh:"9 · 练习路径", en:"9 · Practice path"},
     guide9B: {zh:"按下方练习循序渐进：先看语法高亮与行号，再试命令面板、分类示例与取消按钮。",
               en:"Follow the exercises below: notice highlighting and line numbers, then try the command palette, example categories and the cancel button."},
@@ -624,6 +739,7 @@
       ":type":    {zh:"推断类型", en:"infer type"},
       ":eq":      {zh:"α 等价判断", en:"alpha-equivalence"},
       ":conv":    {zh:"β 等价判断", en:"beta-convertibility"},
+      ":prove":   {zh:"β 可转换性证明", en:"beta-convertibility proof"},
       ":nf":      {zh:"正规形", en:"normal form"},
       ":whnf":    {zh:"弱首正规形", en:"weak head normal form"},
       ":int":     {zh:"邱奇数转整数", en:"Church numeral to integer"},
@@ -632,11 +748,19 @@
       ":steps":   {zh:"设置步数上限", en:"set the step limit"},
       ":eta":     {zh:"开关 η 归约", en:"toggle eta reduction"},
       ":fast":    {zh:"开关共享快速正规化", en:"toggle shared fast normalization"},
+      ":encoding":{zh:"切换邱奇 / Scott 数值编码", en:"switch Church / Scott numeral encoding"},
+      ":machine": {zh:"带轨迹的环境抽象机归约", en:"traced environment machine reduction"},
+      ":stats":   {zh:"项规模与归约统计", en:"term size and reduction statistics"},
+      ":par":     {zh:"并行归约所有 redex", en:"parallel reduction of all redexes"},
+      ":ftype":   {zh:"System F 显式多态类型检查", en:"explicit System F type check"},
+      ":shortest":{zh:"搜索最短归约路径", en:"search the shortest reduction"},
+      ":growth":  {zh:"项规模增长曲线", en:"term-size growth curve"},
       ":begin":   {zh:"开始手动归约", en:"start manual reduction"},
       ":step":    {zh:"单步或任选 redex", en:"step or pick a redex"},
       ":run":     {zh:"归约到底", en:"reduce to the end"},
       ":end":     {zh:"结束手动归约", en:"end manual reduction"},
       ":back":    {zh:"回退一步", en:"step back one step"},
+      ":forward": {zh:"重做一步", en:"redo one step"},
       ":goto":    {zh:"跳到第 n 步", en:"jump to step n"},
       ":def":     {zh:"显示一个定义", en:"show one definition"},
       ":search":  {zh:"搜索环境名字", en:"search environment names"},
@@ -670,6 +794,16 @@
     manualTerm: "",
     redexes: [],
     astView: "tree",
+    encoding: "church", // 数值编码 / numeral encoding
+    exerciseDone: {},   // 已完成的练习 / completed exercises
+    notebookCells: [{code: ""}], // 笔记本单元 / notebook cells
+    compare: {left: "", right: "", leftTerm: "", rightTerm: "",
+              leftSession: null, rightSession: null}, // 双会话对比 / side-by-side comparison
+    growth: null,        // :growth 曲线数据 / growth series
+    a11y: {contrast: false, font: 100}, // 可读性设置 / readability settings
+    sessionRows: [],    // 会话快照列表 / snapshot rows
+    raceResults: null,   // 策略竞速的四份结果 / four results of a strategy race
+    expiredSession: null,// 失效会话 id，用于快照恢复 / dead session id for snapshot restore
     eta: false,
     fast: false,
     limit: 10000,
@@ -689,12 +823,29 @@
   var out = $("out"), cmd = $("cmd"), ac = $("ac"), panel = $("panel");
   var root = document.documentElement;
   var hl = $("hl"), gutter = $("gutter");
-  var activeController = null;  // 进行中的 eval 请求 / in-flight eval request
+  var activeController = null;  // 最近的请求 / most recent in-flight eval request
+  var inflight = [];            // 所有进行中的请求 / every in-flight eval request
   // 取消按钮只在有进行中的请求时可用，避免空闲点击触发无意义的会话重建
   // Keep the cancel button disabled unless a request is actually in flight.
   function setCancelActive(on){
     var b = $("cancel-eval");
     if (b) b.disabled = !on;
+  }
+  function trackRequest(c){
+    if (c) inflight.push(c);
+    activeController = c;
+    // 回放历史时不点亮取消按钮，否则重建过程中再次取消会触发连环重建
+    // Do not re-enable Cancel while replaying: a second cancel during rebuild
+    // would cascade into more sessions.
+    setCancelActive(!state.replaying && inflight.length > 0);
+  }
+  function untrackRequest(c){
+    var i = inflight.indexOf(c);
+    if (i >= 0) inflight.splice(i, 1);
+    if (activeController === c){
+      activeController = inflight.length ? inflight[inflight.length - 1] : null;
+    }
+    setCancelActive(!state.replaying && inflight.length > 0);
   }
   var dialogOpen = false;       // 是否有弹窗打开 / whether a dialog is open
   var edHist = [""], edHistIdx = 0;  // 编辑器输入撤销栈 / editor input undo history
@@ -751,7 +902,8 @@
     applicative: {zh: "应用序", en: "applicative"},
     normal:      {zh: "正规序", en: "normal"},
     cbn:         {zh: "按名调用", en: "call-by-name"},
-    cbv:         {zh: "按值调用", en: "call-by-value"}
+    cbv:         {zh: "按值调用", en: "call-by-value"},
+    need:        {zh: "按需（共享）", en: "call-by-need"}
   };
 
   function strategyText(value){
@@ -764,10 +916,13 @@
   // Signatures hold identifiers only; descriptions live in I18N.cmdDesc.
   var CMDS = [
     ":help [cmd]", ":time [n] <expr>", ":bench <n> <expr>", ":trace <expr>", ":ast <expr>",
-    ":db <expr>", ":type <expr>", ":eq <a> , <b>", ":conv <a> , <b>", ":nf <expr>",
+    ":db <expr>", ":type <expr>", ":eq <a> , <b>", ":conv <a> , <b>", ":prove <a> , <b>", ":nf <expr>",
     ":whnf <expr>", ":int <expr>", ":church <n>", ":strategy <s>", ":steps <n>",
-    ":eta on|off", ":fast on|off", ":begin <expr>", ":step [n]", ":run", ":end",
-    ":back", ":goto <n>", ":def <name>", ":search <s>", ":reload", ":edit [f]",
+    ":eta on|off", ":fast on|off", ":encoding church|scott", ":machine <expr>",
+    ":stats <expr>", ":par <expr>", ":shortest <a> , <b>", ":growth <expr>",
+    ":ftype <term>",
+    ":begin <expr>", ":step [n]", ":run", ":end",
+    ":back", ":forward", ":goto <n>", ":def <name>", ":search <s>", ":reload", ":edit [f]",
     ":let name = expr", "rec name = expr", ":load <f>", ":save <f>", ":env",
     ":del <n>", ":reset", ":lang zh|en|both", ":clear", ":q"
   ];
@@ -780,6 +935,42 @@
     });
     return arr;
   }
+  // 编辑距离与模糊纠错 / edit distance and fuzzy suggestions
+  function levenshtein(a, b){
+    a = String(a || ""); b = String(b || "");
+    var prev = [], cur = [], i, j;
+    for (j = 0; j <= b.length; j++) prev[j] = j;
+    for (i = 1; i <= a.length; i++){
+      cur[0] = i;
+      for (j = 1; j <= b.length; j++){
+        cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1,
+                          prev[j - 1] + (a.charAt(i - 1) === b.charAt(j - 1) ? 0 : 1));
+      }
+      prev = cur; cur = [];
+    }
+    return prev[b.length];
+  }
+  function fuzzyCommands(name, limit){
+    var base = baseOf(String(name || ""));
+    return CMD_NAMES().map(function(c){ return {cmd: c, d: levenshtein(base, c)}; })
+      .filter(function(x){ return x.d <= Math.max(2, Math.floor(base.length / 3)); })
+      .sort(function(x, y){ return x.d - y.d; })
+      .slice(0, limit || 3).map(function(x){ return x.cmd; });
+  }
+  var INTENTS = [
+    {zh:"怎么求阶乘", en:"how to compute factorial", cmd:":let"},
+    {zh:"查看归约轨迹", en:"show reduction trace", cmd:":trace"},
+    {zh:"判断两个项是否等价", en:"check beta equivalence", cmd:":conv"},
+    {zh:"把邱奇数转成整数", en:"decode a Church numeral", cmd:":int"},
+    {zh:"切换成快速模式", en:"turn on fast mode", cmd:":fast"},
+    {zh:"看看类型", en:"infer the type", cmd:":type"}
+  ];
+  function intentItems(){
+    return INTENTS.map(function(x){
+      return {value: x.cmd, label: dual(x.zh, x.en), hint: descOf(x.cmd)};
+    });
+  }
+
   function descOf(base){
     var d = I18N.cmdDesc && I18N.cmdDesc[base];
     if (!d) return "";
@@ -794,7 +985,7 @@
     return CMDS.map(function(sig){
       var b = baseOf(sig);
       return {value: b, label: sig, hint: descOf(b)};
-    });
+    }).concat(intentItems());
   }
   function refreshStType(){
     var el = $("st-type");
@@ -1020,6 +1211,8 @@
       localStorage.setItem(LS, JSON.stringify({
         lang: state.lang, theme: state.theme, strategy: $("strategy").value,
         limit: state.limit, eta: state.eta, fast: state.fast, code: state.codeLines,
+        encoding: state.encoding, exerciseDone: state.exerciseDone,
+        notebookCells: state.notebookCells, compare: state.compare, a11y: state.a11y,
         history: state.history.slice(-100)
       }));
     } catch(e){}
@@ -1102,6 +1295,7 @@
       var m = elem("span", "meta");
       m.textContent = meta;
       main.appendChild(m);
+      d._metaEl = m;  // 直接持有节点，语言切换无需再查 DOM / keep a direct ref
     }
     d.innerHTML = '<span class="mark">' + mark + '</span>';
     d.appendChild(main);
@@ -1113,6 +1307,21 @@
 
   // 解析错误定位：显示出错的那一行，并在对应列下画脱字符
   // Parse errors: show the failing line and put the caret under the reported column.
+  // 类型错误：在回显的命令里给失败子项加波浪线 / underline the failing subterm
+  function markTypeFailure(failing){
+    var rows = out.querySelectorAll(".line.echo");
+    var row = rows[rows.length - 1];
+    if (!row || !failing) return;
+    var main = row.querySelector(".line-main");
+    if (!main || main.dataset.typed === "1") return;
+    var txt = main.textContent || "";
+    var i = txt.indexOf(failing);
+    if (i < 0) return;
+    main.innerHTML = esc(txt.slice(0, i)) + '<span class="type-err">' +
+      esc(failing) + '</span>' + esc(txt.slice(i + failing.length));
+    main.dataset.typed = "1";
+  }
+
   function addErrorSnippet(pos, source){
     var text = String(source || "");
     var at = Math.max(1, Number(pos) || 1);
@@ -1233,6 +1442,106 @@
     return out.join("\n");
   }
 
+  function proofMarkdown(obj){
+    var lines = ["# beta-convertibility proof", "",
+                 "- left: " + (obj.left || ""),
+                 "- right: " + (obj.right || ""),
+                 "- common normal form: " + (obj.normalForm || ""), ""];
+    [["Left", obj.leftTrace], ["Right", obj.rightTrace]].forEach(function(pair){
+      lines.push("## " + pair[0] + " reduction", "");
+      (pair[1] || []).forEach(function(s){
+        lines.push("### " + s.n + ". " + (s.rule || "beta"));
+        if (s.note) lines.push(s.note);
+        lines.push("before:", "```text", s.before, "```", "", "after:", "```text", s.after, "```", "");
+      });
+    });
+    return lines.join("\n");
+  }
+
+  function proofLatex(obj){
+    function esc(s){
+      return String(s || "").replace(/\\/g, "\\textbackslash{}")
+        .replace(/([{}_$%&#^~])/g, "\\$1");
+    }
+    var out = ["\\documentclass{article}", "\\usepackage[T1]{fontenc}",
+               "\\begin{document}", "\\section*{beta-convertibility proof}",
+               "Left: \\texttt{" + esc(obj.left) + "}",
+               "Right: \\texttt{" + esc(obj.right) + "}",
+               "Common normal form: \\texttt{" + esc(obj.normalForm) + "}", ""];
+    [["Left", obj.leftTrace], ["Right", obj.rightTrace]].forEach(function(pair){
+      out.push("\\subsection*{" + pair[0] + " reduction}", "\\begin{enumerate}");
+      (pair[1] || []).forEach(function(s){
+        out.push("\\item[" + esc(s.n) + "] " + esc(s.rule || "beta"));
+        if (s.note) out.push("\\\\ " + esc(s.note));
+        out.push("\\begin{verbatim}", s.before || "", "\\end{verbatim}",
+                 "\\begin{verbatim}", s.after || "", "\\end{verbatim}");
+      });
+      out.push("\\end{enumerate}", "");
+    });
+    out.push("\\end{document}", "");
+    return out.join("\n");
+  }
+
+  function traceAnimation(obj){
+    function esc(s){ return String(s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;").replace(/"/g, "&quot;"); }
+    var frames = (obj.trace || []).map(function(s, i){
+      return '<section class="frame" data-i="' + i + '"><h2>' + esc(String(s.n || i + 1)) +
+        ' · ' + esc(s.rule || "β") + '</h2><pre>' + esc(s.before) + '</pre><pre class="after">' +
+        esc(s.after) + '</pre></section>';
+    }).join("");
+    if (!frames) frames = '<section class="frame"><pre>' + esc(obj.term) + '</pre></section>';
+    return '<!doctype html><html lang="en"><head><meta charset="utf-8">' +
+      '<title>lambda reduction animation</title><style>' +
+      'body{margin:0;padding:24px;background:#fbfaf7;color:#1d1d1b;font-family:ui-monospace,monospace}' +
+      '.frame{display:none;max-width:900px;margin:auto}.frame.on{display:block}' +
+      'pre{white-space:pre-wrap;word-break:break-word;border:1px solid #ddd;padding:12px}' +
+      '.after{border-color:#2f6f4f}button{font:inherit;padding:6px 12px;margin:0 4px}' +
+      '</style></head><body><div id="v">' + frames + '</div>' +
+      '<button id="pp">play / pause</button><button id="pr">prev</button><button id="nx">next</button>' +
+      '<button id="rec">record WebM</button><span id="msg"></span><canvas id="cv" width="960" height="540" hidden></canvas>' +
+      '<script>(function(){var f=[].slice.call(document.querySelectorAll(".frame")),i=0,t=null;' +
+      'function show(){f.forEach(function(x,j){x.classList.toggle("on",j===i)});}show();' +
+      'function tick(){i=(i+1)%f.length;show();}document.getElementById("pp").onclick=function(){' +
+      'if(t){clearInterval(t);t=null}else{t=setInterval(tick,1200)}};' +
+      'document.getElementById("nx").onclick=function(){i=(i+1)%f.length;show()};' +
+      'document.getElementById("pr").onclick=function(){i=(i-1+f.length)%f.length;show()};' +
+      'document.getElementById("rec").onclick=function(){' +
+      'if(!window.MediaRecorder||!document.getElementById("cv").captureStream){' +
+      'document.getElementById("msg").textContent="MediaRecorder unavailable";return}' +
+      'var cv=document.getElementById("cv"),cx=cv.getContext("2d"),s=cv.captureStream(2);' +
+      'var chunks=[],r=new MediaRecorder(s,{mimeType:"video/webm"});' +
+      'r.ondataavailable=function(e){if(e.data.size)chunks.push(e.data)};' +
+      'r.onstop=function(){var a=document.createElement("a"),b=new Blob(chunks,{type:"video/webm"});' +
+      'a.href=URL.createObjectURL(b);a.download="lambda-trace.webm";a.click();' +
+      'document.getElementById("msg").textContent="WebM saved"};' +
+      'function draw(j){var x=f[j];cx.fillStyle="#fbfaf7";cx.fillRect(0,0,960,540);' +
+      'cx.fillStyle="#1d1d1b";cx.font="22px monospace";cx.fillText("step "+(j+1),40,60);' +
+      'cx.font="16px monospace";var ps=x.querySelectorAll("pre"),y=120;' +
+      '[].forEach.call(ps,function(p){cx.fillText(p.textContent.slice(0,90),40,y);y+=90})};' +
+      'r.start();var k=0;draw(0);var iv=setInterval(function(){k++;if(k>=f.length){clearInterval(iv);r.stop();return}' +
+      'draw(k);show()},1200)};' +
+      '})();<' + '/script></body></html>';
+  }
+
+  function proofDiamond(obj){
+    function esc(s){ return String(s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;").replace(/"/g, "&quot;"); }
+    var left = esc(obj.left || ""), right = esc(obj.right || "");
+    var nf = esc(obj.normalForm || "");
+    var ls = esc(String(obj.leftSteps || 0)), rs = esc(String(obj.rightSteps || 0));
+    return '<svg class="diamond" viewBox="0 0 440 150" role="img" aria-label="confluence">' +
+      '<path d="M100 30 L220 75 M340 30 L220 75" class="diamond-edge"/>' +
+      '<circle cx="100" cy="30" r="5" class="diamond-node"/>' +
+      '<circle cx="340" cy="30" r="5" class="diamond-node"/>' +
+      '<circle cx="220" cy="75" r="6" class="diamond-node common"/>' +
+      '<text x="100" y="15" text-anchor="middle" class="diamond-text">' + left + '</text>' +
+      '<text x="340" y="15" text-anchor="middle" class="diamond-text">' + right + '</text>' +
+      '<text x="220" y="105" text-anchor="middle" class="diamond-text">' + nf + '</text>' +
+      '<text x="158" y="45" class="diamond-step">' + ls + '</text>' +
+      '<text x="282" y="45" class="diamond-step">' + rs + '</text></svg>';
+  }
+
   function saveBlob(name, text, type){
     var blob = new Blob([text], {type: type});
     var a = document.createElement("a");
@@ -1344,6 +1653,10 @@
           function(){
             saveBlob("lambda-trace-" + fileStamp() + ".tex", traceLatex(obj), "application/x-tex;charset=utf-8");
           });
+      add(function(){ return "⤓ " + t("animation"); }, function(){ return t("animation"); },
+          function(){
+            saveBlob("lambda-trace-" + fileStamp() + ".html", traceAnimation(obj), "text/html;charset=utf-8");
+          });
     }
     lineEl.addEventListener("click", function(){
       if (obj.trace || obj.ast || obj.type) selectResult(obj, lineEl, state.tab === "trace" && !obj.trace ? "ast" : "trace");
@@ -1401,10 +1714,12 @@
     }
     if (obj.kind === "int" || obj.kind === "church"){
       var id = addLine("result", obj.text || String(obj.value));
+      var metaZh = obj.kind === "int" ? "邱奇数 → 整数" : "整数 → 邱奇数";
+      var metaEn = obj.kind === "int" ? "Church → int" : "int → Church";
       var im = elem("span", "meta");
-      im.textContent = (obj.kind === "int"
-        ? dual("邱奇数 → 整数", "Church → int")
-        : dual("整数 → 邱奇数", "int → Church"));
+      im.textContent = pickPair(metaZh, metaEn, metaZh);
+      id._metaPair = [metaZh, metaEn];  // 供语言切换重渲染 / for lang switch
+      id._metaEl = im;
       id.querySelector(".line-main").appendChild(im);
       return;
     }
@@ -1423,10 +1738,19 @@
       var line = addLine(obj.kind, body, failCode, source,
                          obj.textZh || body, obj.textEn || body);
       if (failCode){ line._errCode = failCode; line.title = t("errCode") + ": " + failCode; linkCodeHelp(line, failCode); }
+      if (obj.failing) markTypeFailure(String(obj.failing));
       if (obj.kind === "term"){ setManual(true, obj.term); }
       if (obj.kind === "term" || obj.kind === "step"){
         if (obj.term) state.manualTerm = obj.term;
         state.redexes = obj.redexes || [];
+        if (obj.kind === "step"){
+          // 后退到起点后禁用“上一步”，与后端 canStepBack 保持一致
+          // Honour canStepBack so reaching step 0 disables Back.
+          if ($("m-back")) $("m-back").disabled = obj.canStepBack === false;
+          if ($("m-forward")){
+            $("m-forward").disabled = obj.canStepForward !== true;
+          }
+        }
         renderRedexes();
         var enriched = addActions(line, obj, source);
         if (obj.kind === "step") selectResult(enriched, line, "trace");
@@ -1442,6 +1766,21 @@
       selectResult(o, el2, "trace");
       return;
     }
+    if (obj.kind === "proof"){
+      // 证明对象复用跟踪面板展示两条归约序列，同时保留复制/导出等操作
+      // Reuse the trace panel for both sequences while keeping copy/export actions.
+      var pv = Object.assign({}, obj, {
+        term: obj.normalForm || (obj.left + " , " + obj.right),
+        trace: obj.leftTrace || []
+      });
+      var pmeta = obj.convertible
+        ? ((obj.leftSteps || 0) + " + " + (obj.rightSteps || 0) + " " + t("proofSteps"))
+        : (obj.limitHit ? t("timeout") : dual("不可转换", "not convertible"));
+      var pe = addLine("result", objText(obj), pmeta, source, obj.textZh, obj.textEn);
+      addActions(pe, pv, source);
+      selectResult(pv, pe, "trace");
+      return;
+    }
     if (obj.kind === "ast"){
       state.selected = {ast: obj.tree, astTree: obj.astTree, term: "",
                         astOmitted: obj.astOmitted, astTreeOmitted: obj.astTreeOmitted};
@@ -1454,6 +1793,28 @@
                         astTree: obj.astTree, db: obj.text || "",
                         astOmitted: obj.astOmitted, astTreeOmitted: obj.astTreeOmitted};
       switchTab("ast");
+      return;
+    }
+    if (obj.kind === "shortest"){
+      var sl = addLine(obj.found ? "result" : "warn", objText(obj),
+                       null, source, obj.textZh, obj.textEn);
+      if (obj.found && obj.trace && obj.trace.length) selectResult(obj, sl, "trace");
+      return;
+    }
+    if (obj.kind === "growth"){
+      state.growth = obj;
+      addLine("info", objText(obj), null, source, obj.textZh, obj.textEn);
+      switchTab("growth");
+      return;
+    }
+    if (obj.kind === "ftype"){
+      addLine("info", "∀ " + (obj.type || ""), null, source,
+              "System F 类型：" + (obj.type || ""), "System F type: " + (obj.type || ""));
+      state.selected = {type: obj.type, typeZh: obj.type, typeEn: obj.type,
+                        proposition: obj.proposition, propositionZh: obj.proposition,
+                        propositionEn: obj.proposition, erased: obj.erased,
+                        fTerm: obj.fTerm};
+      switchTab("type");
       return;
     }
     if (obj.kind === "type"){
@@ -1592,7 +1953,7 @@
     if (obj.traceTruncated) {
       html += '<p class="trace-note">' + esc(t("traceCut")) + '</p>';
     }
-    html += '<div class="note">' + esc(st.note || ("β " + (i + 1))) + '</div>';
+    html += '<div class="note" aria-live="polite">' + esc(st.note || ("β " + (i + 1))) + '</div>';
     html += '<div class="cmp">';
     // 归约前标出被替换的片段，归约后标出新增的片段，让一步 β 的改写一目了然
     // Mark the replaced fragment before and the inserted fragment after, so one beta step is obvious.
@@ -1627,17 +1988,18 @@
 
   function astLayout(root){
     var leaves = 0, maxDepth = 0;
-    function walk(n, depth){
-      if (!n) return {x: 0, depth: depth, label: "", kids: []};
+    function walk(n, depth, path){
+      path = path || "";
+      if (!n) return {x: 0, depth: depth, label: "", kids: [], path: path};
       if (depth > maxDepth) maxDepth = depth;
-      var kids = (n.c || []).map(function(c){ return walk(c, depth + 1); });
+      var kids = (n.c || []).map(function(c, i){ return walk(c, depth + 1, path + (path ? "/" : "") + i); });
       var x;
       if (!kids.length) x = leaves++;
       else x = (kids[0].x + kids[kids.length - 1].x) / 2;
       var label = n.k === "var" ? n.label
                 : n.k === "lam" ? "λ " + n.label
                 : "App";
-      return {x: x, depth: depth, label: label, kids: kids};
+      return {x: x, depth: depth, label: label, kids: kids, path: path};
     }
     var r = walk(root, 0);
     return {root: r, leaves: Math.max(1, leaves), depth: maxDepth};
@@ -1645,6 +2007,14 @@
 
   function astSvg(root){
     var layout = astLayout(root);
+    var selected = state.selected || {};
+    var redexes = selected.redexes || [];
+    var byPath = {};
+    redexes.forEach(function(r){
+      var p = String(r.path || "");
+      if (p === "root") p = "";
+      byPath[p] = r.i;
+    });
     var dx = 92, dy = 64, pad = 26;
     var width = Math.max(360, layout.leaves * dx + pad * 2);
     var height = (layout.depth + 1) * dy + pad * 2;
@@ -1658,8 +2028,10 @@
                    '" y2="' + (ky - 12) + '" class="ast-edge"/>');
       });
       var w = Math.max(34, Math.min(180, n.label.length * 9 + 18));
+      var ri = byPath[n.path];
+      var hot = (ri !== undefined) ? ' ast-redex" data-redex-node="' + esc(String(ri)) : '';
       parts.push('<rect x="' + (cx - w / 2) + '" y="' + (cy - 12) +
-                 '" width="' + w + '" height="24" rx="3" class="ast-node-rect"/>');
+                 '" width="' + w + '" height="24" rx="3" class="ast-node-rect' + hot + '"/>');
       parts.push('<text x="' + cx + '" y="' + (cy + 5) +
                  '" text-anchor="middle" class="ast-node-text">' + esc(n.label) + '</text>');
       n.kids.forEach(draw);
@@ -1706,8 +2078,32 @@
     var obj = state.selected;
     var ty = obj ? pickPair(obj.typeZh, obj.typeEn, obj.type) : "";
     if (!ty) return '<p class="empty">' + esc(t("noType")) + '</p>';
-    return '<h3>' + esc(t("type")) + '</h3><pre style="color:var(--accent);font-size:14px">' + esc(ty) + '</pre>' +
-           '<p class="empty" style="margin-top:10px;font-style:normal">' + esc(t("typeHint")) + '</p>';
+    var prop = obj ? pickPair(obj.propositionZh, obj.propositionEn, obj.proposition) : "";
+    var html = '<h3>' + esc(t("type")) + '</h3><pre style="color:var(--accent);font-size:14px">' + esc(ty) + '</pre>';
+    if (prop){
+      html += '<h3 style="margin-top:14px">' + esc(t("propTitle")) + '</h3>' +
+              '<pre class="prop-box">' + esc(prop) + '</pre>';
+    }
+    if (obj && obj.erased){
+      html += '<h3 style="margin-top:14px">' + esc(dual("擦除后的 λ 项", "Erased λ term")) +
+              '</h3><pre class="prop-box">' + esc(obj.erased) + '</pre>' +
+              (obj.fTerm ? '<p class="empty" style="font-style:normal">' + esc(obj.fTerm) + '</p>' : '');
+    }
+    var deriv = obj ? (obj.derivation || []) : [];
+    if (deriv.length){
+      html += '<details style="margin-top:12px"><summary>' + esc(t("derivation")) +
+              ' (' + deriv.length + ')</summary><ol class="deriv-list">';
+      deriv.forEach(function(d){
+        html += '<li><span class="pf-rule">' + esc(d.kind || "") + '</span> ' +
+                esc(pickPair(d.textZh, d.textEn, d.text)) +
+                (d.focus ? '<button type="button" data-deriv-focus="' + esc(d.focus) +
+                  '" title="' + esc(dual("插入这个子项", "insert this subterm")) + '">↳</button>' : '') +
+                '</li>';
+      });
+      html += '</ol></details>';
+    }
+    html += '<p class="empty" style="margin-top:10px;font-style:normal">' + esc(t("typeHint")) + '</p>';
+    return html;
   }
 
   function renderEnv(){
@@ -1733,30 +2129,14 @@
 
   function renderGuide(){
     var rows = [
-      {h: ["1 · 输入与执行", "1 · Type and run"],
-       b: ["输入表达式后按 Enter。Tab 补全、↑↓ 历史、Ctrl+K 命令面板、Ctrl+Enter 只运行当前命令、Ctrl+L 清空。",
-           "Press Enter to run. Tab completes, ↑↓ history, Ctrl+K palette, Ctrl+Enter runs the current command, Ctrl+L clears."]},
-      {h: ["2 · 看懂结果", "2 · Read the result"],
-       b: ["⇒ 是结果；“轨迹”看每一步前后差异，“结构”看语法树，“类型”看推断。",
-           "⇒ marks a result. Trace shows each step, AST the tree, Type the inference."]},
-      {h: ["3 · 手动归约", "3 · Step through"],
-       b: ["写好表达式后点“开始”，下方会列出全部可归约位置：点任意一项按该 redex 归约，或用“单步”按策略走。",
-           "Press Start; every redex is listed. Click one to contract it, or use Step to follow the strategy."]},
-      {h: ["4 · 结果与面板", "4 · Results and the panel"],
-       b: ["结果行可以复制、插入或定义为新名字；“轨迹/结构/类型”只在终端下方出现，手机上向下滚动即可看到。",
-           "Result rows can be copied, inserted or saved as a definition. Trace/AST/Type sit below the terminal: scroll down on a phone."]},
-      {h: ["5 · 定义与环境", "5 · Definitions"],
-       b: ["用 id = \\x.x 定义；“环境”可插入、删除、加载 .lam、重置。",
-           "Define with id = \\x.x; Env inserts, deletes, loads .lam and resets."]},
-      {h: ["6 · 检查与导出", "6 · Check and export"],
-       b: ["用 :eq / :conv 判断等价，:int 解码邱奇数；结果行可复制、插入或直接定义为新名字。",
-           "Use :eq / :conv for equivalence and :int to decode; output rows can be copied, inserted or saved as a definition."]},
-      {h: ["7 · 小贴士", "7 · Tips"],
-       b: ["数字自动转 Church 编码；预定义含 PRED/SUB/PAIR/列表/Y；分享链接会带上策略、步数、快速模式与主题。",
-           "Numbers become Church numerals; the prelude includes PRED/SUB/PAIR/lists/Y; share links keep strategy, limit, fast mode and theme."]},
-      {h: ["8 · 快速模式", "8 · Fast mode"],
-       b: ["顶部“快速”开关使用共享正规化，适合 Church 算术；它不记录步数与轨迹，需要逐步归约时请关掉。",
-           "The Fast toggle uses shared normalization, ideal for Church arithmetic; it records no steps or trace, so turn it off to step through."]},
+      {h: [I18N.guide1H.zh, I18N.guide1H.en], b: [I18N.guide1B.zh, I18N.guide1B.en]},
+      {h: [I18N.guide2H.zh, I18N.guide2H.en], b: [I18N.guide2B.zh, I18N.guide2B.en]},
+      {h: [I18N.guide3H.zh, I18N.guide3H.en], b: [I18N.guide3B.zh, I18N.guide3B.en]},
+      {h: [I18N.guide4H.zh, I18N.guide4H.en], b: [I18N.guide4B.zh, I18N.guide4B.en]},
+      {h: [I18N.guide5H.zh, I18N.guide5H.en], b: [I18N.guide5B.zh, I18N.guide5B.en]},
+      {h: [I18N.guide6H.zh, I18N.guide6H.en], b: [I18N.guide6B.zh, I18N.guide6B.en]},
+      {h: [I18N.guide7H.zh, I18N.guide7H.en], b: [I18N.guide7B.zh, I18N.guide7B.en]},
+      {h: [I18N.guide8H.zh, I18N.guide8H.en], b: [I18N.guide8B.zh, I18N.guide8B.en]},
       {h: [I18N.guide9H.zh, I18N.guide9H.en],
        b: [I18N.guide9B.zh, I18N.guide9B.en]}
     ];
@@ -1802,6 +2182,15 @@
     }
     btn("eq",    "α 等价 · :eq",      "alpha · :eq");
     btn("conv",  "β 等价 · :conv",    "beta · :conv");
+    btn("prove", "可转换证明 · :prove", "convertibility · :prove");
+    btn("race", "策略竞速 · 四种策略", "strategy race · four strategies");
+    btn("machine", "抽象机归约 · :machine", "machine reduction · :machine");
+    btn("stats", "项统计 · :stats", "term stats · :stats");
+    btn("par", "并行归约 · :par", "parallel reduction · :par");
+    btn("ftype", "System F · :ftype", "System F · :ftype");
+    btn("shortest", "最短归约 · :shortest", "shortest path · :shortest");
+    btn("growth", "规模曲线 · :growth", "growth curve · :growth");
+    btn("gallery", "示例画廊 · Gallery", "gallery · examples");
     btn("nf",    "正规形 · :nf",      "normal form · :nf");
     btn("whnf",  "弱首正规形 · :whnf", "WHNF · :whnf");
     btn("int",   "解码邱奇数 · :int",  "decode · :int");
@@ -1816,6 +2205,10 @@
     html += '<button class="mini" type="button" data-tool="time">' + esc(t("toolTime")) + '</button>' +
             '<button class="mini" type="button" data-tool="bench">' + esc(t("toolBench")) + '</button>' +
             '<button class="mini" type="button" data-tool="helpcmd">' + esc(t("toolHelpCmd")) + '</button>';
+    html += '<div class="sess-acts" style="margin-top:10px">' +
+      '<button class="mini" type="button" data-a11y-contrast>' + esc(t("contrast")) + ': ' +
+        (state.a11y.contrast ? "on" : "off") + '</button>' +
+      '<button class="mini" type="button" data-a11y-font>A− / A+</button></div>';
     html += '</div>';
     html += '<p class="empty" style="font-style:normal;margin-top:12px">' +
             esc(dual(":eq / :conv 会依次询问两个表达式；:nf / :whnf / :int 询问一个表达式。",
@@ -1828,7 +2221,62 @@
     var ask = function(title, message){
       return dialog({title: title, message: message, input: true, ok: t("ok")});
     };
-    if (tool === "eq" || tool === "conv"){
+    if (tool === "shortest"){
+      var sa = await ask(":shortest", dual("起始表达式", "source expression"));
+      if (!sa) return;
+      var sb = await ask(":shortest", dual("目标表达式", "target expression"));
+      if (!sb) return;
+      exec(":shortest " + sa + " , " + sb);
+    } else if (tool === "growth"){
+      var ge = await ask(":growth", dual("表达式", "expression"));
+      if (ge) exec(":growth " + ge);
+    } else if (tool === "gallery"){
+      var gr = await api("api/gallery", {}, "GET");
+      var examples = (gr.data && gr.data.examples) || [];
+      var items = examples.map(function(ex){
+        return {value: ex.code, label: state.lang === "zh" ? ex.zh
+                  : state.lang === "en" ? ex.en : ex.zh + " / " + ex.en,
+                hint: ex.code};
+      });
+      var pick = await dialog({title: t("gallery"), message: dual("选择一个示例", "choose an example"),
+                               input: true, list: items, ok: t("runB")});
+      if (pick) exec(pick);
+    } else if (tool === "par"){
+      var pe2 = await ask(":par", dual("表达式", "expression"));
+      if (pe2) exec(":par " + pe2);
+    } else if (tool === "ftype"){
+      var fe = await ask(":ftype", dual("System F 项，如 Λa. \\x : a. x",
+                                    "System F term, e.g. Λa. \\x : a. x"));
+      if (fe) exec(":ftype " + fe);
+    } else if (tool === "machine"){
+      var me = await ask(":machine", dual("表达式（带轨迹的环境抽象机）",
+                                      "expression (traced environment machine)"));
+      if (me) exec(":machine " + me);
+    } else if (tool === "stats"){
+      var se = await ask(":stats", dual("表达式", "expression"));
+      if (se) exec(":stats " + se);
+    } else if (tool === "race"){
+      var re = await ask("策略竞速", dual("表达式（四种策略同时归约）",
+                                     "expression (reduce under all four strategies)"));
+      if (!re) return;
+      var rr = await api("api/race", {session: state.session, line: re,
+                                      lang: state.lang, strategy: $("strategy").value});
+      if (rr.status === 408 || (rr.data && (rr.data.restart || rr.data.timeout))){
+        state.expiredSession = state.session;
+        state.session = null; setConn(false);
+        addLine("warn", (rr.data && rr.data.error) || t("timeout"));
+        await rebuild();
+        return;
+      }
+      if (!rr.data || !rr.data.ok){
+        addLine("fail", (rr.data && rr.data.error) || dual("策略竞速失败", "strategy race failed"));
+        return;
+      }
+      state.session = rr.data.session;
+      state.raceResults = rr.data.results || {};
+      setConn(true);
+      switchTab("race");
+    } else if (tool === "eq" || tool === "conv" || tool === "prove"){
       var a = await ask(":" + tool, dual("表达式 1", "expression 1"));
       if (!a) return;
       var b = await ask(":" + tool, dual("表达式 2", "expression 2"));
@@ -1881,6 +2329,14 @@
       [":type <expr>", dual("推断类型", "infer type")],
       [":eq <a> , <b>", dual("α 等价", "alpha-equivalence")],
       [":conv <a> , <b>", dual("β 等价", "beta-convertibility")],
+      [":prove <a> , <b>", dual("β 可转换性证明", "beta-convertibility proof")],
+      [":machine <expr>", dual("带轨迹的环境抽象机归约", "traced machine reduction")],
+      [":stats <expr>", dual("项规模与归约统计", "term size and reduction statistics")],
+      [":par <expr>", dual("并行归约所有 redex", "contract all redexes in parallel")],
+      [":ftype <term>", dual("System F 显式多态类型", "explicit System F types")],
+      [":shortest <a> , <b>", dual("最短归约路径", "shortest reduction path")],
+      [":growth <expr>", dual("规模增长曲线", "term-size growth curve")],
+      [":encoding church|scott", dual("数值编码切换", "numeral encoding switch")],
       [":nf / :whnf <expr>", dual("正规形 / 弱首正规形", "normal form, WHNF")],
       [":int <expr> / :church <n>", dual("邱奇数 ↔ 整数", "Church numeral ↔ integer")],
       [":strategy <s>", "applicative / normal / cbn / cbv"],
@@ -1889,7 +2345,7 @@
       [":fast on|off", dual("共享快速正规化", "shared fast normalization")],
       [":begin <expr>", dual("开始手动归约", "start manual reduction")],
       [":step [n] / :run / :end", dual("单步或任选 redex", "step or pick a redex")],
-      [":back / :goto <n>", dual("回退或跳到第 n 步", "rewind, jump to step n")],
+      [":back / :forward / :goto <n>", dual("回退、重做或跳到第 n 步", "rewind, redo, jump to step n")],
       [":def <n> / :search <s>", dual("查看定义 / 搜索环境", "show, search")],
       [":reload / :edit [f]", dual("重载文件 / 编辑器打开", "reload, edit")],
       [":let name = expr / rec name = expr", dual("定义 / 递归定义", "define, recursive definition")],
@@ -1909,6 +2365,276 @@
     return html;
   }
 
+  // :prove 的可转换性证明：左右两条归约序列并列展示
+  // Convertibility proof from :prove: show both reduction sequences.
+  function renderProof(){
+    var obj = state.selected;
+    if (!obj || (!obj.leftTrace && !obj.rightTrace)){
+      return '<p class="empty">' + esc(t("proofNoSel")) + '</p>';
+    }
+    var html = '';
+    if (obj.traceTruncated){
+      html += '<p class="trace-note">' + esc(t("proofCut")) + '</p>';
+    }
+    html += '<div class="proof-acts">' +
+      '<button class="mini" type="button" data-proof-export="md">' +
+        esc(dual("导出 Markdown 证明", "export Markdown proof")) + '</button>' +
+      '<button class="mini" type="button" data-proof-export="json">' +
+        esc(dual("导出 JSON 证明", "export JSON proof")) + '</button>' +
+      '<button class="mini" type="button" data-proof-export="tex">' +
+        esc(dual("导出 LaTeX 证明", "export LaTeX proof")) + '</button></div>';
+    html += '<div class="proof-summary">' +
+      '<div><span class="lab">' + esc(t("proofCommon")) + '</span> ' +
+        esc(obj.normalForm || "—") + '</div>' +
+      '<div><span class="lab">' + esc(t("proofLeft")) + '</span> ' +
+        (obj.leftSteps || 0) + ' ' + esc(t("proofSteps")) + '</div>' +
+      '<div><span class="lab">' + esc(t("proofRight")) + '</span> ' +
+        (obj.rightSteps || 0) + ' ' + esc(t("proofSteps")) + '</div></div>';
+    html += proofDiamond(obj);
+    [["proofLeft", obj.leftTrace], ["proofRight", obj.rightTrace]].forEach(function(pair){
+      var steps = pair[1] || [];
+      html += '<h3>' + esc(t(pair[0])) + '</h3><ol class="proof-list">';
+      steps.forEach(function(s){
+        html += '<li><span class="pf-n">' + esc(String(s.n || 0)) + '</span>' +
+          '<span class="pf-rule">' + esc(s.rule || "β") + '</span>' +
+          '<code>' + esc(shorten(s.after || "", 160)) + '</code></li>';
+      });
+      if (!steps.length) html += '<li class="empty">—</li>';
+      html += '</ol>';
+    });
+    return html;
+  }
+
+  function renderGrowth(){
+    var g = state.growth;
+    if (!g) return '<p class="empty">' + esc(dual(
+      "在工具标签运行 :growth，这里会画出项规模随步数变化的曲线。",
+      "Run :growth from Tools to plot term size against reduction steps.")) + '</p>';
+    var html = '<h3>' + esc(t("growth")) + '</h3>' +
+      '<p class="empty" style="font-style:normal">' +
+      esc(dual("应用序与正规序对照，纵轴为节点数。",
+               "Applicative vs normal order; the vertical axis is node count.")) + '</p>';
+    var series = [["applicative", "--del"], ["normal", "--accent"]];
+    var all = [], maxY = 1, maxX = 1;
+    series.forEach(function(pair){
+      (g[pair[0]] || []).forEach(function(pt){
+        all.push({x: pt.n, y: pt.after || 0, c: pair[1]});
+        maxY = Math.max(maxY, pt.after || 0); maxX = Math.max(maxX, pt.n);
+      });
+    });
+    var W = 420, H = 200, pad = 30;
+    function xy(p){ return [pad + (p.x / maxX) * (W - pad * 2),
+                            H - pad - (p.y / maxY) * (H - pad * 2)]; }
+    html += '<svg viewBox="0 0 ' + W + ' ' + H + '" width="100%" height="' + H + '">';
+    series.forEach(function(pair){
+      var pts = all.filter(function(p){ return p.c === pair[1]; }).map(xy);
+      if (pts.length > 1){
+        html += '<polyline fill="none" stroke="var(' + pair[1] + ')" stroke-width="2" points="' +
+                pts.map(function(p){ return p[0].toFixed(1) + ',' + p[1].toFixed(1); }).join(' ') +
+                '"/>';
+      }
+    });
+    html += '<text x="' + pad + '" y="16" font-size="10" fill="var(--dim)">' + maxY + '</text>' +
+            '<text x="' + (W - pad) + '" y="' + (H - 8) + '" font-size="10" fill="var(--dim)">' +
+            maxX + '</text></svg>';
+    html += '<div class="sess-meta">' + esc(dual(
+      "应用序 " + (g.applicativeSteps || 0) + " 步 / 峰值 " + (g.applicativePeak || 0) +
+      "，正规序 " + (g.normalSteps || 0) + " 步 / 峰值 " + (g.normalPeak || 0),
+      "Applicative " + (g.applicativeSteps || 0) + " steps / peak " + (g.applicativePeak || 0) +
+      ", normal " + (g.normalSteps || 0) + " steps / peak " + (g.normalPeak || 0))) + '</div>';
+    return html;
+  }
+
+  function renderNotebook(){
+    var cells = state.notebookCells.length ? state.notebookCells : [{code: ""}];
+    var html = '<h3>' + esc(t("notebook")) + '</h3>' +
+      '<p class="empty" style="font-style:normal">' + esc(dual(
+        "每个单元独立运行，可重排或删除；内容随界面状态保存。",
+        "Each cell runs independently; reorder or delete cells. Saved with the UI state.")) + '</p>';
+    cells.forEach(function(c, i){
+      html += '<div class="ex-card"><textarea id="nb-' + i + '" rows="2" spellcheck="false" ' +
+        'aria-label="cell ' + (i + 1) + '">' + esc(c.code) + '</textarea>' +
+        '<div class="sess-acts" style="margin-top:6px">' +
+        '<button type="button" data-nb-run="' + i + '">' + esc(t("runB")) + '</button>' +
+        '<button type="button" data-nb-up="' + i + '">↑</button>' +
+        '<button type="button" data-nb-down="' + i + '">↓</button>' +
+        '<button type="button" data-nb-del="' + i + '">' + esc(t("deleteB")) + '</button>' +
+        '</div></div>';
+    });
+    html += '<button class="mini" type="button" data-nb-add>' + esc(t("addCell")) + '</button>';
+    return html;
+  }
+
+  function syncNotebook(){
+    Array.prototype.forEach.call(panel.querySelectorAll("[id^=nb-]"), function(el){
+      var i = parseInt(el.id.slice(3), 10);
+      if (state.notebookCells[i]) state.notebookCells[i].code = el.value;
+    });
+    saveLocal();
+  }
+
+  function renderCompare(){
+    var c = state.compare;
+    return '<h3>' + esc(t("compare")) + '</h3>' +
+      '<p class="empty" style="font-style:normal">' + esc(dual(
+        "两侧各用独立会话归约，再用 :conv / :prove 判断两个正规形是否同义。",
+        "Each side reduces in its own session; compare the normal forms with :conv / :prove.")) + '</p>' +
+      '<div class="ex-card"><div class="ex-title">A · ' + esc(t("runB")) + '</div>' +
+      '<input id="cmp-left" type="text" spellcheck="false" value="' + esc(c.left) + '">' +
+      '<div class="ex-result">' + esc(shorten(c.leftTerm || "—", 160)) + '</div>' +
+      '<button type="button" data-cmp-run="left">' + esc(t("runB")) + ' A</button></div>' +
+      '<div class="ex-card"><div class="ex-title">B · ' + esc(t("runB")) + '</div>' +
+      '<input id="cmp-right" type="text" spellcheck="false" value="' + esc(c.right) + '">' +
+      '<div class="ex-result">' + esc(shorten(c.rightTerm || "—", 160)) + '</div>' +
+      '<button type="button" data-cmp-run="right">' + esc(t("runB")) + ' B</button></div>' +
+      '<div class="sess-acts"><button type="button" data-cmp-conv>' + esc(t("compareB")) + '</button>' +
+      '<button type="button" data-cmp-prove>' + esc(t("proofTitle")) + '</button></div>';
+  }
+
+  async function runCompareSide(side){
+    var input = $(side === "left" ? "cmp-left" : "cmp-right");
+    if (!input) return;
+    state.compare[side] = input.value.trim();
+    if (!state.compare[side]) return;
+    var sidKey = side + "Session";
+    if (!state.compare[sidKey]){
+      var ns = await api("api/session", {lang: state.lang});
+      if (!ns.data || !ns.data.session){ addLine("fail", dual("无法创建对比会话", "cannot create compare session")); return; }
+      state.compare[sidKey] = ns.data.session;
+    }
+    var ev = await api("api/eval", {session: state.compare[sidKey],
+                                    line: state.compare[side], lang: state.lang});
+    var objs = ev.data && ev.data.outputs;
+    var o = objs && objs[0];
+    if (o) state.compare[side + "Term"] = o.term || o.text || "";
+    renderPanel();
+  }
+
+  function applyA11y(){
+    root.dataset.contrast = state.a11y.contrast ? "on" : "off";
+    root.style.fontSize = state.a11y.font + "%";
+  }
+
+  async function refreshSessions(){
+    var r = await api("api/snapshots", {});
+    if (r.data && r.data.ok){
+      state.sessionRows = r.data.snapshots || [];
+      renderPanel();
+    }
+  }
+
+  function renderSessions(){
+    var rows = state.sessionRows || [];
+    var html = '<h3>' + esc(t("sessions")) + '</h3>' +
+      '<p class="empty" style="font-style:normal">' + esc(dual(
+        "已保存的会话可恢复、重命名或删除；恢复会创建新的会话并回放历史。",
+        "Saved sessions can be restored, renamed or deleted; restore replays the history into a new session.")) + '</p>' +
+      '<div style="margin-bottom:10px"><button class="mini" type="button" data-sess-refresh">' +
+      esc(t("refreshB")) + '</button></div>';
+    if (!rows.length) return html + '<p class="empty">' + esc(t("noSessions")) + '</p>';
+    rows.forEach(function(row){
+      var name = row.name || row.id.slice(0, 8);
+      html += '<div class="sess-card"><div class="sess-head"><span>' + esc(name) + '</span></div>' +
+        '<div class="sess-meta">' + esc(String(row.lines)) + ' ' + esc(t("steps")) +
+        ' · ' + esc(row.lang) + ' · ' + esc(new Date(row.used * 1000).toLocaleString()) + '</div>' +
+        '<div class="sess-acts">' +
+        '<button type="button" data-sess-restore="' + esc(row.id) + '">' + esc(t("restoreB")) + '</button>' +
+        '<button type="button" data-sess-rename="' + esc(row.id) + '">' + esc(t("renameB")) + '</button>' +
+        '<button type="button" data-sess-delete="' + esc(row.id) + '">' + esc(t("deleteB")) + '</button></div></div>';
+    });
+    return html;
+  }
+
+  var EXERCISES = [
+    {zh:"写出恒等函数 I：参数原样返回", en:"Write the identity I: return the argument unchanged", target:"\\x.x"},
+    {zh:"写出常量函数 K：忽略第二个参数", en:"Write the constant K: ignore the second argument", target:"\\x.\\y.x"},
+    {zh:"写出邱奇数 2：对参数连续应用 f 两次", en:"Write Church numeral 2: apply f twice", target:"\\f.\\x.f (f x)"},
+    {zh:"写出组合子 B：组合两个函数 f ∘ g", en:"Write the composer B: compose two functions f after g", target:"\\f.\\g.\\x.f (g x)"},
+    {zh:"写出组合子 C：交换 f 的两个参数顺序", en:"Write the combinator C: flip the two arguments of f", target:"\\f.\\x.\\y.f y x"},
+    {zh:"写出 Church 布尔 AND：p q p", en:"Write the Church boolean AND: p q p", target:"\\p.\\q.p q p"}
+  ];
+
+  function renderExercises(){
+    var done = state.exerciseDone || {};
+    var n = Object.keys(done).filter(function(k){ return done[k]; }).length;
+    var html = '<h3>' + esc(t("exercises")) + '</h3>' +
+      '<p class="empty" style="font-style:normal">' + esc(dual(
+        "用 :conv 检查你的答案是否 β 等价；进度保存在本地。",
+        "Your answer is checked with :conv for beta-equivalence; progress is saved locally.")) +
+        ' (' + n + '/' + EXERCISES.length + ')</p>';
+    EXERCISES.forEach(function(ex, i){
+      html += '<div class="ex-card"><div class="ex-title">' +
+        esc(dual(ex.zh, ex.en)) + '</div>' +
+        '<input id="ex-input-' + i + '" type="text" spellcheck="false" ' +
+        'placeholder="λx. x" aria-label="expression">' +
+        '<button type="button" data-excheck="' + i + '">' + esc(t("checkB")) + '</button>' +
+        '<div class="ex-result" id="ex-result-' + i + '">' +
+        (done[i] ? esc(t("correct")) : '') + '</div></div>';
+    });
+    return html;
+  }
+
+  async function checkExercise(i){
+    var ex = EXERCISES[i];
+    var input = $("ex-input-" + i);
+    var line = input ? input.value.trim() : "";
+    if (!line) return;
+    var r = await api("api/eval", {session: state.session, lang: state.lang,
+                                   line: ":conv " + line + " , " + ex.target});
+    var res = $("ex-result-" + i);
+    if (r.status === 408 || (r.data && (r.data.restart || r.data.timeout))){
+      state.expiredSession = state.session;
+      state.session = null; setConn(false);
+      await rebuild();
+      return;
+    }
+    var obj = r.data && r.data.outputs && r.data.outputs[0];
+    var ok = !!(obj && obj.equal === true);
+    if (res){
+      if (r.status === 0){
+        // 连接失败不是“答错”，提示网络问题 / A connectivity failure is not a wrong answer
+        res.textContent = dual("无法连接解释器，请检查 web/app.py 是否运行",
+                               "Cannot reach the interpreter; check that web/app.py is running");
+        res.className = "ex-result no";
+      } else {
+        res.textContent = ok ? t("correct") : t("wrong");
+        res.className = "ex-result " + (ok ? "ok" : "no");
+      }
+    }
+    if (ok){
+      state.exerciseDone[i] = true;
+      saveLocal();
+    }
+  }
+
+  function renderRace(){
+    var res = state.raceResults;
+    if (!res){
+      return '<p class="empty">' + esc(dual(
+        "在“工具”标签点击“策略竞速”，输入表达式后四种策略会并排比较。",
+        "Open Tools > Strategy race and enter an expression to compare all four strategies.")) +
+        '</p>';
+    }
+    var html = '<h3>' + esc(dual("策略竞速", "Strategy race")) + '</h3>';
+    html += '<p class="empty" style="font-style:normal;margin-bottom:10px">' + esc(dual(
+      "同一表达式在四种策略下的归约；步数受步数上限约束，完整轨迹可在“轨迹”标签查看。",
+      "One expression under four strategies; step counts respect the step limit. Open Trace for the full steps.")) + '</p>';
+    html += '<div class="race-grid">';
+    ["applicative", "normal", "cbn", "cbv"].forEach(function(s){
+      var o = res[s] || {};
+      var lab = STRATEGY_LABELS[s] ? dual(STRATEGY_LABELS[s].zh, STRATEGY_LABELS[s].en) : esc(s);
+      var steps = (typeof o.steps === "number") ? o.steps : 0;
+      var flag = o.limitHit ? " " + esc(t("steps")) + "↑" : "";
+      html += '<div class="race-card"><div class="race-head">' + lab + '</div>' +
+        '<div class="race-meta">' + esc(String(steps)) + ' ' + esc(t("steps")) + flag + '</div>' +
+        '<code>' + esc(shorten(o.final || o.term || o.text || "—", 200)) + '</code>' +
+        (o.trace ? '<button class="mini" type="button" data-race-view="' + s + '">' +
+          esc(dual("查看轨迹", "view trace")) + '</button>' : '') + '</div>';
+    });
+    html += '</div>';
+    return html;
+  }
+
   function renderPanel(){
     // 重绘前记录焦点与滚动，重绘后恢复 / capture focus and scroll before repaint
     var keepScroll = panel.scrollTop || 0;
@@ -1918,10 +2644,18 @@
       if (ae && panel.contains && panel.contains(ae)) keepFocus = focusKeyOf(ae);
     } catch(e){}
     var html = "";
-    if (state.tab === "trace") html = renderTrace();
+    if (state.tab === "trace"){
+      html = (state.selected && state.selected.leftTrace) ? renderProof() : renderTrace();
+    }
+    else if (state.tab === "race") html = renderRace();
     else if (state.tab === "ast") html = renderAst();
     else if (state.tab === "type") html = renderType();
     else if (state.tab === "env") html = renderEnv();
+    else if (state.tab === "growth") html = renderGrowth();
+    else if (state.tab === "notebook") html = renderNotebook();
+    else if (state.tab === "compare") html = renderCompare();
+    else if (state.tab === "exercises") html = renderExercises();
+    else if (state.tab === "sessions") html = renderSessions();
     else if (state.tab === "tools") html = renderTools();
     else if (state.tab === "guide") html = renderGuide();
     else html = renderHelp();
@@ -1939,7 +2673,10 @@
         state.tracePos = parseInt(range.value, 10) || 0;
         var n = (state.selected && state.selected.trace) ? state.selected.trace.length : 1;
         range.style.setProperty("--p", (n > 1 ? state.tracePos / (n - 1) * 100 : 0) + "%");
-        renderPanel();
+        // 只刷新当前帧，不能重建面板：否则正在拖动的滑块会被 innerHTML 销毁
+        // Update only the current frame; a full re-render would destroy the
+        // range input being dragged.
+        updateTraceFrame();
       });
     }
     var playBtn = panel.querySelector("[data-play]");
@@ -1969,7 +2706,7 @@
       el.addEventListener("click", function(){ insertText(el.dataset.insert); });
     });
     Array.prototype.forEach.call(panel.querySelectorAll("[data-del]"), function(el){
-      el.addEventListener("click", function(){ execSilent(":del " + el.dataset.del).then(refreshEnv); });
+      el.addEventListener("click", function(){ exec(":del " + el.dataset.del).then(refreshEnv); });
     });
     Array.prototype.forEach.call(panel.querySelectorAll("[data-load]"), function(el){
       el.addEventListener("click", async function(){
@@ -1987,6 +2724,161 @@
     });
     Array.prototype.forEach.call(panel.querySelectorAll("[data-tool]"), function(el){
       el.addEventListener("click", function(){ runTool(el.dataset.tool); });
+    });
+    Array.prototype.forEach.call(panel.querySelectorAll("[data-proof-export]"), function(el){
+      el.addEventListener("click", function(){
+        var o = state.selected;
+        if (!o) return;
+        var kind = el.dataset.proofExport;
+        if (kind === "md"){
+          saveBlob("lambda-proof-" + fileStamp() + ".md", proofMarkdown(o),
+                   "text/markdown;charset=utf-8");
+        } else if (kind === "json"){
+          saveBlob("lambda-proof-" + fileStamp() + ".json", JSON.stringify(o, null, 2),
+                   "application/json;charset=utf-8");
+        } else {
+          saveBlob("lambda-proof-" + fileStamp() + ".tex", proofLatex(o),
+                   "application/x-tex;charset=utf-8");
+        }
+      });
+    });
+    Array.prototype.forEach.call(panel.querySelectorAll("[data-race-view]"), function(el){
+      el.addEventListener("click", function(){
+        var o = state.raceResults && state.raceResults[el.dataset.raceView];
+        if (o) selectResult(o, null, "trace");
+      });
+    });
+    Array.prototype.forEach.call(panel.querySelectorAll("[data-deriv-focus]"), function(el){
+      el.addEventListener("click", function(){
+        insertText(el.dataset.derivFocus);
+        toast(dual("子项已插入输入框", "subterm inserted into the input"));
+      });
+    });
+    var contrast = panel.querySelector("[data-a11y-contrast]");
+    if (contrast) contrast.addEventListener("click", function(){
+      state.a11y.contrast = !state.a11y.contrast; applyA11y(); saveLocal(); renderPanel();
+    });
+    var fontBtn = panel.querySelector("[data-a11y-font]");
+    if (fontBtn) fontBtn.addEventListener("click", function(){
+      state.a11y.font = state.a11y.font >= 130 ? 80 : state.a11y.font + 10;
+      applyA11y(); saveLocal();
+    });
+    Array.prototype.forEach.call(panel.querySelectorAll("[data-nb-run]"), function(el){
+      el.addEventListener("click", function(){
+        var i = parseInt(el.dataset.nbRun, 10);
+        var ta = $("nb-" + i);
+        if (ta && ta.value.trim()) exec(ta.value.trim());
+      });
+    });
+    Array.prototype.forEach.call(panel.querySelectorAll("[data-nb-up]"), function(el){
+      el.addEventListener("click", function(){
+        syncNotebook(); var i = parseInt(el.dataset.nbUp, 10);
+        if (i > 0){ var c = state.notebookCells; var t = c[i-1]; c[i-1]=c[i]; c[i]=t; renderPanel(); }
+      });
+    });
+    Array.prototype.forEach.call(panel.querySelectorAll("[data-nb-down]"), function(el){
+      el.addEventListener("click", function(){
+        syncNotebook(); var i = parseInt(el.dataset.nbDown, 10);
+        var c = state.notebookCells;
+        if (i < c.length - 1){ var t = c[i+1]; c[i+1]=c[i]; c[i]=t; renderPanel(); }
+      });
+    });
+    Array.prototype.forEach.call(panel.querySelectorAll("[data-nb-del]"), function(el){
+      el.addEventListener("click", function(){
+        syncNotebook(); var i = parseInt(el.dataset.nbDel, 10);
+        state.notebookCells.splice(i, 1);
+        if (!state.notebookCells.length) state.notebookCells = [{code: ""}];
+        renderPanel();
+      });
+    });
+    var nbAdd = panel.querySelector("[data-nb-add]");
+    if (nbAdd) nbAdd.addEventListener("click", function(){
+      syncNotebook(); state.notebookCells.push({code: ""}); renderPanel();
+    });
+    Array.prototype.forEach.call(panel.querySelectorAll("[data-cmp-run]"), function(el){
+      el.addEventListener("click", function(){ runCompareSide(el.dataset.cmpRun); });
+    });
+    var cmpRun = function(kind){
+      var l = $("cmp-left"), r = $("cmp-right");
+      if (!l || !r) return;
+      state.compare.left = l.value.trim(); state.compare.right = r.value.trim();
+      var a = state.compare.leftTerm || state.compare.left;
+      var b = state.compare.rightTerm || state.compare.right;
+      if (!a || !b) return;
+      exec(":" + kind + " " + a + " , " + b);
+    };
+    var cmpConv = panel.querySelector("[data-cmp-conv]");
+    if (cmpConv) cmpConv.addEventListener("click", function(){ cmpRun("conv"); });
+    var cmpProve = panel.querySelector("[data-cmp-prove]");
+    if (cmpProve) cmpProve.addEventListener("click", function(){ cmpRun("prove"); });
+    Array.prototype.forEach.call(panel.querySelectorAll("[data-redex-node]"), function(el){
+      el.addEventListener("click", function(){ exec(":step " + el.dataset.redexNode); });
+    });
+    Array.prototype.forEach.call(panel.querySelectorAll("[data-excheck]"), function(el){
+      el.addEventListener("click", function(){ checkExercise(parseInt(el.dataset.excheck, 10)); });
+    });
+    var sessRefresh = panel.querySelector("[data-sess-refresh]");
+    if (sessRefresh) sessRefresh.addEventListener("click", function(){ refreshSessions(); });
+    Array.prototype.forEach.call(panel.querySelectorAll("[data-sess-restore]"), function(el){
+      el.addEventListener("click", async function(){
+        var r = await api("api/session/" + encodeURIComponent(el.dataset.sessRestore) + "/restore",
+                          {lang: state.lang});
+        if (r.status === 200 && r.data && r.data.ok){
+          // 取消旧会话并中止进行中的请求，避免旧解释器泄漏
+          // Cancel the old session and abort in-flight requests so no interpreter leaks.
+          var oldSid = state.session;
+          if (oldSid){
+            try { await api("api/session/" + oldSid + "/cancel", {}); } catch(e){}
+          }
+          inflight.slice().forEach(function(c){
+            try { if (c && typeof c.abort === "function") c.abort(); } catch(e){}
+          });
+          inflight.length = 0; activeController = null; setCancelActive(false);
+          // 清空回放区并重置界面状态，与 rebuild() 保持一致
+          // Clear the transcript and reset UI state, in line with rebuild().
+          state.gen++;
+          out.innerHTML = "";
+          state.selected = null;
+          state.envRows = [];
+          setManual(false);
+          state.session = r.data.session;
+          state.codeLines = Array.isArray(r.data.code) ? r.data.code.slice() : [];
+          setConn(true);
+          // 后端按快照保存的语言恢复，这里用界面当前语言重新声明
+          // The backend restores with the snapshot's saved language; re-assert the UI language.
+          state.replaying = true;
+          try {
+            await evalLine(":lang " + state.lang, true);
+            await refreshEnv();
+          } finally { state.replaying = false; }
+          saveLocal();
+          renderPanel();
+          toast(dual("会话已恢复", "session restored"));
+          switchTab("trace");
+        } else addLine("fail", (r.data && r.data.error) || dual("恢复失败", "restore failed"));
+      });
+    });
+    Array.prototype.forEach.call(panel.querySelectorAll("[data-sess-rename]"), function(el){
+      el.addEventListener("click", async function(){
+        var name = await dialog({title: t("renameB"), message: dual("新名称", "new name"),
+                                 input: true, ok: t("renameB")});
+        if (!name) return;
+        var r = await api("api/snapshot/" + encodeURIComponent(el.dataset.sessRename) + "/name",
+                          {name: name});
+        if (r.status === 200 && r.data && r.data.ok) refreshSessions();
+        else addLine("fail", (r.data && r.data.error) || dual("重命名失败", "rename failed"));
+      });
+    });
+    Array.prototype.forEach.call(panel.querySelectorAll("[data-sess-delete]"), function(el){
+      el.addEventListener("click", async function(){
+        var ok = await dialog({title: t("deleteB"),
+                               message: dual("确定删除这个会话快照吗？", "Delete this session snapshot?"),
+                               ok: t("deleteB")});
+        if (!ok) return;
+        var r = await api("api/snapshot/" + encodeURIComponent(el.dataset.sessDelete), {}, "DELETE");
+        if (r.status === 200 && r.data && r.data.ok) refreshSessions();
+        else addLine("fail", (r.data && r.data.error) || dual("删除失败", "delete failed"));
+      });
     });
     Array.prototype.forEach.call(panel.querySelectorAll("[data-guide]"), function(el){
       el.addEventListener("click", function(){
@@ -2006,7 +2898,7 @@
       el.addEventListener("click", async function(){
         var ok = await dialog({title: t("reset"), message: t("resetAsk"), ok: t("reset")});
         if (!ok) return;
-        execSilent(":reset").then(function(){
+        exec(":reset").then(function(){
           setManual(false);
           refreshEnv();
           saveLocal();
@@ -2050,15 +2942,25 @@
     }
   }
 
+  // 并发调用共享同一个进行中的 Promise：清空界面后立即提交命令时，
+  // evalLine 不会再创建第二个后端会话 / Concurrent callers share one in-flight
+  // promise so a command submitted right after clear cannot orphan a second session.
+  var pendingSession = null;
   async function newSession(){
-    var r = await api("api/session", {lang: state.lang});
-    if (r.data && r.data.session){ state.session = r.data.session; setConn(true); }
-    else {
-      state.session = null; setConn(false);
-      // 会话创建失败时给出提示，不能只让界面显示“未连接”
-      // Report a failed session; the connection badge alone is not enough.
-      if (r.data && r.data.error) addLine("fail", String(r.data.error));
-    }
+    if (pendingSession) return pendingSession;
+    var p = (async function(){
+      var r = await api("api/session", {lang: state.lang});
+      if (r.data && r.data.session){ state.session = r.data.session; setConn(true); }
+      else {
+        state.session = null; setConn(false);
+        // 会话创建失败时给出提示，不能只让界面显示“未连接”
+        // Report a failed session; the connection badge alone is not enough.
+        if (r.data && r.data.error) addLine("fail", String(r.data.error));
+      }
+    })();
+    pendingSession = p;
+    try { return await p; }
+    finally { if (pendingSession === p) pendingSession = null; }
   }
 
   function setConn(ok){
@@ -2091,7 +2993,7 @@
     return obj.kind === "error" && obj.ok === false;
   }
 
-  async function streamEval(line, signal){
+  async function streamEval(line, signal, streamState){
     var opts = {
       method: "POST",
       headers: {"Content-Type": "application/json"},
@@ -2099,8 +3001,21 @@
     };
     if (signal && typeof AbortController !== "undefined") opts.signal = signal;
     var res = await fetch("api/eval/stream", opts);
-    if (!res.ok || !res.body || typeof res.body.getReader !== "function") return null;
+    if (!res.ok){
+      // 后端直接拒绝（限流/坏请求）时保留错误体，不能再回退到 /api/eval，
+      // 否则同一条命令可能被执行两次且真实原因被吞掉
+      // Surface a rejected stream directly; falling back would re-run the line.
+      var body = null;
+      try { body = await res.json(); } catch(e){}
+      return {status: res.status, data: body || {ok: false,
+        error: "stream failed", code: "internal_error"}};
+    }
+    if (!res.body || typeof res.body.getReader !== "function") return null;
     var reader = res.body.getReader(), dec = new TextDecoder();
+    // 后端已收到并可能已开始执行这一行；此后若传输中断，不能再通过 /api/eval 重发
+    // The backend already received (and may be running) the line; a later transport
+    // failure must not re-send it through /api/eval.
+    if (streamState) streamState.started = true;
     var buf = "", outputs = [], session = null, failure = null;
     while (true){
       var part = await reader.read();
@@ -2131,23 +3046,44 @@
     return {status: 200, data: {ok: true, session: session, outputs: outputs}};
   }
 
-  async function evalLine(line, silent){
+  async function evalLine(line, silent, recorded){
     var gen = state.gen;
+    // 取消时要把 exec() 刚压入回放历史的那一行撤掉，否则 rebuild() 会重跑它
+    // 只撤掉有记录来源的行，避免误删后台静默调用（如 :env）复用的历史条目
+    // On cancel, drop the line exec() just recorded so rebuild() will not replay it.
+    // Only drop lines that were actually recorded, so silent callers cannot remove
+    // a legitimate older history entry that happens to have the same text.
+    function dropRecorded(){
+      if (!recorded) return;
+      var dead = state.codeLines.lastIndexOf(line);
+      if (dead >= 0){ state.codeLines.splice(dead, 1); saveLocal(); }
+    }
     if (!state.session) await newSession();
     var controller = null;
     // 特性检测：桩环境没有 AbortController / feature check: the stub has no AbortController
     if (typeof AbortController !== "undefined"){
       controller = new AbortController();
-      activeController = controller;
-      setCancelActive(true);
+      trackRequest(controller);
     }
+    var streamState = {started: false};
     var r = null;
     try {
       if (canStream()){
         try {
-          r = await streamEval(line, controller ? controller.signal : undefined);
+          r = await streamEval(line, controller ? controller.signal : undefined, streamState);
         } catch(e){
-          if (controller && controller.signal && controller.signal.aborted) return [];
+          if (controller && controller.signal && controller.signal.aborted){ dropRecorded(); return []; }
+          if (streamState.started){
+            // 流已开始，后端可能已执行这一行；再用 /api/eval 重发会重复定义和历史
+            // Streaming began: the backend may have run the line. Re-sending through
+            // /api/eval would duplicate definitions/history, so expire the session and
+            // rebuild/replay from history instead of re-sending the same line.
+            if (!silent) addLine("warn", dual("连接中断，正在重建会话", "Connection lost; rebuilding session"));
+            state.expiredSession = state.session;
+            state.session = null; setConn(false);
+            if (!state.replaying) await rebuild();
+            return [];
+          }
           r = null;
         }
       }
@@ -2156,11 +3092,11 @@
                       null, controller ? controller.signal : undefined);
       }
     } finally {
-      if (activeController === controller) activeController = null;
-      if (controller) setCancelActive(false);
+      untrackRequest(controller);
     }
-    // 被取消的请求不再渲染错误 / a cancelled request renders nothing
-    if (controller && controller.signal && controller.signal.aborted) return [];
+    // 被取消的请求不再渲染错误，并撤掉刚记录的回放行
+    // A cancelled request renders nothing and drops the just-recorded replay line.
+    if (controller && controller.signal && controller.signal.aborted){ dropRecorded(); return []; }
     // 清空/重建后，旧请求的结果不能再改动会话或界面
     // After a clear/rebuild, a stale response must not touch session or UI.
     if (state.gen !== gen) return [];
@@ -2169,11 +3105,18 @@
       // A timed-out line must not stay in the replay history and re-thrash sessions.
       var dead = state.codeLines.lastIndexOf(line);
       if (dead >= 0){ state.codeLines.splice(dead, 1); saveLocal(); }
+      // 记下失效的会话 id，重建时优先尝试服务端快照恢复
+      // Remember the dead session id so rebuild can try a server-side snapshot first.
+      state.expiredSession = state.session;
       state.session = null; setConn(false);
       if (!silent){
         addLine("warn", (r.data && r.data.error) || t("timeout"));
-        await rebuild();
       }
+      // 静默调用（刷新环境、回放等）也必须重建，否则会丢失会话和此前的定义；
+      // 回放期间用 state.replaying 防止递归重建
+      // Silent callers must rebuild too, or the session and earlier definitions are
+      // lost; the guard prevents recursive rebuilds while replaying.
+      if (!state.replaying) await rebuild();
       return [];
     }
     if (!r.data || !r.data.ok){
@@ -2204,28 +3147,64 @@
   // 会话失效后重建并静默回放已有输入
   // Rebuild a dead session and silently replay previous lines.
   async function rebuild(){
+    var old = state.expiredSession;
+    state.expiredSession = null;
+    if (old){
+      var rr = await api("api/session/" + encodeURIComponent(old) + "/restore",
+                         {lang: state.lang});
+      if (rr.status === 200 && rr.data && rr.data.ok){
+        state.session = rr.data.session;
+        state.codeLines = Array.isArray(rr.data.code) ? rr.data.code.slice() : [];
+        saveLocal();
+        setConn(true);
+        state.replaying = true;
+        try { await evalLine(":lang " + state.lang, true); }
+        finally { state.replaying = false; }
+        return;
+      }
+    }
     await newSession();
-    await evalLine(":lang " + state.lang, true);
-    await evalLine(":strategy " + $("strategy").value, true);
-    await evalLine(":steps " + state.limit, true);
-    await evalLine(":eta " + (state.eta ? "on" : "off"), true);
-    await evalLine(":fast " + (state.fast ? "on" : "off"), true);
-    var lines = state.codeLines.slice();
-    for (var i = 0; i < lines.length; i++){
-      await evalLine(lines[i], true);
+    state.replaying = true;
+    try {
+      await evalLine(":lang " + state.lang, true);
+      await evalLine(":strategy " + $("strategy").value, true);
+      await evalLine(":steps " + state.limit, true);
+      await evalLine(":eta " + (state.eta ? "on" : "off"), true);
+      await evalLine(":fast " + (state.fast ? "on" : "off"), true);
+      await evalLine(":encoding " + state.encoding, true);
+      // 历史里的 :lang 会覆盖下拉框当前选择，回放时跳过并在结束后重新声明
+      // Stale :lang lines in history would override the dropdown choice; skip
+      // them and re-assert the UI language after replay.
+      var lines = state.codeLines.filter(function(l){ return !/^\s*:lang\b/i.test(l); });
+      for (var i = 0; i < lines.length; i++){
+        await evalLine(lines[i], true);
+      }
+      await evalLine(":lang " + state.lang, true);
+    } finally {
+      state.replaying = false;
+      setCancelActive(false);
     }
   }
 
   // 取消求值：中断 fetch、通知后端、再走已有的会话重建与历史回放
   // Cancel evaluation: abort the fetch, notify the backend, then rebuild and replay.
   async function cancelEval(){
+    // 重建/回放期间忽略取消，避免连环重建出多个会话
+    // Ignore cancel while rebuilding/replaying to avoid cascading sessions.
+    if (state.replaying) return;
     // 递增代数：即便某个并行请求没有被 abort，它的旧结果也不能再渲染
     // Bump the generation so a parallel request that was not aborted cannot render.
     state.gen++;
-    if (activeController && typeof activeController.abort === "function"){
-      try { activeController.abort(); } catch(e){}
-    }
+    // 并行请求全部中止，不能只取消最近的一个
+    // Abort every in-flight request, not only the most recent one.
+    inflight.slice().forEach(function(c){
+      if (c && typeof c.abort === "function"){
+        try { c.abort(); } catch(e){}
+      }
+    });
+    inflight.length = 0;
     activeController = null;
+    setCancelActive(false);
     var sid = state.session;
     if (sid){
       try { await api("api/session/" + sid + "/cancel", {}); } catch(e){}
@@ -2257,6 +3236,7 @@
     if (!on) state.manualTerm = "";
     $("m-begin").disabled = state.manual;
     $("m-back").disabled = !state.manual;
+    $("m-forward").disabled = true;  // 只有 :back 之后才有可重做的步骤 / redo exists only after :back
     $("m-start").disabled = !state.manual;
     $("m-step").disabled = !state.manual;
     $("m-run").disabled = !state.manual;
@@ -2271,6 +3251,11 @@
     opts = opts || {};
     var gen = state.gen;
     if (!opts.silent) echoPrompt(line);
+    var tline = line.trim();
+    if (!opts.silent && /^:/.test(tline) && CMD_NAMES().indexOf(baseOf(tline)) < 0){
+      var near = fuzzyCommands(baseOf(tline), 1);
+      if (near.length) toast(t("fuzzyTip") + " " + near[0] + "?");
+    }
     var trimmed = line.trim();
     if (!trimmed) { scrollDown(); return []; }
 
@@ -2290,7 +3275,7 @@
 
     if (opts.record !== false) state.codeLines.push(line);
 
-    var outputs = await evalLine(line, opts.silent);
+    var outputs = await evalLine(line, opts.silent, opts.record !== false);
     // 期间清空了界面：丢弃这条命令的后续渲染与状态更新
     // If the UI was cleared meanwhile, drop this command's rendering/updates.
     if (state.gen !== gen) return [];
@@ -2659,7 +3644,10 @@
       if (e.key === "ArrowDown"){ e.preventDefault(); state.acIndex = (state.acIndex + 1) % state.acItems.length; paintAc(); return; }
       if (e.key === "ArrowUp"){ e.preventDefault(); state.acIndex = (state.acIndex - 1 + state.acItems.length) % state.acItems.length; paintAc(); return; }
       if (e.key === "Tab" || e.key === "Enter"){ e.preventDefault(); acceptAc(); return; }
-      if (e.key === "Escape"){ closeAc(); return; }
+      // 只关闭补全弹窗；阻止冒泡，否则全局 Escape 会把正在进行的求值也取消掉
+      // Dismiss only the popup; stop propagation so the global Escape cannot
+      // also cancel an in-flight evaluation.
+      if (e.key === "Escape"){ e.stopPropagation(); closeAc(); return; }
     }
     // Ctrl/Cmd+Enter 只运行当前逻辑命令；Shift+Enter 仍然是插入换行
     // Ctrl/Cmd+Enter runs the current logical command; Shift+Enter still inserts a newline.
@@ -2748,10 +3736,14 @@
       await evalLine(":steps " + state.limit, true);
       await evalLine(":eta " + (state.eta ? "on" : "off"), true);
       await evalLine(":fast " + (state.fast ? "on" : "off"), true);
-      var lines = state.codeLines.slice();
+      await evalLine(":encoding " + state.encoding, true);
+      // 跳过历史里的 :lang，最后按分享链接/下拉框选定的语言重新声明
+      // Skip replayed :lang lines; re-assert the chosen language afterwards.
+      var lines = state.codeLines.filter(function(l){ return !/^\s*:lang\b/i.test(l); });
       for (var i = 0; i < lines.length; i++){
         await exec(lines[i], {record: false});
       }
+      await evalLine(":lang " + state.lang, true);
       await refreshEnv();
     } finally {
       state.replaying = false;
@@ -2760,6 +3752,18 @@
 
   function clearAll(){
     state.gen = (state.gen || 0) + 1;
+    // 清空也要终止所有进行中的请求与轨迹播放，否则它们随后仍会重建会话
+    // Clear must abort every in-flight request and stop playback, otherwise a
+    // pending response can still revive the session afterwards.
+    inflight.slice().forEach(function(c){
+      if (c && typeof c.abort === "function"){
+        try { c.abort(); } catch(e){}
+      }
+    });
+    inflight.length = 0;
+    activeController = null;
+    setCancelActive(false);
+    stopPlay();
     out.innerHTML = "";
     state.codeLines = [];
     state.selected = null;
@@ -2771,6 +3775,7 @@
       await evalLine(":steps " + state.limit, true);
       await evalLine(":eta " + (state.eta ? "on" : "off"), true);
       await evalLine(":fast " + (state.fast ? "on" : "off"), true);
+      await evalLine(":encoding " + state.encoding, true);
       addLine("info", t("welcome"), null, null, I18N.welcome.zh, I18N.welcome.en);
       await refreshEnv();
       renderPanel();
@@ -2804,6 +3809,11 @@
   document.addEventListener("keydown", function(e){
     if ((e.ctrlKey || e.metaKey) && (e.key === "k" || e.key === "K" || e.key === "p" || e.key === "P")){
       e.preventDefault();
+      // 已有弹窗时不再叠加：多个 dialog 共用同一个 #modal，会导致列表互相覆盖、
+      // 一次 Enter 同时 resolve 多个 Promise.
+      // Do not stack dialogs: they share one #modal, so lists overwrite each
+      // other and a single Enter resolves more than one promise.
+      if (dialogOpen) return;
       openCommandPalette();
       return;
     }
@@ -2812,7 +3822,7 @@
     }
   });
 
-  selects = [initSelect("sel-lang"), initSelect("sel-strategy")];
+  selects = [initSelect("sel-lang"), initSelect("sel-strategy"), initSelect("sel-encoding")];
 
   var tabEls = document.querySelectorAll(".tab");
   Array.prototype.forEach.call(tabEls, function(b){
@@ -2869,6 +3879,15 @@
     });
   });
 
+  $("encoding").addEventListener("change", function(){
+    var enc = $("encoding").value;
+    state.encoding = enc;
+    execSilent(":encoding " + enc).then(function(outs){
+      outs.forEach(function(o){ if (o.kind === "info") addLine("info", o.text); });
+      saveLocal();
+    });
+  });
+
   $("st-limit").addEventListener("change", function(){
     var v = parseInt(this.value, 10);
     if (!(v > 0)){ this.value = state.limit; return; }
@@ -2903,6 +3922,9 @@
   $("m-back").addEventListener("click", function(){
     if (state.manual) exec(":back");
   });
+  $("m-forward").addEventListener("click", function(){
+    if (state.manual) exec(":forward");
+  });
   $("m-start").addEventListener("click", function(){
     if (state.manual) exec(":goto 0");
   });
@@ -2926,7 +3948,8 @@
       theme: state.theme,
       lang: state.lang,
       eta: state.eta,
-      fast: state.fast
+      fast: state.fast,
+      encoding: state.encoding
     };
   }
 
@@ -2947,10 +3970,10 @@
   // 与后端 /api/share 一致的白名单：外部构造的 #state=/#code= 不能绕过它
   // Mirror the backend share whitelist: crafted #state=/#code= must not bypass it.
   var SAFE_SHARE_CMDS = {
-    ":lang":1, ":strategy":1, ":steps":1, ":eta":1, ":fast":1,
-    ":type":1, ":trace":1, ":ast":1, ":db":1, ":eq":1, ":conv":1, ":nf":1, ":whnf":1,
+    ":lang":1, ":strategy":1, ":steps":1, ":eta":1, ":fast":1, ":encoding":1,
+    ":type":1, ":trace":1, ":ast":1, ":db":1, ":eq":1, ":conv":1, ":prove":1, ":nf":1, ":whnf":1,
     ":int":1, ":church":1, ":env":1, ":help":1, ":def":1, ":search":1, ":let":1,
-    ":begin":1, ":step":1, ":back":1, ":goto":1, ":run":1, ":end":1
+    ":begin":1, ":step":1, ":back":1, ":undo":1, ":forward":1, ":redo":1, ":goto":1, ":run":1, ":end":1
   };
   function isSafeShareCommand(line){
     if (typeof line !== "string") return false;
@@ -2982,6 +4005,10 @@
     if (validLang(payload.lang)) state.lang = payload.lang;
     if (typeof payload.eta === "boolean") state.eta = payload.eta;
     if (typeof payload.fast === "boolean") state.fast = payload.fast;
+    if (payload.encoding === "church" || payload.encoding === "scott"){
+      state.encoding = payload.encoding;
+      $("encoding").value = payload.encoding;
+    }
     applyFastButton();
   }
 
@@ -3006,6 +4033,26 @@
     } catch(e){}
     var enc = encodeShareState();
     await copyShareUrl(location.origin + location.pathname + "#state=" + enc);
+  });
+
+  $("static-page").addEventListener("click", async function(){
+    var lines = [];
+    Array.prototype.forEach.call(out.querySelectorAll(".line"), function(el){
+      var zh = el._zh || el.textContent || "";
+      var en = el._en || el.textContent || "";
+      var obj = el._obj;
+      lines.push({zh: zh, en: en, term: obj && obj.term ? obj.term : ""});
+    });
+    if (!lines.length){ toast(dual("还没有可分享的输出", "no output to share yet")); return; }
+    var sel = state.selected || {};
+    var trace = sel.trace || sel.leftTrace || [];
+    var r = await api("api/share/page", {title: "Lambda calculus", lines: lines,
+                                         trace: trace});
+    if (r.status === 200 && r.data && r.data.ok){
+      var url = new URL("api/share/page/" + encodeURIComponent(r.data.id), location.href).href;
+      await dialog({title: t("staticPage"), message: url, ok: t("ok")});
+      copyText(url);
+    } else addLine("fail", (r.data && r.data.error) || dual("生成静态页失败", "static page failed"));
   });
 
   $("export").addEventListener("click", function(){
@@ -3133,9 +4180,14 @@
         var body = el.querySelector(".body");
         if (body) body.textContent = pickPair(el._zh, el._en, el._zh);
       }
-      if (el._metaObj){
-        var m = el.querySelector(".meta");
-        if (m) m.textContent = resultMeta(el._metaObj);
+      var m = el._metaEl || el.querySelector(".meta");
+      if (el._metaObj && m){
+        // 警告行显示的是错误码，不是结果摘要；切换语言时不能把它替换掉
+        // A warning's meta is its error code, not a result summary.
+        m.textContent = el._errCode ? String(el._errCode) : resultMeta(el._metaObj);
+      }
+      if (el._metaPair && m){
+        m.textContent = pickPair(el._metaPair[0], el._metaPair[1], el._metaPair[0]);
       }
       // 错误码提示的标题里含可翻译的“错误码”前缀，切换语言时一并刷新
       // The code tooltip contains a translatable prefix; refresh it on lang switch.
@@ -3168,9 +4220,10 @@
     $("m-label").textContent = t("manual");
     $("m-begin").textContent = t("begin");
     $("m-back").textContent = t("backB");
+    $("m-forward").textContent = t("forwardB");
     $("m-start").textContent = t("startB");
     $("m-step").textContent = t("stepB");
-    $("m-run").textContent = t("runB");
+    $("m-run").textContent = t("runEndB");
     $("m-end").textContent = t("endB");
     Array.prototype.forEach.call($("strategy").options, function(o){
       if (STRATEGY_LABELS[o.value]) o.textContent = strategyText(o.value);
@@ -3190,6 +4243,19 @@
       if (validLimit(saved.limit)) state.limit = Math.floor(saved.limit);
       if (typeof saved.eta === "boolean") state.eta = saved.eta;
       if (typeof saved.fast === "boolean") state.fast = saved.fast;
+      if (saved.encoding === "church" || saved.encoding === "scott"){
+        state.encoding = saved.encoding;
+        $("encoding").value = saved.encoding;
+      }
+      if (saved.exerciseDone && typeof saved.exerciseDone === "object") state.exerciseDone = saved.exerciseDone;
+      if (Array.isArray(saved.notebookCells) && saved.notebookCells.length) state.notebookCells = saved.notebookCells;
+      if (saved.compare && typeof saved.compare === "object") state.compare = saved.compare;
+      if (saved.a11y && typeof saved.a11y === "object"){
+        state.a11y.contrast = saved.a11y.contrast === true;
+        state.a11y.font = (typeof saved.a11y.font === "number")
+          ? Math.max(80, Math.min(130, saved.a11y.font)) : 100;
+      }
+      applyA11y();
       if (typeof saved.strategy === "string" && STRATEGY_LABELS[saved.strategy]) {
         $("strategy").value = saved.strategy;
       }

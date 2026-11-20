@@ -18,12 +18,12 @@
 - **快速模式**：`:fast on|off`（网页端也有开关）用共享环境和闭包求值，不再每步重建整项，大型 Church 算术会快很多。它只返回正规形：没有轨迹和精确步数，`:steps` 改作 β 燃料预算。
 - **正规形**：`:nf` 归约到完整正规形，`:whnf` 停在弱首正规形。
 - **任选 redex**：`:begin` 列出全部 β-redex，`:step <n>` 归约指定的一项；网页端直接点击。
-- **等价判断**：`:eq a , b` 判断 α 等价，`:conv a , b` 判断 β 等价（两边都归约到正规形后比较）。
+- **等价判断**：`:eq a , b` 判断 α 等价，`:conv a , b` 判断 β 等价（两边都归约到正规形后比较）；`:prove a , b` 给出可转换性证明，展示两边归约到共同正规式的完整步骤。
 - **更丰富的表达式**：`let x = e1; y = e2 in e3`（`:type` 支持表达式内 let 多态）、`if c then t else f`、列表字面量 `[a, b, c]`、`(expr : T)` 类型标注，以及任意行尾的 `--` 注释。
 - **REPL 多行输入**：行尾 `\`、圆括号或方括号未闭合时自动续行。
 - **计时与帮助**：`:time [n] <表达式>` 输出耗时与最小/最大值，`:bench <n> <表达式>` 给出平均/中位/标准差，`:help <cmd>` 显示分项帮助。
 - **CLI 一次性模式**：`-e/--eval <命令>` 执行后退出，`--check <文件>` 校验 `.lam` 并以 0/1 退出，`--strategy/--steps/--eta/--fast` 无需文件即可配置一次运行。
-- **手动回退**：`:back` 与 `:goto <n>` 在已保存的手动归约历史中移动；网页端也有对应按钮。
+- **手动回退/重做**：`:back` 与 `:goto <n>` 在已保存的手动归约历史中移动，`:forward` 重做被 `:back` 撤销的步骤；网页端也有对应按钮。
 - **定义工具**：`:def <名字>`、`:search <子串>`、`:reload`、`:edit [文件]`，以及 `:load`/`:save`/`:edit` 的文件名补全。
 - **有界循环检测**：归约中出现重复整项时给出双语 `warn`，JSON 带 `code: "cycle_detected"`。
 - **机器可读的错误码**：所有 `error` / `fail` / `warn` 的 JSON 都带 `code` 字段。
@@ -31,7 +31,13 @@
 - **语义提示**：按 α 等价识别邱奇数 / 布尔值 / 序对，以及 `I K S B C W` 组合子；六个组合子现在也已定义。
 - **预定义环境**：`TRUE FALSE NOT AND OR XOR NAND IF I K S B C W ZERO ONE TWO THREE SUCC PLUS MULT EXP PRED SUB ISZERO LEQ EQ MIN MAX DIV MOD PAIR FST SND NIL CONS HEAD TAIL APPEND REV LENGTH MAP FILTER FOLD RANGE ZIP Y`。
 - **教材库**：`lib/prelude.lam` 提供 `FACT`、`FIB`、`ISEVEN`、`SUM`、`PRODUCT`、`CONCAT`、`TAKE`、`DROP`、`REPEAT`、`ANY`、`ALL`、`ZIPWITH`、`SORT`、`MAXLIST`、`MINLIST` 等。
-- **简单类型**：Hindley–Milner 推断，支持 let 泛化（`:type`），含表达式级 let 多态与 `(expr : T)` 标注。
+- **简单类型**：Hindley–Milner 推断，支持 let 泛化（`:type`），含表达式级 let 多态与 `(expr : T)` 标注。`:type` 还会把推断出的类型读作 Curry–Howard 命题（JSON 中的 `propositionFormula` / `propositionZh` / `propositionEn`；箭头写作 `⇒`，量化的类型变量写作 `∀t0 …`），并给出 `derivation` 推导日志（统一、约束、泛化）。
+- **数值编码**：`:encoding church|scott` 切换 `:church` / `:int` 使用的编码；`lib/scott.lam` 提供 Scott 数、布尔、序对与惰性列表，以及与邱奇编码互转的函数。
+- **带轨迹的抽象机**：`:machine <expr>` 用环境 + 参数栈归约，不复制共享参数，同时给出精确 β 步数与真实的前后轨迹。
+- **统计**：`:stats <expr>` 输出节点数、深度、redex 数、自由变量、β/η 步数以及是否已到正规形。
+- **更多求值语义**：`:strategy need` 用共享抽象机做按需求值；`:par <expr>` 一轮收缩所有 redex，直观展示汇合。`lib/meta.lam` 是用纯 λ 写出的元循环求值器；`rec f : T = e` 支持带类型检查的递归定义。
+- **显式多态**：`:ftype Λa. \x : a. x` 检查带 `Λ` 与类型应用的 System F 项，并给出擦除后的 λ 项。
+- **归约分析**：`:shortest a , b` 在 redex 树上搜索到目标正规形的最短路径；`:growth <expr>` 并排画出应用序与正规序的“步数 × 项大小”曲线。
 - **定义环境**：`name = expr`、递归定义 `rec name = expr`、`:let`、`:load`、`:save`、`:env`、`:del`、`:reset`。
 - **定义文件**：`--` 或 `#` 注释、缩进或圆括号/方括号续行，以及文件内命令 `:strategy`、`:steps`、`:lang`、`:fast`、`:eta`、`:trace`、`:ast`、`:db`、`:del`、`:reset`、`:let` 与 `rec` 定义。
 - **整数互转**：`:int <expr>` 解码邱奇数，`:church <n>` 编码 0–9999。
@@ -126,10 +132,11 @@ cabal run extension -- --help
 | `:ast <表达式>` / `:db <表达式>` | 语法树 / de Bruijn 索引 |
 | `:type <表达式>` | 推断简单类型（支持 let 多态与类型标注） |
 | `:eq <a> , <b>` / `:conv <a> , <b>` | α 等价 / β 等价 |
+| `:prove <a> , <b>` | 可转换性证明（含两条归约轨迹） |
 | `:nf <表达式>` / `:whnf <表达式>` | 正规形 / 弱首正规形 |
 | `:int <表达式>` / `:church <n>` | 解码 / 编码邱奇数 |
 | `:begin <表达式>` / `:step [n]` / `:run` / `:end` | 交互式归约；`n` 选择 redex |
-| `:back` / `:goto <n>` | 回退 / 跳到手动归约历史的第 n 步 |
+| `:back` / `:forward` / `:goto <n>` | 回退 / 重做 / 跳到手动归约历史的第 n 步 |
 | `:def <名字>` / `:search <子串>` | 显示单个定义 / 搜索环境 |
 | `:reload` / `:edit [文件]` | 重新加载上次文件 / 用 `$EDITOR` 打开 |
 | `:lang zh\|en\|both` | 切换输出语言 |
@@ -199,17 +206,24 @@ cabal run extension -- --help
 - 终端风格 REPL：历史、Tab 补全、`Ctrl+L`、错误位置指示。
 - **编辑器**：语法高亮、括号匹配、行号、撤销重做、命令面板（`Ctrl+K`）、示例分类与渐进练习、可点击错误定位、轨迹播放保留焦点，以及 ARIA 标注 / 焦点陷阱 / reduced-motion。
 - 实时面板：**归约轨迹**（步进播放器、播放/暂停、差异高亮）、**结构**（可折叠树 + 文本树）、**类型**、**环境**（点击插入、悬停删除、用户定义显示类型）。
-- **工具**标签页：`:eq`、`:conv`、`:nf`、`:whnf`、`:int`、`:church`、`:eta`、递归定义与 `:save`；所有命令也可直接在终端输入。
+- **工具**标签页：`:eq`、`:conv`、`:prove`、`:nf`、`:whnf`、`:int`、`:church`、`:eta`、递归定义与 `:save`；所有命令也可直接在终端输入。`:prove` 的结果会在“轨迹”面板展示左右两条归约序列，并可导出 Markdown / JSON / LaTeX 证明；“类型”面板还会显示推断类型的 Curry–Howard 命题读法。
+- **策略竞速**：工具标签页可用同一个表达式在四种策略下同时归约，并在“竞速”面板并排比较步数与结果；每条结果都能在“轨迹”面板查看完整步骤，结束后自动恢复原策略；`:prove` 的“轨迹”面板还会画一张汇合菱形图。
+- **练习**：六个小目标的判题面板，用 `:conv` 检查答案是否 β 等价，进度保存在本地；命令面板支持自然语言意图与拼写纠偏建议。
+- **会话管理器**：“会话”标签列出持久化的快照，可恢复、重命名、删除；快照后端可选 JSON 文件或 SQLite（`LAMBDA_SNAPSHOT_DB` 以 `.sqlite` / `.db` 结尾），任意 worker 都能恢复别的 worker 创建的会话。
+- **静态分享页**：“静态页”按钮把当前对话渲染成自包含的 HTML（内容全部转义、可切语言、无外部资源），由 `GET /api/share/page/<id>` 提供。
+- **笔记与对比**：“笔记”标签可编辑、重排、删除单元；“对比”标签用 `:conv` / `:prove` 比较两个项。AST 图高亮 redex，点击即收缩；轨迹可导出带播放器的动画 HTML。工具标签提供高对比、字号与 `aria-live` 朗读。
+- **示例画廊与 token**：`GET /api/gallery` 提供策展的双语示例，`POST /api/token` 发放轻量 token 并由 `/api/eval` 统计用量。
 - **redex 选择器**：手动归约模式下终端下方列出全部可归约位置，点击即归约。
 - **结构**面板支持可折叠树与 **SVG 图**两种视图。
 - 结果行操作：复制、插入、直接定义为新名字、把轨迹导出为 Markdown / JSON / LaTeX。
 - 策略选择、步数上限、分享链接（服务端短 id 或完整 `#state=`）、`.lam` 导入导出、深浅色主题、中/英/双语切换。
 - **流式求值**：`POST /api/eval/stream` 返回 Server-Sent Events，边归约边转发输出并定期发送心跳；浏览器支持 `ReadableStream` 时自动使用，否则回退到 `POST /api/eval`。
 - **分享持久化**：短链保存在 `web/shares.json`（可用 `LAMBDA_SHARE_DB` 覆盖，设为 `off` 回到纯内存），重启后仍有效。
+- **会话快照**：回放历史持久化到 `web/sessions.json`（`LAMBDA_SNAPSHOT_DB`，设为 `off` 回到纯内存；另有 `LAMBDA_SNAPSHOT_TTL` 与 `LAMBDA_MAX_SNAPSHOTS`）。超时或过期后前端优先调用 `POST /api/session/<sid>/restore` 从快照恢复，而不是本地重放全部历史。
 - **生产部署**：Docker 镜像改用 `waitress`（单进程多线程，匹配进程内会话模型），并带 `HEALTHCHECK`；`LAMBDA_RATE_LIMIT=<n>` 可开启每 IP 每分钟限流，`LAMBDA_MAX_TERM_SIZE=<n>` 会传给解释器的 `--max-term-size`。
 - **窄屏适配**：宽度不足 900px 时改为单列、整页滚动，终端区保留自身高度上限，标签栏吸顶；不足 600px 时按钮放大到 32px 以上、输入框用 16px 字号（避免 iOS 聚焦自动放大）、标签栏等分整行，触屏上结果行操作常显。
 - 切换语言通过 `POST /api/session/<sid>/lang` 只更新解释器语言，再由前端用服务端返回的 `textZh`/`textEn` 本地重渲染，不重放历史也不重建解释器。
-- 接口：`GET /api/prelude`、`GET /api/health`（现含 `version`、`uptime`、`shares`、`sessionsMax`）、`POST /api/share`、`GET /api/share/<id>`、`POST /api/session`、`POST /api/eval`（`{"session", "line"}`）、`POST /api/eval/stream`（SSE）、`POST /api/session/<sid>/lang`、`POST /api/session/<sid>/cancel`、`DELETE /api/session/<sid>`；旧的 `{"code": "..."}` 仍可用。分享载荷做命令白名单校验：表达式、定义、设置项（`:lang`、`:strategy`、`:steps`、`:eta`、`:fast`）、只读查询（`:type`、`:trace`、`:ast`、`:db`、`:eq`、`:conv`、`:nf`、`:whnf`、`:int`、`:church`、`:env`、`:help`、`:def`、`:search`）与手动归约命令可以分享，而涉及文件、会话与环境的命令（`:load`、`:save`、`:edit`、`:reload`、`:reset`、`:del`、`:q`）不行。会话在后台回收，所有错误响应统一为带机器可读 `code` 的 JSON。返回 408 表示计算超时；410 表示会话过期，前端应回放历史。仅限终端的命令（`:q`、`:edit`）会以 `code: "cli_only"` 拒绝，保证网页会话不退出、服务器也不会启动编辑器。
+- 接口：`GET /api/prelude`、`GET /api/health`（现含 `version`、`uptime`、`shares`、`snapshots`、`sessionsMax`）、`POST /api/share`、`GET /api/share/<id>`、`POST /api/session`、`POST /api/eval`（`{"session", "line"}`）、`POST /api/eval/stream`（SSE）、`POST /api/race`（`{"session", "line", "strategy"}`：同一表达式跑完四种策略）、`POST /api/session/<sid>/lang`、`POST /api/session/<sid>/restore`（从持久化快照重建）、`POST /api/session/<sid>/cancel`、`DELETE /api/session/<sid>`；旧的 `{"code": "..."}` 仍可用。分享载荷做命令白名单校验：表达式、定义、设置项（`:lang`、`:strategy`、`:steps`、`:eta`、`:fast`）、只读查询（`:type`、`:trace`、`:ast`、`:db`、`:eq`、`:conv`、`:nf`、`:whnf`、`:int`、`:church`、`:env`、`:help`、`:def`、`:search`）与手动归约命令可以分享，而涉及文件、会话与环境的命令（`:load`、`:save`、`:edit`、`:reload`、`:reset`、`:del`、`:q`）不行。会话在后台回收，所有错误响应统一为带机器可读 `code` 的 JSON。返回 408 表示计算超时；410 表示会话过期，前端应回放历史。仅限终端的命令（`:q`、`:edit`）会以 `code: "cli_only"` 拒绝，保证网页会话不退出、服务器也不会启动编辑器。
 - `:load` 默认只允许解释器目录内的文件；环境面板的“加载”按钮会提示输入相对路径。设置 `LAMBDA_LOAD_ROOT=*` 可放开限制（仅建议本地使用）。
 - `:save` 在 Web 端默认关闭；本地使用可设 `LAMBDA_ALLOW_SAVE=1`。客户端的“导出”不经过服务器。
 - `HOST`、`PORT` 可覆盖默认的 `127.0.0.1:8081`。
@@ -273,7 +287,7 @@ test.bat           # Windows
 python tests/run_tests.py --bin ./extension
 ```
 
-共 48 组，覆盖解析错误位置（含 `:eq` 两侧同时报错）、β 归约结果、变量捕获、归约轨迹、四种策略、步数上限、邱奇编码与组合子提示、类型推断、环境命令、文件加载（注释、续行、命令、行号、保存/重载、递归、多文件）、手动归约与 redex 选择、回退/跳转、正规形 / η / 快速模式、α/β 等价、整数互转、语法树 / de Bruijn、双语输出与 `textZh`/`textEn` 字段、JSON 协议、确定性与跨策略一致性、轨迹上限、CLI 一次性求值与校验模式、新语法与教材库、Web API 会话/过期/语言切换/短链分享与持久化/健康检查、SSE 流式求值、限流、前端状态同步（Node）、随机属性测试，以及 `main` 与 `extension` 的差分测试。
+共 69 组，覆盖解析错误位置（含 `:eq` 两侧同时报错）、β 归约结果、变量捕获、归约轨迹、五种策略（含按需）、并行归约、最短路径与规模曲线、步数上限、邱奇与 Scott 编码、元循环求值器、System F 显式多态、带注解递归、组合子提示、类型推断（含命题读法与推导日志）、环境命令、文件加载（注释、续行、命令、行号、保存/重载、递归、多文件）、手动归约与 redex 选择、回退/跳转、正规形 / η / 快速模式、抽象机与统计命令、α/β 等价、整数互转、语法树 / de Bruijn、双语输出与 `textZh`/`textEn` 字段、JSON 协议、确定性与跨策略一致性、快速模式与步进阶的随机差分、轨迹上限、CLI 一次性求值与校验模式、新语法与教材库、Web API 会话/过期/语言切换/短链分享与持久化/健康检查、JSON 与 SQLite 会话快照、会话管理器与策略竞速、静态分享页、参考求值器差分与 Hypothesis 风格性质、SSE 流式求值、限流、前端状态同步（Node）、每条命令都有 UI 入口的检查，以及 `main` 与 `extension` 的差分测试。
 
 `tools/check_core_sync.py` 校验 `main.hs` 与 `extension.hs` 的共享核心一致性（`--fix` 会把共享声明从 `extension.hs` 复制到 `main.hs`），在 CI 中与
 `cabal build all`、`python -m compileall -q web tests tools`、基于 Node 的
@@ -294,10 +308,11 @@ docker build -t lambda-calculus-interpreter .
 docker run --rm -p 8081:8081 lambda-calculus-interpreter
 ```
 
-镜像会设置 `LAMBDA_INTERP_DIR`、`HOST=0.0.0.0`、`PORT=8081` 与
-`LAMBDA_SHARE_DB=/app/web/shares.json`，安装 `web/requirements.txt`，复制
+镜像会设置 `LAMBDA_INTERP_DIR`、`HOST=0.0.0.0`、`PORT=8081`、
+`LAMBDA_SHARE_DB=/app/web/shares.json` 与
+`LAMBDA_SNAPSHOT_DB=/app/web/sessions.json`，安装 `web/requirements.txt`，复制
 `lib/prelude.lam`，用 `waitress`（单进程多线程）提供服务，暴露 8081 端口并带
-`HEALTHCHECK`。若希望分享链接在容器替换后仍保留，请挂载 `/app/web`。
+`HEALTHCHECK`。若希望分享链接与会话快照在容器替换后仍保留，请挂载 `/app/web`。
 
 ## 实现要点
 

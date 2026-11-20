@@ -32,7 +32,9 @@ around the same compiled `extension` binary.
 - **Redex picking** — `:begin` lists every β-redex; `:step <n>` contracts a
   chosen one. The web UI turns the list into clickable buttons.
 - **Equivalence checks** — `:eq a , b` for α-equivalence, `:conv a , b` for
-  β-convertibility (both sides reduced to normal form).
+  β-convertibility (both sides reduced to normal form), and `:prove a , b` for a
+  full convertibility proof showing both reduction sequences to the common
+  normal form.
 - **Richer expressions** — `let x = e1; y = e2 in e3` (with expression-level
   let-polymorphism in `:type`), `if c then t else f`, list literals `[a, b, c]`,
   `(expr : T)` type annotations, and a `--` comment at the end of any line.
@@ -44,8 +46,9 @@ around the same compiled `extension` binary.
 - **CLI one-shot mode** — `-e/--eval <cmd>` runs commands and exits,
   `--check <file>` validates `.lam` files with exit code 0/1, and
   `--strategy/--steps/--eta/--fast` configure a run without a file.
-- **Manual rewind** — `:back` and `:goto <n>` move through the stored manual
-  reduction history; the web UI exposes both as buttons.
+- **Manual rewind / redo** — `:back` and `:goto <n>` move through the stored
+  manual reduction history, and `:forward` redoes steps undone by `:back`;
+  the web UI exposes all three as buttons.
 - **Definition tools** — `:def <name>`, `:search <substring>`, `:reload`, and
   `:edit [file]` plus filename completion for `:load`/`:save`/`:edit`.
 - **Bounded cycle detection** — when a whole term repeats during reduction, a
@@ -65,6 +68,29 @@ around the same compiled `extension` binary.
   `SORT`, `MAXLIST`, `MINLIST`, and more.
 - **Simple types** — Hindley–Milner inference with let-generalisation (`:type`),
   including expression-level `let` polymorphism and `(expr : T)` annotations.
+  `:type` also reads the inferred type as a Curry–Howard proposition
+  (`propositionFormula` / `propositionZh` / `propositionEn` in JSON; arrows become
+  `⇒` and quantified type variables become `∀t0 …`). The JSON also carries a
+  `derivation` log of unification / binding / generalisation steps for the Type
+  panel.
+- **Numeral encodings** — `:encoding church|scott` switches the encoding used by
+  `:church` / `:int`; `lib/scott.lam` supplies Scott numerals, booleans, pairs
+  and lazy lists with explicit conversions to and from Church encoding.
+- **Traced abstract machine** — `:machine <expr>` normalizes with an
+  environment / stack machine: shared arguments are never copied, yet it still
+  reports exact β steps and a real before/after trace.
+- **Statistics** — `:stats <expr>` reports node count, depth, redex count, free
+  variables, β/η step counts and whether the result is a normal form.
+- **More evaluation semantics** — `:strategy need` uses the sharing abstract
+  machine for call-by-need; `:par <expr>` contracts every maximal redex in one
+  round, making confluence visible. `lib/meta.lam` contains a meta-circular
+  evaluator written in pure λ, and `rec f : T = e` accepts checked recursive
+  definitions.
+- **Explicit polymorphism** — `:ftype Λa. \x : a. x` checks System F terms with
+  explicit `Λ` / type application and reports the erased λ term.
+- **Reduction analysis** — `:shortest a , b` searches the redex tree for the
+  shortest path to a target normal form; `:growth <expr>` plots term size against
+  steps for applicative and normal order side by side.
 - **Definitions** — `name = expr`, recursive `rec name = expr`, `:let`, `:load`,
   `:save`, `:env`, `:del`, `:reset`.
 - **Definition files** — comments (`--` or `#`), indented or
@@ -179,10 +205,11 @@ file, reports failures and exits 0/1 without starting the REPL.
 | `:ast <expr>` / `:db <expr>` | syntax tree / de Bruijn indices |
 | `:type <expr> [: <type>]` | infer the simple type (`let`-polymorphic, annotations honoured) |
 | `:eq <a> , <b>` / `:conv <a> , <b>` | α-equivalence / β-convertibility |
+| `:prove <a> , <b>` | convertibility proof with both reduction traces |
 | `:nf <expr>` / `:whnf <expr>` | full normal form / weak head normal form |
 | `:int <expr>` / `:church <n>` | decode / encode a Church numeral |
 | `:begin <expr>` / `:step [n]` / `:run` / `:end` | interactive reduction; `n` picks a redex |
-| `:back` / `:goto <n>` | rewind / jump in the manual reduction history |
+| `:back` / `:forward` / `:goto <n>` | rewind, redo / jump in the manual reduction history |
 | `:def <name>` / `:search <substring>` | show one definition / search the environment |
 | `:reload` / `:edit [file]` | reload the last file / open it in `$EDITOR` |
 | `:lang zh\|en\|both` | switch output language |
@@ -270,8 +297,37 @@ session and speaks the `--batch --json` protocol.
 - Live panels for **reduction trace** (step player, play/pause, diff),
   **AST** (collapsible tree + text tree), **type**, and **environment**
   (click to insert, hover to delete, types shown for user definitions).
-- **Tools** tab for `:eq`, `:conv`, `:nf`, `:whnf`, `:int`, `:church`, `:eta`,
-  recursive definitions and `:save`; every command also works in the terminal.
+- **Tools** tab for `:eq`, `:conv`, `:prove`, `:nf`, `:whnf`, `:int`, `:church`,
+  `:eta`, recursive definitions and `:save`; every command also works in the
+  terminal. A `:prove` result shows both reduction sequences in the Trace panel,
+  with Markdown / JSON / LaTeX proof exports. The Type panel also shows the
+  Curry–Howard proposition reading of the inferred type.
+- **Strategy race** — the Tools tab runs one expression under all four
+  strategies in the same session and compares them side by side in the Race
+  tab; each result can be opened in the Trace panel. The previous strategy is
+  restored afterwards. The Trace panel also draws a confluence diamond for
+  `:prove` results.
+- **Practice** — an Exercises tab poses six small goals and checks answers with
+  `:conv`, tracking progress locally. The command palette understands natural
+  language intents and suggests nearby commands for typos.
+- **Notebook and comparison** — a Notebook tab holds editable, reorderable cells;
+  a Compare tab checks two terms with `:conv` / `:prove`. The AST graph highlights
+  redexes and clicking one contracts it. Trace exports include an animated HTML
+  player. High-contrast mode, font sizing and `aria-live` trace narration are
+  available from the Tools tab.
+- **Gallery and tokens** — `GET /api/gallery` serves curated bilingual examples
+  and `POST /api/token` issues a lightweight usage token that `/api/eval` counts.
+- **Session manager** — a Sessions tab lists persisted snapshots with rename,
+  restore and delete actions. Snapshots can use a JSON file or a SQLite backend
+  (`LAMBDA_SNAPSHOT_DB` ending in `.sqlite` / `.db`), so any worker can restore
+  a session created by another one.
+- **Static share pages** — the Static page button turns the current transcript
+  into a self-contained, escaped HTML document served at
+  `GET /api/share/page/<id>` with a language toggle and no external assets.
+- **Session snapshots** — the replay history is persisted to `web/sessions.json`
+  (`LAMBDA_SNAPSHOT_DB`, `off` for memory only). After a timeout or expiry the
+  frontend restores the session from its snapshot instead of replaying every
+  line locally.
 - **Redex picker** under the terminal in manual mode: click any redex to
   contract it.
 - **AST** panel with a collapsible tree and an **SVG graph** view.
@@ -298,14 +354,20 @@ session and speaks the `--batch --json` protocol.
   output locally from the server's `textZh`/`textEn` fields; it does not replay
   commands or start a new interpreter.
 - `GET /api/prelude`, `GET /api/health` (now with `version`, `uptime`, `shares`,
-  `sessionsMax`), `POST /api/share`, `GET /api/share/<id>`, `POST /api/session`,
-  `POST /api/eval` (`{"session", "line"}`), `POST /api/session/<sid>/lang`,
-  `POST /api/session/<sid>/cancel`, and `DELETE /api/session/<sid>`. The legacy
+  `snapshots`, `sessionsMax`), `POST /api/share`, `GET /api/share/<id>`, `POST /api/session`,
+  `POST /api/eval` (`{"session", "line"}`), `POST /api/eval/stream` (SSE),
+  `POST /api/race` (`{"session", "line", "strategy"}` — one expression under all
+  four strategies), `POST /api/session/<sid>/lang`,
+  `POST /api/session/<sid>/restore` (rebuild from a persisted snapshot),
+  `GET /api/snapshots`, `POST /api/snapshot/<sid>/name`,
+  `DELETE /api/snapshot/<sid>`, `POST /api/share/page`,
+  `GET /api/share/page/<id>`, `POST /api/session/<sid>/cancel`, and
+  `DELETE /api/session/<sid>`. The legacy
   `{"code": "..."}` form still works. Share payloads are validated against a
   command allow-list: expressions, definitions, the settings (`:lang`,
   `:strategy`, `:steps`, `:eta`, `:fast`), the read-only queries (`:type`,
-  `:trace`, `:ast`, `:db`, `:eq`, `:conv`, `:nf`, `:whnf`, `:int`, `:church`,
-  `:env`, `:help`, `:def`, `:search`) and the manual-reduction commands may be
+  `:trace`, `:ast`, `:db`, `:eq`, `:conv`, `:prove`, `:nf`, `:whnf`, `:int`,
+  `:church`, `:env`, `:help`, `:def`, `:search`) and the manual-reduction commands may be
   shared, while file, session and environment commands (`:load`, `:save`,
   `:edit`, `:reload`, `:reset`, `:del`, `:q`) may not. Idle sessions are reaped
   in the background, and all error
@@ -398,17 +460,24 @@ test.bat           # Windows
 python tests/run_tests.py --bin ./extension
 ```
 
-48 groups cover parsing positions, β-reduction results, capture avoidance,
+69 groups cover parsing positions, β-reduction results, capture avoidance,
 traces, all four strategies, step limits, Church/combinator hints, type
-inference, environment commands, file loading (comments, continuations,
-commands, line numbers, save/reload, recursion, multiple files), manual
-reduction and redex picking, rewind/jump, normal forms, eta and fast mode,
-α/β equivalence, integer encoding, AST/de Bruijn, bilingual output, JSON
-protocol, determinism, cross-strategy agreement, trace capping, CLI one-shot
+inference (including the proposition reading), environment commands, file
+loading (comments, continuations, commands, line numbers, save/reload,
+recursion, multiple files), manual reduction and redex picking, rewind/jump,
+normal forms, eta and fast mode, α/β equivalence, integer encoding, AST/de
+Bruijn, bilingual output, JSON protocol, determinism, cross-strategy agreement,
+randomized fast-vs-step differential properties, trace capping, CLI one-shot
 and check modes, new syntax and library functions, web API sessions,
 expiry/language switching/health checks, short share links and persistence,
-SSE streaming, rate limiting, bilingual protocol fields, wall-clock timeout,
-randomized properties, web UI state sync (Node), and a `main`/`extension`
+session snapshots (JSON and SQLite), session manager and strategy races,
+Scott encoding, the traced machine, statistics, type derivations, static share
+pages, a reference evaluator differential and Hypothesis-style properties,
+the meta-circular evaluator, System F checks, parallel and need strategies,
+annotated recursion, parser fuzzing, LSP/benchmark/gallery tooling, animated
+trace export, SSE streaming, rate limiting, bilingual
+protocol fields, wall-clock timeout, randomized properties, web UI state sync
+(Node), an every-command-has-a-UI-entry check, and a `main`/`extension`
 differential test.
 
 `tools/check_core_sync.py` checks that the shared core stays in sync between
@@ -434,11 +503,12 @@ docker build -t lambda-calculus-interpreter .
 docker run --rm -p 8081:8081 lambda-calculus-interpreter
 ```
 
-The image sets `LAMBDA_INTERP_DIR`, `HOST=0.0.0.0`, `PORT=8081` and
-`LAMBDA_SHARE_DB=/app/web/shares.json`, installs `web/requirements.txt`, copies
+The image sets `LAMBDA_INTERP_DIR`, `HOST=0.0.0.0`, `PORT=8081`,
+`LAMBDA_SHARE_DB=/app/web/shares.json` and
+`LAMBDA_SNAPSHOT_DB=/app/web/sessions.json`, installs `web/requirements.txt`, copies
 `lib/prelude.lam`, serves the app with `waitress` (single process, multiple
 threads) and exposes 8081 with a `HEALTHCHECK`. Mount `/app/web` if you want
-share links to survive a container replacement.
+share links and session snapshots to survive a container replacement.
 
 ## Implementation
 
