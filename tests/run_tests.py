@@ -2555,6 +2555,25 @@ def test_web_edge_cases(b: Path) -> None:
         check("numeric line coerced", r.status_code == 200
               and len(r.get_json()["outputs"]) == 1, str(r.status_code))
 
+        # 不可哈希的 lang（数组/对象）必须回退 both，而不是在 set 查找时 500
+        # Unhashable lang values must fall back to both instead of raising a 500.
+        for path in ("/api/session", "/api/eval", "/api/race",
+                     f"/api/session/{sid}/lang", f"/api/session/{sid}/restore"):
+            r = client.post(path, json={"lang": [], "line": "x"})
+            check(f"unhashable lang {path}", r.status_code < 500, str(r.status_code))
+
+        # token 存储必须有上限，/api/token 不能无限增长
+        # The token store must stay bounded under repeated /api/token calls.
+        old_max = webapp.MAX_TOKENS
+        try:
+            webapp.MAX_TOKENS = 5
+            for _ in range(10):
+                client.post("/api/token")
+            check("token store bounded", len(webapp._tokens) <= 5,
+                  str(len(webapp._tokens)))
+        finally:
+            webapp.MAX_TOKENS = old_max
+
         # 会话路径与 SSE 路径上的 term_too_large
         # term_too_large on the session and streaming paths.
         old_cap = webapp.MAX_TERM_SIZE

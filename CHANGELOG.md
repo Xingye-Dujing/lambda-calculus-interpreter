@@ -65,6 +65,8 @@
   Reduction engines: `:growth` no longer flags a cycle after one step, so its step counts and curves are complete; the abstract machine now memoises thunks (call-by-need), and quoting binders no longer captures free variables, keeping trace steps chained.
 - 快照归属现在写进 SQLite 表与 JSON 文件，重启和跨 worker 后仍生效；恢复不再全程持有全局锁，失败时清理新建会话；重命名/删除使用带 owner 条件的原子 SQL。
   Snapshot ownership is now persisted in SQLite and JSON, so it survives restarts and workers; restore no longer holds the global lock during replay and cleans up its session on failure; rename/delete use owner-conditional atomic SQL.
+- 不可哈希的 `lang` 字段（数组/对象）现在回退 `both`，不再让六个接口抛 500；token 存储加入数量上限与空闲回收，无认证的 `/api/token` 不能无限增长。
+  Unhashable `lang` values now fall back to `both` instead of raising 500 on six routes; the token store is capped and pruned so unauthenticated `/api/token` calls cannot grow it without bound.
 - `:time <n> <expr>` 现在先去掉次数再解析表达式，不再解析错误对象。
   `:time <n> <expr>` now strips the run count before parsing the expression.
 - 失效会话返回 410 + restart 而不是误报 408；流式求值的超时不再因心跳间隔而超时后延。

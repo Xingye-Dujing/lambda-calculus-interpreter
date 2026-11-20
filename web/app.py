@@ -136,6 +136,10 @@ REAPER_INTERVAL = 60.0
 # Cap the bucket map so many source IPs cannot grow it without bound.
 RATE_BUCKET_MAX = 4096
 RATE_BUCKET_IDLE = 120.0
+# token 数量上限与空闲时间：/api/token 无需认证，必须限制其增长
+# Cap and idle TTL for the unauthenticated /api/token endpoint.
+MAX_TOKENS = 4096
+TOKEN_IDLE = 24 * 3600.0
 # 进程启动时刻（单调时钟），用于 /api/health 的 uptime
 # Process start on a monotonic clock, used for /api/health uptime.
 _PROCESS_START = time.monotonic()
@@ -1059,7 +1063,8 @@ def _load_snapshots() -> None:
         lang = entry.get("lang")
         if (not isinstance(code, list) or not all(isinstance(x, str) for x in code)
                 or not isinstance(used, (int, float)) or not isinstance(created, (int, float))
-                or lang not in ALLOWED_LANGS or now - used > SNAPSHOT_TTL):
+                or not isinstance(lang, str) or lang not in ALLOWED_LANGS
+                or now - used > SNAPSHOT_TTL):
             continue
         name = entry.get("name", "")
         if not isinstance(name, str):
@@ -1170,6 +1175,8 @@ def _snapshot_record(sid: str, lines, lang: str, set_lang: bool = True,
     """
     if _snapshot_db_path() is None or not isinstance(sid, str):
         return
+    if not isinstance(lang, str) or lang not in ALLOWED_LANGS:
+        lang = "both"
     if owner is None:
         with _sessions_lock:
             session = _sessions.get(sid)
@@ -1376,6 +1383,28 @@ def _load_tokens() -> None:
                     _tokens[k] = v
 
 
+def _prune_tokens_locked() -> bool:
+    """在 _tokens_lock 内回收过期/超额 token，返回是否有改动
+    Prune stale/overflow tokens under _tokens_lock; report whether we changed it.
+    """
+    now = time.time()
+    before = len(_tokens)
+    stale = [k for k, v in _tokens.items()
+             if now - v.get("created", 0) > TOKEN_IDLE]
+    for k in stale:
+        _tokens.pop(k, None)
+    while len(_tokens) > MAX_TOKENS:
+        oldest = min(_tokens, key=lambda k: _tokens[k].get("created", 0))
+        _tokens.pop(oldest, None)
+    return len(_tokens) != before
+
+
+def _prune_tokens() -> None:
+    with _tokens_lock:
+        if _prune_tokens_locked():
+            _save_tokens_locked()
+
+
 def _save_tokens_locked() -> None:
     path = _token_db_path()
     if path is None:
@@ -1408,6 +1437,14 @@ def _token_used(token) -> None:
 # Session ownership: a random client-generated token stored in localStorage binds
 # snapshots to one browser, so /api/snapshots cannot enumerate or delete other
 # users' sessions. Legacy ownerless entries stay visible to ownerless clients.
+def _req_lang(data: dict | None = None) -> str:
+    """语言字段必须先判类型：数组/对象不可哈希，直接 in set 会抛 500
+    Check the type first: unhashable JSON values would raise a 500.
+    """
+    value = data.get("lang") if data else None
+    return value if isinstance(value, str) and value in ALLOWED_LANGS else "both"
+
+
 def _req_owner(data: dict | None = None) -> str | None:
     candidates = []
     if data:
@@ -1592,6 +1629,7 @@ def _reaper_loop() -> None:
             _prune_shares()
             _prune_snapshots()
             _prune_pages()
+            _prune_tokens()
         except Exception:  # noqa: BLE001
             log.exception("background reaper failed / 后台回收线程异常")
 
@@ -1805,6 +1843,9 @@ def api_token():
     token = uuid.uuid4().hex[:16]
     with _tokens_lock:
         _tokens[token] = {"used": 0, "created": time.time()}
+        # 先加入再回收，保证写入后也不超过上限
+        # Prune after insertion so the store is bounded on return as well.
+        _prune_tokens_locked()
         _save_tokens_locked()
     return jsonify({"ok": True, "token": token})
 
@@ -1817,7 +1858,7 @@ def api_session():
         log.error("interpreter missing / 解释器缺失: %s", INTERP_BIN)
         return api_error(_missing_bin_msg(), 500, "internal")
     data = _json_body() or {}
-    lang = data.get("lang") if data.get("lang") in ALLOWED_LANGS else "both"
+    lang = _req_lang(data)
     sid, _ = get_session(None, lang, owner=_req_owner(data))
     return jsonify({"ok": True, "session": sid})
 
@@ -1831,7 +1872,7 @@ def api_session_restore(sid):
     if not _rate_ok():
         return api_error("请求过于频繁 / rate limit exceeded", 429, "rate_limited")
     data = _json_body() or {}
-    lang = data.get("lang") if data.get("lang") in ALLOWED_LANGS else "both"
+    lang = _req_lang(data)
     owner = _req_owner(data)
     _prune_snapshots()
     # 只在读取/校验和最终提交时持锁：回放最多 200 行、每行可能耗满超时，
@@ -1945,7 +1986,7 @@ def api_session_lang(sid):
     if not _rate_ok():
         return api_error("请求过于频繁 / rate limit exceeded", 429, "rate_limited")
     data = _json_body() or {}
-    lang = data.get("lang") if data.get("lang") in ALLOWED_LANGS else "both"
+    lang = _req_lang(data)
     _prune_sessions()
     with _sessions_lock:
         entry = _sessions.get(sid)
@@ -1999,7 +2040,7 @@ def api_eval():
     if not _rate_ok():
         return api_error("请求过于频繁 / rate limit exceeded", 429, "rate_limited")
     data = _json_body() or {}
-    lang = data.get("lang") if data.get("lang") in ALLOWED_LANGS else "both"
+    lang = _req_lang(data)
 
     # 旧接口：{code} 一次性执行
     legacy = data.get("code") or data.get("expr")
@@ -2109,7 +2150,7 @@ def api_race():
     if not _rate_ok():
         return api_error("请求过于频繁 / rate limit exceeded", 429, "rate_limited")
     data = _json_body() or {}
-    lang = data.get("lang") if data.get("lang") in ALLOWED_LANGS else "both"
+    lang = _req_lang(data)
     line = data.get("line")
     if not isinstance(line, str) or not line.strip():
         return api_error("表达式为空 / empty expression", 400, "bad_request")
@@ -2186,7 +2227,7 @@ def api_eval_stream():
     if not _rate_ok():
         return api_error("请求过于频繁 / rate limit exceeded", 429, "rate_limited")
     data = _json_body() or {}
-    lang = data.get("lang") if data.get("lang") in ALLOWED_LANGS else "both"
+    lang = _req_lang(data)
     line = data.get("line")
     if line is None:
         return api_error("empty request", 400, "bad_request")
