@@ -256,6 +256,19 @@ check("proof view rendered",
       String(document.getElementById("panel").innerHTML).includes("proof-list")
       && String(document.getElementById("panel").innerHTML).includes("proof-summary"),
       String(document.getElementById("panel").innerHTML).slice(0, 160));
+const proofLine = outEl2.children[beforeProof];
+const proofMeta = () => {
+  const m = metaOf(proofLine);
+  return m && m.textContent;
+};
+check("proof meta bilingual", String(proofMeta()).includes("steps"), String(proofMeta()));
+const savedLang2 = state.lang;
+state.lang = "zh";
+sandbox.window.__test.applyTranscriptLang();
+check("proof meta follows language", String(proofMeta()).includes("步"),
+      String(proofMeta()));
+state.lang = savedLang2;
+sandbox.window.__test.applyTranscriptLang();
 
 // 步骤行的 canStepBack/canStepForward 必须同步到手动控制按钮
 // Step output's back/forward flags must drive the manual control buttons.
@@ -266,6 +279,9 @@ check("back disabled at step 0", document.getElementById("m-back").disabled === 
       && document.getElementById("m-forward").disabled === true, "");
 T.renderOutput({ kind: "step", term: "b", before: "a", rule: "β",
   canStepBack: true, canStepForward: true, redexes: [] }, "", false);
+check("manual term follows steps",
+      String(document.getElementById("m-term").textContent) === "b",
+      String(document.getElementById("m-term").textContent));
 check("back/forward enabled", document.getElementById("m-back").disabled === false
       && document.getElementById("m-forward").disabled === false, "");
 
@@ -780,6 +796,13 @@ check("animation html has frames",
 check("need strategy option", html.includes('value="need"'), "need strategy missing");
 check("a11y controls", html.includes("data-a11y-contrast") && html.includes("aria-live"),
       "accessibility controls missing");
+check("foreground variable defined",
+      (html.match(/--fg:var\(--text\)/g) || []).length >= 2, "--fg is undefined");
+check("font scale wired", html.includes("--font-scale")
+      && html.includes('root.style.setProperty("--font-scale"')
+      && html.includes("var(--font-scale"), "font-size control is a no-op");
+check("ctrl-enter joins continuations", html.includes("splitLogicalCommands(seg.text)"),
+      "ctrl+enter sends raw continuation lines");
 state.selected = {redexes: [{i: 1, path: "1", term: "x"}]};
 const hot = sandbox.window.__test.astSvg({k: "app", c: [
   {k: "var", label: "f"}, {k: "app", c: [{k: "var", label: "x"}, {k: "var", label: "y"}]}

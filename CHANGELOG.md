@@ -67,6 +67,8 @@
   Snapshot ownership is now persisted in SQLite and JSON, so it survives restarts and workers; restore no longer holds the global lock during replay and cleans up its session on failure; rename/delete use owner-conditional atomic SQL.
 - 不可哈希的 `lang` 字段（数组/对象）现在回退 `both`，不再让六个接口抛 500；token 存储加入数量上限与空闲回收，无认证的 `/api/token` 不能无限增长。
   Unhashable `lang` values now fall back to `both` instead of raising 500 on six routes; the token store is capped and pruned so unauthenticated `/api/token` calls cannot grow it without bound.
+- 网页：Ctrl+Enter 执行续行命令不再把裸换行拆成多条；补上未定义的 `--fg`；字号按钮改为缩放所有声明字号；证明摘要随语言切换刷新；手动归约条每步更新当前项。
+  Web UI: Ctrl+Enter now joins continuation lines instead of sending raw newlines; the undefined `--fg` is declared; the font-size control scales every declared size; proof meta follows language switches; the manual bar updates its current term on every step.
 - `:time <n> <expr>` 现在先去掉次数再解析表达式，不再解析错误对象。
   `:time <n> <expr>` now strips the run count before parsing the expression.
 - 失效会话返回 410 + restart 而不是误报 408；流式求值的超时不再因心跳间隔而超时后延。
