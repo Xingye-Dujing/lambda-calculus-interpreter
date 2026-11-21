@@ -16,6 +16,20 @@ The enhanced interpreter runs in the browser at
 **<http://47.116.114.77/lambda/>**. The page in `web/` is a thin Flask wrapper
 around the same compiled `extension` binary.
 
+## Promo films
+
+Two Chinese-language promos with footage captured from the real browser UI —
+a 16:9 long cut for Bilibili and a 9:16 short cut for Douyin. Both the Remotion
+source and the reusable capture script live in [`video/`](./video/).
+
+| Bilibili (16:9) | Douyin (9:16) |
+| --- | --- |
+| ![Bilibili promo](../docs/promo/bilibili.png) | ![Douyin promo](../docs/promo/douyin.png) |
+
+Reproduce: `npm run capture` then `npm run render:bili` / `npm run render:douyin`
+from `video/`. The films themselves are generated output and are not committed;
+see [`video/README.md`](./video/README.md) for details.
+
 ## Features
 
 - **Pure lambda calculus** with α-equivalence and capture-avoiding substitution.

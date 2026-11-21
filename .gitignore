@@ -69,11 +69,16 @@ desktop.ini
 
 # ---------------------------------------------------------------------------
 # 生成资源：宣传片与输出 / Generated assets: video and output
-# 截图已随仓库提供，这里不再忽略 / Screenshots are committed, so do not ignore them
+# 宣传片的源码随仓库提供；成片、采集素材与依赖目录不入库
+# Promo source is committed; rendered films, captured footage and deps are not
 # ---------------------------------------------------------------------------
-/video/
 *.mp4
 /out/
+/video/out/
+/video/node_modules/
+/video/public/real/
+/video/.remotion/
+/video/cover.png
 
 # 本地 agent 笔记 / Local agent notes
 .workbuddy/

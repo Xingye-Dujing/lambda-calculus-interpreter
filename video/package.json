@@ -1,0 +1,30 @@
+{
+  "name": "lambda-calculus-promo",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Remotion promo / visual essay for the Haskell lambda calculus interpreter",
+  "scripts": {
+    "start": "remotion studio src/index.ts",
+    "cover": "remotion still src/index.ts Cover out/cover.png",
+    "still": "remotion still src/index.ts LambdaPromo out/cover.png --frame=600",
+    "render": "remotion render src/index.ts BiliPromo out/bilibili.mp4 --codec=h264 --crf=18 --pixel-format=yuv420p",
+    "render:bili": "remotion render src/index.ts BiliPromo out/bilibili.mp4 --codec=h264 --crf=18 --pixel-format=yuv420p",
+    "render:douyin": "remotion render src/index.ts DouyinPromo out/douyin.mp4 --codec=h264 --crf=18 --pixel-format=yuv420p",
+    "capture": "python scripts/browser_capture.py --profile both --start-server",
+    "capture:bili": "python scripts/browser_capture.py --profile bili --start-server",
+    "capture:douyin": "python scripts/browser_capture.py --profile douyin --start-server",
+    "render:preview": "remotion render src/index.ts BiliPromo out/preview.mp4 --codec=h264 --crf=26 --scale=0.5",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@remotion/cli": "4.0.540",
+    "react": "19.1.0",
+    "react-dom": "19.1.0",
+    "remotion": "4.0.540"
+  },
+  "devDependencies": {
+    "@types/react": "19.1.0",
+    "@types/react-dom": "19.1.0",
+    "typescript": "5.8.3"
+  }
+}

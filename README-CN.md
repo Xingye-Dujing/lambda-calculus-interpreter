@@ -9,6 +9,16 @@
 
 增强版解释器已提供网页界面：**<http://47.116.114.77/lambda/>**。页面代码位于 `web/`，由一层轻量 Flask 封装调用同一个编译好的 `extension` 二进制。
 
+## 宣传片
+
+两条全中文宣传片，画面均为真实浏览器实机录屏：B 站横屏长版与抖音竖屏短版。Remotion 源码与可复用的采集脚本都在 [`video/`](./video/) 目录。
+
+| 哔哩哔哩（16:9） | 抖音（9:16） |
+| --- | --- |
+| ![B 站宣传片](../docs/promo/bilibili.png) | ![抖音宣传片](../docs/promo/douyin.png) |
+
+复现方式：进入 `video/` 后执行 `npm run capture`，再执行 `npm run render:bili` 或 `npm run render:douyin`。成片属于构建产物，不入库；详见 [`video/README.md`](./video/README.md)。
+
 ## 功能特点
 
 - **纯 lambda 演算**：α 等价、无捕获替换。
